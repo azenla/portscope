@@ -64,11 +64,10 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 ### Views
 
-- `Views/SidebarView.swift` — four-section nav:
+- `Views/SidebarView.swift` — three-section nav:
   1. **Physical Ports** — rows labelled `USB-C Port N` with a mode-coloured icon and live status (`Thunderbolt · TB5 · ×2`, `USB · USB 3.0`, `Empty`). Expanding reveals the connected TB device and up to 6 USB devices reachable through that port.
-  2. **Thunderbolt** — TB host controllers each expand into their tree via `FullTopologyRow`. The controller's own row carries an enriched subtitle (`Connected · <vendor> <model>` when a depth>0 router lives downstream, else `No external device`).
+  2. **Thunderbolt** — TB host controllers each expand into the full raw tree via `FullTopologyRow`. The controller's own row carries an enriched subtitle (`Connected · <vendor> <model>` when a depth>0 router lives downstream, else `No external device`) and auto-expands when an external host is attached. Both the controller row and the deeper rows share the file-scope `promotedChildren(of:)` helper, which drops `.other` wrapper kexts (DPConnectionManager / IPService / IOService shims) and recursively promotes their meaningful descendants up — so nothing in the IOKit tree is hidden.
   3. **USB** — USB host controllers expand into hubs/devices. `.usbInterface` and `.other` children are hidden in this section to keep it clean (interfaces appear in the device's detail view).
-  4. **Full Topology** disclosure — `FullTopologyRow` over the TB controllers; identical recursion to the Thunderbolt section except (a) it doesn't show the enriched "connected device" subtitle on the controller row and (b) it doesn't auto-expand attached hosts. `FullTopologyRow` filters out `.other` wrappers and *recursively promotes* their meaningful descendants up (e.g. IOService wrappers around real TB ports).
 
 - `Views/DetailView.swift` — kind-specific summary cards. Dispatches on `TBNodeKind`: `.controller` → `ControllerView`, `.switch` → `RouterView`, `.port` → `PortView`, `.usbController` → `USBControllerView`, `.usbHub` → `USBHubView`, `.usbDevice` → `USBDeviceView`, `.usbInterface` → `USBInterfaceView`. Hosts the **`Developer details` disclosure** at the bottom that embeds `PropertyTableView` for the raw IORegistry dump. Receives both a `parentLookup` closure (for `RouterView.findUpstreamLane()`) and a **`tbContextForUSB`** closure that resolves a USB controller's TB switch ancestor; `DetailView.ancestorTBContext(for:)` walks parents to find the enclosing USB controller, then queries the closure.
 

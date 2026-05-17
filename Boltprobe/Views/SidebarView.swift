@@ -2,11 +2,12 @@
 //  SidebarView.swift
 //  Boltprobe
 //
-//  Four-tier navigation:
+//  Three-tier navigation:
 //    1. Physical Ports — unified user view (TB / USB / Empty mode per port).
-//    2. Thunderbolt — TB controllers and routers.
+//    2. Thunderbolt — TB controllers and routers (raw IOKit tree, with
+//       `.other` wrapper kexts unwrapped and their meaningful descendants
+//       promoted up).
 //    3. USB — USB host controllers, hubs, devices.
-//    4. Full Topology — the raw IOKit tree for power users.
 //
 
 import SwiftUI
@@ -14,7 +15,6 @@ import SwiftUI
 struct SidebarView: View {
     @ObservedObject var vm: BoltprobeViewModel
     @State private var expanded: Set<TBNodeID> = []
-    @State private var showFullTopology: Bool = false
     @State private var showDiagram: Bool = false
 
     var body: some View {
@@ -54,21 +54,6 @@ struct SidebarView: View {
                     ForEach(vm.usbSnapshot.controllers, id: \.id) { node in
                         USBBranch(node: node, depth: 0, expanded: $expanded)
                     }
-                }
-            }
-
-            Section {
-                DisclosureGroup(isExpanded: $showFullTopology) {
-                    ForEach(vm.tbSnapshot.controllers, id: \.id) { node in
-                        FullTopologyRow(node: node, depth: 0, expanded: $expanded)
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "list.bullet.indent")
-                            .foregroundStyle(.secondary)
-                        Text("Full Topology").foregroundStyle(.secondary)
-                    }
-                    .font(.callout)
                 }
             }
         }
@@ -244,7 +229,10 @@ private struct ControllerBranch: View {
     @Binding var expanded: Set<TBNodeID>
 
     var body: some View {
-        let kids = node.children.filter { $0.kind != .other }
+        // Skip `.other` wrapper kexts (DPConnectionManager, IPService, etc.)
+        // and promote their meaningful descendants up — same recursion the
+        // deeper rows use, so nothing in the IOKit tree is hidden.
+        let kids = promotedChildren(of: node)
         DisclosureGroup(
             isExpanded: Binding(
                 get: { expanded.contains(node.id) || isAttachedHost },
@@ -352,7 +340,22 @@ private struct USBBranch: View {
     }
 }
 
-// MARK: - Full topology (raw tree)
+// MARK: - Thunderbolt tree row
+
+/// Walk a node's children, dropping `.other` wrapper kexts and promoting their
+/// meaningful descendants up. Shared by `ControllerBranch` and `FullTopologyRow`
+/// so a port hidden under one IOService wrapper is still visible in the tree.
+private func promotedChildren(of node: TBNode) -> [TBNode] {
+    var out: [TBNode] = []
+    for c in node.children {
+        if c.kind == .other {
+            out.append(contentsOf: promotedChildren(of: c))
+        } else {
+            out.append(c)
+        }
+    }
+    return out
+}
 
 private struct FullTopologyRow: View {
     let node: TBNode
@@ -360,7 +363,7 @@ private struct FullTopologyRow: View {
     @Binding var expanded: Set<TBNodeID>
 
     var body: some View {
-        let kids = visibleChildren(of: node)
+        let kids = promotedChildren(of: node)
         if kids.isEmpty {
             label.tag(node.id)
         } else {
@@ -380,18 +383,6 @@ private struct FullTopologyRow: View {
             }
             .tag(node.id)
         }
-    }
-
-    private func visibleChildren(of node: TBNode) -> [TBNode] {
-        var out: [TBNode] = []
-        for c in node.children {
-            if c.kind == .other {
-                out.append(contentsOf: visibleChildren(of: c))
-            } else {
-                out.append(c)
-            }
-        }
-        return out
     }
 
     private var label: some View {
