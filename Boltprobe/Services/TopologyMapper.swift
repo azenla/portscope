@@ -15,7 +15,17 @@ import Foundation
 struct PhysicalPort {
     let number: Int
     let id: TBNodeID
+    /// Host-side lane adapter on the root switch. Use this for static info
+    /// like link speed / width (the link negotiates the same numbers on both
+    /// sides).
     let laneAdapter: TBNode
+    /// Lane port immediately above the connected switch — the "peer lane".
+    /// When a device is connected, this is where the kernel aggregates
+    /// `Link Bandwidth`, `Required Bandwidth Allocated`, and
+    /// `Maximum Bandwidth Allocated` for all the tunnels flowing through
+    /// the link. The host-side `laneAdapter` only sees host-local tunnels
+    /// and would under-report. Nil when nothing is connected.
+    let linkLane: TBNode?
     let controller: TBNode
     let connectedDevice: ConnectedDevice?
     /// Inferred operating mode of the port. Drives the badge/colour in the UI.
@@ -29,6 +39,11 @@ struct PhysicalPort {
     /// HPD, cable e-marker info — the data that doesn't show up in the
     /// Thunderbolt or USB IOKit families.
     let accessory: PortAccessoryInfo?
+
+    /// The lane node to query for bandwidth allocations. Prefers `linkLane`
+    /// (sees all tunnels through the link) and falls back to `laneAdapter`
+    /// (host-side, used when nothing is connected).
+    var bandwidthLane: TBNode { linkLane ?? laneAdapter }
 }
 
 struct PortTunnel: Hashable {
@@ -124,7 +139,8 @@ enum TopologyMapper {
             return tbPorts.enumerated().map { idx, p in
                 PhysicalPort(
                     number: idx + 1,
-                    id: p.id, laneAdapter: p.laneAdapter, controller: p.controller,
+                    id: p.id, laneAdapter: p.laneAdapter, linkLane: p.linkLane,
+                    controller: p.controller,
                     connectedDevice: p.connectedDevice, mode: p.mode,
                     attachedUSBDevices: p.attachedUSBDevices, tunnels: p.tunnels,
                     accessory: nil
@@ -165,7 +181,8 @@ enum TopologyMapper {
             if let tb {
                 out.append(PhysicalPort(
                     number: acc.portNumber,
-                    id: tb.id, laneAdapter: tb.laneAdapter, controller: tb.controller,
+                    id: tb.id, laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
+                    controller: tb.controller,
                     connectedDevice: tb.connectedDevice, mode: refineMode(tb.mode, with: acc),
                     attachedUSBDevices: tb.attachedUSBDevices, tunnels: tb.tunnels,
                     accessory: acc
@@ -173,10 +190,11 @@ enum TopologyMapper {
             } else {
                 // HPM port with no matching TB controller (rare; fall back to a
                 // synthetic stub that still surfaces the receptacle in the UI).
+                let stub = synthLane(accessoryID: acc.id)
                 out.append(PhysicalPort(
                     number: acc.portNumber,
-                    id: acc.id, laneAdapter: synthLane(accessoryID: acc.id),
-                    controller: synthLane(accessoryID: acc.id),
+                    id: acc.id, laneAdapter: stub, linkLane: nil,
+                    controller: stub,
                     connectedDevice: nil, mode: modeFromAccessory(acc),
                     attachedUSBDevices: [], tunnels: [],
                     accessory: acc
@@ -187,7 +205,8 @@ enum TopologyMapper {
         for (i, tb) in remainingTB.enumerated() {
             out.append(PhysicalPort(
                 number: out.count + i + 1,
-                id: tb.id, laneAdapter: tb.laneAdapter, controller: tb.controller,
+                id: tb.id, laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
+                controller: tb.controller,
                 connectedDevice: tb.connectedDevice, mode: tb.mode,
                 attachedUSBDevices: tb.attachedUSBDevices, tunnels: tb.tunnels,
                 accessory: nil
@@ -228,11 +247,26 @@ enum TopologyMapper {
         guard let root = findRootSwitch(in: controller) else { return nil }
 
         let lanes = root.children.filter { isLaneAdapter($0) }
-        let active = lanes.first(where: { downstreamSwitch(of: $0) != nil })
-        let chosen = active ?? lanes.sorted(by: portOrder).first
+        let chosen: TBNode?
+        var linkLane: TBNode?
+        var dockSwitch: TBNode?
+
+        // Prefer a lane whose subtree contains a downstream switch — that's
+        // the one carrying live traffic. Capture both the peer lane and the
+        // switch in one pass so we don't BFS the same subtree twice.
+        if let match = lanes.compactMap({ lane -> (TBNode, TBNode, TBNode)? in
+            guard let (peer, sw) = findDownstreamLink(under: lane) else { return nil }
+            return (lane, peer, sw)
+        }).first {
+            chosen = match.0
+            linkLane = match.1
+            dockSwitch = match.2
+        } else {
+            chosen = lanes.sorted(by: portOrder).first
+        }
         guard let lane = chosen else { return nil }
 
-        let connected = downstreamSwitch(of: lane).map { describe(device: $0) }
+        let connected = dockSwitch.map { describe(device: $0) }
         let usbDevices = connected.map { collectUSBDevices(under: $0.routerNode) } ?? []
         let tunnels = connected.map { summariseTunnels(in: $0.routerNode) } ?? []
         let mode = inferMode(lane: lane, connectedDevice: connected, usbDevices: usbDevices)
@@ -241,6 +275,7 @@ enum TopologyMapper {
             number: number,
             id: lane.id,
             laneAdapter: lane,
+            linkLane: linkLane,
             controller: controller,
             connectedDevice: connected,
             mode: mode,
@@ -341,11 +376,26 @@ enum TopologyMapper {
     /// On Apple Silicon the tree is `host lane → peer lane → dock switch`,
     /// so we need to traverse intermediate port nodes.
     private static func downstreamSwitch(of laneAdapter: TBNode) -> TBNode? {
-        var stack = laneAdapter.children
+        findDownstreamLink(under: laneAdapter)?.1
+    }
+
+    /// Like `downstreamSwitch` but also returns the immediate parent port
+    /// of the switch — the "peer lane". The peer lane is where the kernel
+    /// aggregates `Link Bandwidth` and tunnel reservations for the entire
+    /// downstream link. Returns `(peerLane, switch)` or nil if no switch.
+    private static func findDownstreamLink(under laneAdapter: TBNode) -> (TBNode, TBNode)? {
+        // DFS with parent tracking. We want the first switch we hit and the
+        // port wrapper directly above it.
+        var stack: [(TBNode, TBNode)] = []  // (parent, node)
+        for c in laneAdapter.children {
+            stack.append((laneAdapter, c))
+        }
         while !stack.isEmpty {
-            let n = stack.removeFirst()
-            if n.kind == .switch { return n }
-            if n.kind == .port { stack.append(contentsOf: n.children) }
+            let (parent, n) = stack.removeFirst()
+            if n.kind == .switch { return (parent, n) }
+            if n.kind == .port {
+                for c in n.children { stack.append((n, c)) }
+            }
         }
         return nil
     }

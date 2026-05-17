@@ -93,9 +93,18 @@ struct PhysicalPortDetailView: View {
     // MARK: - Stats grid
 
     private var stats: some View {
-        let lane = port.laneAdapter
-        let speed = lane.properties["Current Link Speed"]?.asUInt ?? 0
-        let width = lane.properties["Current Link Width"]?.asUInt ?? 0
+        // Link speed / width / capacity all describe the negotiated link and
+        // are present on both ends of it. Read them from `bandwidthLane`
+        // (peer side when connected) so the numbers match the dock's
+        // Uplink-to-Host card; fall back to `laneAdapter` (host side) when
+        // nothing is plugged in.
+        let lane = port.bandwidthLane
+        let speed = lane.properties["Current Link Speed"]?.asUInt
+            ?? port.laneAdapter.properties["Current Link Speed"]?.asUInt
+            ?? 0
+        let width = lane.properties["Current Link Width"]?.asUInt
+            ?? port.laneAdapter.properties["Current Link Width"]?.asUInt
+            ?? 0
         let bw = lane.properties["Link Bandwidth"]?.asUInt ?? 0
         let acc = port.accessory
 
@@ -137,9 +146,13 @@ struct PhysicalPortDetailView: View {
                     .foregroundStyle(.secondary)
                     .font(.callout)
                 if case .thunderbolt = port.mode {
-                    let bw = port.laneAdapter.properties["Link Bandwidth"]?.asUInt ?? 0
-                    let req = port.laneAdapter.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
-                    let maxBw = port.laneAdapter.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
+                    // Use the peer lane (just above the connected switch) so
+                    // the bandwidth bar shows the tunnel reservations for the
+                    // full link to the dock, not the host's local share.
+                    let lane = port.bandwidthLane
+                    let bw = lane.properties["Link Bandwidth"]?.asUInt ?? 0
+                    let req = lane.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
+                    let maxBw = lane.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
                     if bw > 0 {
                         BandwidthBar(linkBandwidth: bw, required: req, maximum: maxBw)
                             .padding(.top, 6)

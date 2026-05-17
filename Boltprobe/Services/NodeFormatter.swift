@@ -26,6 +26,13 @@ enum NodeFormatter {
         if cls == "IOPCIDevice" { return .pcieDevice }
         if cls == "IOUSBHostInterface" || cls == "IOUSBInterface" { return .usbInterface }
         if cls == "IOUSBHostDevice" || cls == "IOUSBDevice" { return .usbDevice }
+        // Port wrappers inside an xHCI controller (e.g. `AppleUSBXHCIAUSSPort`)
+        // share the "USBXHCI" infix but are *not* host controllers — they are
+        // individual port nodes within a controller. Don't classify them as
+        // controllers or they show up as fake "USB Host Controller" rows.
+        if cls.hasSuffix("Port") || cls.contains("XHCIPort") || cls.contains("Port@") {
+            return .other
+        }
         if cls.contains("USBHostController")
             || cls == "AppleUSBXHCI"
             || cls.contains("USBXHCI")

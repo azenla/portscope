@@ -20,6 +20,13 @@ enum USBScanner {
             for svc in IORegBridge.services(matchingClass: cls) {
                 defer { IOObjectRelease(svc) }
                 guard let id = IORegBridge.entryID(of: svc), !seen.contains(id) else { continue }
+                // IOServiceMatching returns subclasses too. Filter out port
+                // wrappers (e.g. `AppleUSBXHCIAUSSPort`) that inherit from the
+                // controller base class but represent individual USB ports.
+                if let svcCls = IORegBridge.className(of: svc),
+                   svcCls.hasSuffix("Port") || svcCls.contains("XHCIPort") {
+                    continue
+                }
                 seen.insert(id)
                 let tbAncestor = findTBSwitchAncestor(of: svc)
                 if let node = NodeBuilder.build(from: svc) {

@@ -244,7 +244,64 @@ private struct ControllerBranch: View {
     @Binding var expanded: Set<TBNodeID>
 
     var body: some View {
-        FullTopologyRow(node: node, depth: 0, expanded: $expanded)
+        let kids = node.children.filter { $0.kind != .other }
+        DisclosureGroup(
+            isExpanded: Binding(
+                get: { expanded.contains(node.id) || isAttachedHost },
+                set: { isOn in
+                    if isOn { expanded.insert(node.id) } else { expanded.remove(node.id) }
+                }
+            )
+        ) {
+            ForEach(kids, id: \.id) { child in
+                FullTopologyRow(node: child, depth: 1, expanded: $expanded)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: node.kind.sfSymbol)
+                    .foregroundStyle(node.kind.accentColor)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(node.title).lineLimit(1).font(.callout)
+                    Text(enrichedSubtitle).font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .tag(node.id)
+    }
+
+    /// True when a downstream router with depth > 0 lives under this controller.
+    private var isAttachedHost: Bool {
+        return connectedDeviceTitle != nil
+    }
+
+    /// Pull a meaningful subtitle from the tree: the name of the external device
+    /// downstream, or "No external device" if the controller is idle. Falls
+    /// back to the formatter-generated subtitle when nothing useful is found.
+    private var enrichedSubtitle: String {
+        if let dev = connectedDeviceTitle {
+            return "Connected · \(dev)"
+        }
+        return "No external device"
+    }
+
+    /// Search the controller's subtree for the first external router (depth > 0).
+    private var connectedDeviceTitle: String? {
+        var stack = node.children
+        while !stack.isEmpty {
+            let n = stack.removeFirst()
+            if n.kind == .switch, (n.properties["Depth"]?.asUInt ?? 0) > 0 {
+                let vendor = n.properties["Device Vendor Name"]?.asString
+                let model = n.properties["Device Model Name"]?.asString
+                if let v = vendor, let m = model { return "\(v) \(m)" }
+                if let m = model { return m }
+                return n.title
+            }
+            stack.append(contentsOf: n.children)
+        }
+        return nil
     }
 }
 

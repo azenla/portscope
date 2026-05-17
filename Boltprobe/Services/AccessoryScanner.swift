@@ -89,14 +89,23 @@ enum AccessoryScanner {
         var offered: [USBPDOption] = []
         var brickID: USBPDOption?
 
+        // `IOPortFeaturePowerIn` is the canonical class of the "Power In"
+        // wrapper child. Matching by class is more robust than matching by
+        // name (the kernel sometimes appends bracketed status markers to the
+        // human name string, e.g. "USB-PD [*]" for the currently-active one).
         for child in IORegBridge.children(of: entry) {
             defer { IOObjectRelease(child) }
-            guard let name = IORegBridge.name(of: child), name == "Power In" else { continue }
+            guard let cls = IORegBridge.className(of: child),
+                  cls == "IOPortFeaturePowerIn" else { continue }
 
             for source in IORegBridge.children(of: child) {
                 defer { IOObjectRelease(source) }
-                guard let sourceName = IORegBridge.name(of: source) else { continue }
+                guard let sourceCls = IORegBridge.className(of: source),
+                      sourceCls == "IOPortFeaturePowerSource" else { continue }
                 let p = IORegBridge.properties(of: source)
+                let sourceName = (p["PowerSourceName"]?.asString)
+                    ?? IORegBridge.name(of: source)
+                    ?? ""
                 let options = parsePDOArray(p["PowerSourceOptions"])
                 let win = parsePDODict(p["WinningPowerSourceOption"])
 
@@ -105,9 +114,13 @@ enum AccessoryScanner {
                     winning = win
                     offered = options
                 case "Brick ID":
-                    brickID = options.first
+                    brickID = options.first ?? win
                 default:
-                    break
+                    // Some chargers expose vendor-specific PDOs (e.g. Apple's
+                    // "Apple Brick ID" or PPS ranges). Treat the first one we
+                    // see as the USB-PD profile if we haven't matched yet.
+                    if winning == nil { winning = win }
+                    if offered.isEmpty { offered = options }
                 }
             }
         }
