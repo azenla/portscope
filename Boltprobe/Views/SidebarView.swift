@@ -301,9 +301,12 @@ private struct USBBranch: View {
     @Binding var expanded: Set<TBNodeID>
 
     var body: some View {
-        // Hide interface nodes in the sidebar — surface them in the device's
-        // detail view instead.
-        let kids = node.children.filter { $0.kind != .usbInterface && $0.kind != .other }
+        // USB host controllers wrap each port in an `.other` kext (e.g.
+        // `AppleUSB20XHCIARMPort`) whose child is the real `IOUSBHostDevice`.
+        // A flat filter would drop the wrapper *and* the device with it —
+        // recurse through wrappers and promote real USB nodes up. Interfaces
+        // are hidden here and shown only in the device's detail view.
+        let kids = promotedUSBChildren(of: node)
         if kids.isEmpty {
             label.tag(node.id)
         } else {
@@ -351,6 +354,21 @@ private func promotedChildren(of node: TBNode) -> [TBNode] {
         if c.kind == .other {
             out.append(contentsOf: promotedChildren(of: c))
         } else {
+            out.append(c)
+        }
+    }
+    return out
+}
+
+/// Same recursion as `promotedChildren` but also hides USB interfaces — they
+/// don't carry their own subtree worth navigating and the device detail view
+/// surfaces them in a dedicated section.
+private func promotedUSBChildren(of node: TBNode) -> [TBNode] {
+    var out: [TBNode] = []
+    for c in node.children {
+        if c.kind == .other {
+            out.append(contentsOf: promotedUSBChildren(of: c))
+        } else if c.kind != .usbInterface {
             out.append(c)
         }
     }

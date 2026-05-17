@@ -92,8 +92,10 @@ extension PhysicalPort {
             if width > 0 { parts.append("×\(width)") }
             return parts.joined(separator: " · ")
         case .usbOnly(let s):
-            if let s, s > 0 { return "USB · \(usbSpeedShortLabel(s))" }
-            return "USB"
+            var parts: [String] = ["USB"]
+            if let s, s > 0 { parts.append(usbSpeedShortLabel(s)) }
+            if accessory?.carriesDisplay == true { parts.append("+ DP") }
+            return parts.joined(separator: " · ")
         case .displayOnly: return "Display"
         case .unknown: return "Link up"
         }
@@ -129,6 +131,7 @@ enum TopologyMapper {
         let tbPorts = snapshot.tb.controllers.compactMap {
             makePort(number: 0, controller: $0, accessory: nil)
         }
+        let usbByPort = usbDevicesByPort(in: snapshot.usb)
         let usbCAccessories = snapshot.accessories.filter {
             if case .usbC = $0.connector { return true }
             return false
@@ -137,12 +140,14 @@ enum TopologyMapper {
         guard !usbCAccessories.isEmpty else {
             // No HPM data — number ports by TB controller iteration order.
             return tbPorts.enumerated().map { idx, p in
-                PhysicalPort(
-                    number: idx + 1,
+                let portNumber = idx + 1
+                return PhysicalPort(
+                    number: portNumber,
                     id: p.id, laneAdapter: p.laneAdapter, linkLane: p.linkLane,
                     controller: p.controller,
                     connectedDevice: p.connectedDevice, mode: p.mode,
-                    attachedUSBDevices: p.attachedUSBDevices, tunnels: p.tunnels,
+                    attachedUSBDevices: usbByPort[portNumber] ?? p.attachedUSBDevices,
+                    tunnels: p.tunnels,
                     accessory: nil
                 )
             }
@@ -178,13 +183,16 @@ enum TopologyMapper {
 
         var out: [PhysicalPort] = []
         for (acc, tb) in paired {
+            let usbDevices = usbByPort[acc.portNumber] ?? []
             if let tb {
+                let refinedMode = refineMode(tb.mode, with: acc, usbDevices: usbDevices)
                 out.append(PhysicalPort(
                     number: acc.portNumber,
                     id: tb.id, laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
                     controller: tb.controller,
-                    connectedDevice: tb.connectedDevice, mode: refineMode(tb.mode, with: acc),
-                    attachedUSBDevices: tb.attachedUSBDevices, tunnels: tb.tunnels,
+                    connectedDevice: tb.connectedDevice, mode: refinedMode,
+                    attachedUSBDevices: usbDevices.isEmpty ? tb.attachedUSBDevices : usbDevices,
+                    tunnels: tb.tunnels,
                     accessory: acc
                 ))
             } else {
@@ -195,22 +203,64 @@ enum TopologyMapper {
                     number: acc.portNumber,
                     id: acc.id, laneAdapter: stub, linkLane: nil,
                     controller: stub,
-                    connectedDevice: nil, mode: modeFromAccessory(acc),
-                    attachedUSBDevices: [], tunnels: [],
+                    connectedDevice: nil, mode: modeFromAccessory(acc, usbDevices: usbDevices),
+                    attachedUSBDevices: usbDevices, tunnels: [],
                     accessory: acc
                 ))
             }
         }
         // Append any leftover TB controllers (uncommon: HPM count < TB count).
         for (i, tb) in remainingTB.enumerated() {
+            let portNumber = out.count + i + 1
             out.append(PhysicalPort(
-                number: out.count + i + 1,
+                number: portNumber,
                 id: tb.id, laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
                 controller: tb.controller,
                 connectedDevice: tb.connectedDevice, mode: tb.mode,
-                attachedUSBDevices: tb.attachedUSBDevices, tunnels: tb.tunnels,
+                attachedUSBDevices: usbByPort[portNumber] ?? tb.attachedUSBDevices,
+                tunnels: tb.tunnels,
                 accessory: nil
             ))
+        }
+        return out
+    }
+
+    /// Bucket every USB device under a host `usb-drd<N>` controller into a
+    /// physical port number. On Apple Silicon each `AppleT*USBXHCI` reachable
+    /// by `IONameMatch = "usb-drd,…"` is the host-side controller for one
+    /// USB-C receptacle, and its `locationID` high byte is the receptacle
+    /// index — `drd0 → Port 1`, `drd1 → Port 2`, etc.
+    private static func usbDevicesByPort(in snapshot: USBSnapshot) -> [Int: [TBNode]] {
+        var out: [Int: [TBNode]] = [:]
+        for controller in snapshot.controllers {
+            guard let portNumber = physicalPortNumber(forUSBController: controller) else {
+                continue
+            }
+            out[portNumber, default: []] += allUSBDevices(under: controller)
+        }
+        return out
+    }
+
+    private static func physicalPortNumber(forUSBController controller: TBNode) -> Int? {
+        let nameMatch = controller.properties["IONameMatch"]?.asString
+            ?? controller.properties["IONameMatched"]?.asString
+            ?? ""
+        guard nameMatch.hasPrefix("usb-drd") else { return nil }
+        guard let loc = controller.properties["locationID"]?.asUInt else { return nil }
+        return Int(loc >> 24) + 1
+    }
+
+    /// Walk a USB controller's full subtree (including `.other` port wrappers)
+    /// and pull out every USB device / hub. Stable order by sidebar appearance.
+    private static func allUSBDevices(under controller: TBNode) -> [TBNode] {
+        var out: [TBNode] = []
+        var stack = controller.children
+        while !stack.isEmpty {
+            let n = stack.removeFirst()
+            if n.kind == .usbDevice || n.kind == .usbHub {
+                out.append(n)
+            }
+            stack.append(contentsOf: n.children)
         }
         return out
     }
@@ -219,16 +269,18 @@ enum TopologyMapper {
     /// the TB tree thinks is empty might actually be carrying DisplayPort
     /// alt-mode to a connected monitor.
     private static func refineMode(_ mode: PhysicalPortMode,
-                                   with acc: PortAccessoryInfo) -> PhysicalPortMode {
+                                   with acc: PortAccessoryInfo,
+                                   usbDevices: [TBNode]) -> PhysicalPortMode {
         switch mode {
         case .empty, .unknown:
-            return modeFromAccessory(acc)
+            return modeFromAccessory(acc, usbDevices: usbDevices)
         default:
             return mode
         }
     }
 
-    private static func modeFromAccessory(_ acc: PortAccessoryInfo) -> PhysicalPortMode {
+    private static func modeFromAccessory(_ acc: PortAccessoryInfo,
+                                          usbDevices: [TBNode]) -> PhysicalPortMode {
         // HPDAsserted can linger after a display is unplugged. If nothing is
         // currently connected, treat the port as empty regardless of any
         // residual signal state.
@@ -236,7 +288,19 @@ enum TopologyMapper {
             return .empty
         }
         if acc.carriesThunderbolt { return .thunderbolt(linkSpeed: 0) }
-        if acc.activeTransports.contains(.usb3) { return .usbOnly(speed: nil) }
+        // USB is the primary mode whenever a USB pair is active — even if DP
+        // alt-mode is also live (e.g. a 5-in-1 USB-C hub that drives both a
+        // display and a few USB devices). Some hubs only enumerate over USB 2,
+        // so don't gate on USB3 alone.
+        let usbActive = acc.activeTransports.contains(.usb3)
+            || acc.activeTransports.contains(.usb2)
+            || !usbDevices.isEmpty
+        if usbActive {
+            let highest = usbDevices.compactMap {
+                $0.properties["Device Speed"]?.asUInt ?? $0.properties["kUSBCurrentSpeed"]?.asUInt
+            }.max()
+            return .usbOnly(speed: highest)
+        }
         if acc.activeTransports.contains(.displayPort) { return .displayOnly }
         if acc.connection.isConnected { return .unknown }
         return .empty

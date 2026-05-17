@@ -441,14 +441,18 @@ private struct AdapterChip: View {
         let isInactive = desc == "Port is inactive"
         let speed = port.properties["Current Link Speed"]?.asUInt ?? 0
         let required = port.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
-        let highlight = isLane ? (speed > 0) : (required > 0)
+        let maxAlloc = port.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
+        let hopActive = hasActiveHopTable(port)
+        let highlight = isLane ? (speed > 0) : (required > 0 || maxAlloc > 0 || hopActive)
 
         HStack(spacing: 5) {
             Text("Port \(n)").font(.caption2.monospacedDigit())
             if let trailing = trailingLabel(isLane: isLane,
                                             isInactive: isInactive,
                                             speed: speed,
-                                            required: required) {
+                                            required: required,
+                                            maxAlloc: maxAlloc,
+                                            hopActive: hopActive) {
                 Text(trailing)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -462,17 +466,39 @@ private struct AdapterChip: View {
         .clipShape(Capsule())
     }
 
+    /// True if the port's `Hop Table` has at least one entry — the kernel-
+    /// authoritative signal that a tunnel is currently routed through this
+    /// adapter, regardless of whatever bandwidth value it reports.
+    private func hasActiveHopTable(_ port: TBNode) -> Bool {
+        if case .array(let entries) = port.properties["Hop Table"], !entries.isEmpty {
+            return true
+        }
+        return false
+    }
+
     private func trailingLabel(isLane: Bool,
                                isInactive: Bool,
                                speed: UInt64,
-                               required: UInt64) -> String? {
+                               required: UInt64,
+                               maxAlloc: UInt64,
+                               hopActive: Bool) -> String? {
         if isInactive { return nil }
         if isLane {
             return speed > 0 ? tbGenerationShortLabel(speed) : "Idle"
         }
-        // Function adapter (DP / USB / PCIe). Show reserved bandwidth if any.
-        if required > 0 {
-            return tbBandwidthLabel(required)
+        // Function adapter (DP / USB / PCIe). The kernel sometimes reports a
+        // placeholder `Required Bandwidth Allocated = 1` (= 100 Mb/s) on an
+        // active tunnel — DP streams in particular reserve almost nothing on
+        // the TB link. Prefer the planned `Maximum Bandwidth Allocated` when
+        // it's larger; fall back to "Active" when the tunnel is up but the
+        // bandwidth fields are unreliable.
+        let meaningful: UInt64 = 10 // ≥1 Gb/s = a real reservation, not a token
+        let bestValue = max(required, maxAlloc)
+        if bestValue >= meaningful {
+            return tbBandwidthLabel(bestValue)
+        }
+        if hopActive || bestValue > 0 {
+            return "Active"
         }
         return "Unused"
     }
