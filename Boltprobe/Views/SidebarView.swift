@@ -87,8 +87,9 @@ struct SidebarView: View {
             DiagramView(snapshot: vm.snapshot)
         }
         .onAppear {
-            // Auto-expand ports that have a device attached.
-            for p in ports where p.connectedDevice != nil {
+            // Auto-expand any port with something attached — TB device or
+            // a populated USB bus.
+            for p in ports where p.connectedDevice != nil || !p.usbDeviceRoots.isEmpty {
                 expanded.insert(PhysicalPortSelector.id(for: p))
             }
         }
@@ -104,9 +105,9 @@ private struct PortBranch: View {
     var body: some View {
         let selectionID = PhysicalPortSelector.id(for: port)
         let device = port.connectedDevice
-        let usbDevices = port.attachedUSBDevices.prefix(6)
+        let roots = port.usbDeviceRoots
 
-        if device == nil && port.attachedUSBDevices.isEmpty {
+        if device == nil && roots.isEmpty {
             PortRow(port: port).tag(selectionID)
         } else {
             DisclosureGroup(
@@ -121,13 +122,13 @@ private struct PortBranch: View {
                 if let device {
                     DeviceBranch(device: device, expanded: $expanded)
                 }
-                ForEach(Array(usbDevices), id: \.id) { dev in
-                    USBLeafRow(node: dev).tag(dev.id)
-                }
-                if port.attachedUSBDevices.count > usbDevices.count {
-                    Text("+ \(port.attachedUSBDevices.count - usbDevices.count) more USB")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                // Render the real USB bus hierarchy: top-level hubs become
+                // disclosure rows that expand into their downstream devices,
+                // matching what `ioreg -c IOUSBHostDevice` shows. Pass depth
+                // 0 so the top-level hubs auto-expand to reveal what's
+                // immediately under them; nested hubs stay collapsed.
+                ForEach(roots, id: \.id) { dev in
+                    USBBranch(node: dev, depth: 0, expanded: $expanded)
                 }
             } label: {
                 PortRow(port: port).tag(selectionID)
@@ -199,23 +200,6 @@ private struct DeviceRow: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                }
-            }
-        }
-    }
-}
-
-private struct USBLeafRow: View {
-    let node: TBNode
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: node.kind.sfSymbol)
-                .foregroundStyle(node.kind.accentColor)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(node.title).lineLimit(1).font(.callout)
-                if let s = node.subtitle, !s.isEmpty {
-                    Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }

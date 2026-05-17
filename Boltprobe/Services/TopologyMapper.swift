@@ -31,7 +31,12 @@ struct PhysicalPort {
     /// Inferred operating mode of the port. Drives the badge/colour in the UI.
     let mode: PhysicalPortMode
     /// USB devices reachable through this port (flat list, hubs included).
+    /// Used for stats and the "via this port" overview card.
     let attachedUSBDevices: [TBNode]
+    /// Top-level USB hubs/devices reachable through this port, each carrying
+    /// its full IOKit subtree. The sidebar uses this to render the real bus
+    /// hierarchy instead of a flat list.
+    let usbDeviceRoots: [TBNode]
     /// Tunnel summaries on the port's connected router (active tunnels by class).
     let tunnels: [PortTunnel]
     /// Per-receptacle runtime state from `IOAccessoryManager`, when available.
@@ -141,12 +146,14 @@ enum TopologyMapper {
             // No HPM data — number ports by TB controller iteration order.
             return tbPorts.enumerated().map { idx, p in
                 let portNumber = idx + 1
+                let usb = usbByPort[portNumber]
                 return PhysicalPort(
                     number: portNumber,
                     id: p.id, laneAdapter: p.laneAdapter, linkLane: p.linkLane,
                     controller: p.controller,
                     connectedDevice: p.connectedDevice, mode: p.mode,
-                    attachedUSBDevices: usbByPort[portNumber] ?? p.attachedUSBDevices,
+                    attachedUSBDevices: usb?.flat ?? p.attachedUSBDevices,
+                    usbDeviceRoots: usb?.roots ?? p.usbDeviceRoots,
                     tunnels: p.tunnels,
                     accessory: nil
                 )
@@ -183,15 +190,16 @@ enum TopologyMapper {
 
         var out: [PhysicalPort] = []
         for (acc, tb) in paired {
-            let usbDevices = usbByPort[acc.portNumber] ?? []
+            let usb = usbByPort[acc.portNumber] ?? (flat: [], roots: [])
             if let tb {
-                let refinedMode = refineMode(tb.mode, with: acc, usbDevices: usbDevices)
+                let refinedMode = refineMode(tb.mode, with: acc, usbDevices: usb.flat)
                 out.append(PhysicalPort(
                     number: acc.portNumber,
                     id: tb.id, laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
                     controller: tb.controller,
                     connectedDevice: tb.connectedDevice, mode: refinedMode,
-                    attachedUSBDevices: usbDevices.isEmpty ? tb.attachedUSBDevices : usbDevices,
+                    attachedUSBDevices: usb.flat.isEmpty ? tb.attachedUSBDevices : usb.flat,
+                    usbDeviceRoots: usb.roots.isEmpty ? tb.usbDeviceRoots : usb.roots,
                     tunnels: tb.tunnels,
                     accessory: acc
                 ))
@@ -203,8 +211,10 @@ enum TopologyMapper {
                     number: acc.portNumber,
                     id: acc.id, laneAdapter: stub, linkLane: nil,
                     controller: stub,
-                    connectedDevice: nil, mode: modeFromAccessory(acc, usbDevices: usbDevices),
-                    attachedUSBDevices: usbDevices, tunnels: [],
+                    connectedDevice: nil, mode: modeFromAccessory(acc, usbDevices: usb.flat),
+                    attachedUSBDevices: usb.flat,
+                    usbDeviceRoots: usb.roots,
+                    tunnels: [],
                     accessory: acc
                 ))
             }
@@ -212,12 +222,14 @@ enum TopologyMapper {
         // Append any leftover TB controllers (uncommon: HPM count < TB count).
         for (i, tb) in remainingTB.enumerated() {
             let portNumber = out.count + i + 1
+            let usb = usbByPort[portNumber]
             out.append(PhysicalPort(
                 number: portNumber,
                 id: tb.id, laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
                 controller: tb.controller,
                 connectedDevice: tb.connectedDevice, mode: tb.mode,
-                attachedUSBDevices: usbByPort[portNumber] ?? tb.attachedUSBDevices,
+                attachedUSBDevices: usb?.flat ?? tb.attachedUSBDevices,
+                usbDeviceRoots: usb?.roots ?? tb.usbDeviceRoots,
                 tunnels: tb.tunnels,
                 accessory: nil
             ))
@@ -225,18 +237,38 @@ enum TopologyMapper {
         return out
     }
 
-    /// Bucket every USB device under a host `usb-drd<N>` controller into a
-    /// physical port number. On Apple Silicon each `AppleT*USBXHCI` reachable
-    /// by `IONameMatch = "usb-drd,…"` is the host-side controller for one
-    /// USB-C receptacle, and its `locationID` high byte is the receptacle
-    /// index — `drd0 → Port 1`, `drd1 → Port 2`, etc.
-    private static func usbDevicesByPort(in snapshot: USBSnapshot) -> [Int: [TBNode]] {
-        var out: [Int: [TBNode]] = [:]
+    /// Per-port flat list of every USB device reachable through this port,
+    /// plus the top-level USB roots (so the sidebar can render real
+    /// hierarchy). On Apple Silicon each `AppleT*USBXHCI` reachable by
+    /// `IONameMatch = "usb-drd,…"` is the host-side controller for one USB-C
+    /// receptacle, and its `locationID` high byte is the receptacle index —
+    /// `drd0 → Port 1`, `drd1 → Port 2`, etc.
+    private static func usbDevicesByPort(in snapshot: USBSnapshot) -> [Int: (flat: [TBNode], roots: [TBNode])] {
+        var out: [Int: (flat: [TBNode], roots: [TBNode])] = [:]
         for controller in snapshot.controllers {
             guard let portNumber = physicalPortNumber(forUSBController: controller) else {
                 continue
             }
-            out[portNumber, default: []] += allUSBDevices(under: controller)
+            var bucket = out[portNumber] ?? (flat: [], roots: [])
+            bucket.flat += allUSBDevices(under: controller)
+            bucket.roots += topLevelUSBDevices(under: controller)
+            out[portNumber] = bucket
+        }
+        return out
+    }
+
+    /// Top-level USB hubs/devices directly attached to this controller —
+    /// recurse through `.other` port wrappers (`AppleUSB20XHCIARMPort` etc.)
+    /// but stop at the first real `IOUSBHostDevice`. Each returned node keeps
+    /// its full subtree intact so the sidebar can show nested hubs.
+    private static func topLevelUSBDevices(under node: TBNode) -> [TBNode] {
+        var out: [TBNode] = []
+        for c in node.children {
+            if c.kind == .usbDevice || c.kind == .usbHub {
+                out.append(c)
+            } else if c.kind == .other {
+                out.append(contentsOf: topLevelUSBDevices(under: c))
+            }
         }
         return out
     }
@@ -350,6 +382,7 @@ enum TopologyMapper {
             connectedDevice: connected,
             mode: mode,
             attachedUSBDevices: usbDevices,
+            usbDeviceRoots: [],
             tunnels: tunnels,
             accessory: accessory
         )
