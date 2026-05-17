@@ -138,14 +138,13 @@ private struct ControllerView: View {
         VStack(alignment: .leading, spacing: 16) {
             // Find the controller's root router (depth 0) to show port summary.
             let rootRouter = node.children.compactMap { findRoot($0) }.first
+            let externalDevice = firstExternalDeviceName(in: node)
+            let externalCount = countExternalRouters(in: node)
 
             StatGrid(stats: [
-                Stat(label: "Generation",
-                     value: node.properties["Generation"]?.display ?? "—",
-                     symbol: "cpu"),
-                Stat(label: "User Client API",
-                     value: "v\(node.properties["User Client Version"]?.display ?? "—")",
-                     symbol: "gearshape"),
+                Stat(label: "Connected Device",
+                     value: externalDevice ?? "None",
+                     symbol: externalDevice == nil ? "circle.dashed" : "shippingbox"),
                 Stat(label: "Time Sync (TMU)",
                      value: tmuLabel(node.properties["TMU Mode"]?.asUInt),
                      symbol: "clock"),
@@ -155,9 +154,12 @@ private struct ControllerView: View {
                 Stat(label: "Total Adapters",
                      value: rootRouter.map { "\($0.children.count)" } ?? "—",
                      symbol: "rectangle.connected.to.line.below"),
-                Stat(label: "Connected Routers",
-                     value: "\(countExternalRouters(in: node))",
-                     symbol: "link")
+                Stat(label: "Routers in Chain",
+                     value: "\(externalCount)",
+                     symbol: "link"),
+                Stat(label: "Domain UUID",
+                     value: domainUUID() ?? "—",
+                     symbol: "number")
             ])
 
             if let root = rootRouter {
@@ -166,6 +168,32 @@ private struct ControllerView: View {
                                  onNavigate: onNavigate)
             }
         }
+    }
+
+    /// Walk the controller's tree to find the first external (depth > 0)
+    /// router and pull a humanised vendor/model label off it.
+    private func firstExternalDeviceName(in n: TBNode) -> String? {
+        var stack = n.children
+        while !stack.isEmpty {
+            let cur = stack.removeFirst()
+            if cur.kind == .switch, (cur.properties["Depth"]?.asUInt ?? 0) > 0 {
+                let vendor = cur.properties["Device Vendor Name"]?.asString
+                let model = cur.properties["Device Model Name"]?.asString
+                if let v = vendor, let m = model { return "\(v) \(m)" }
+                if let m = model { return m }
+                return cur.title
+            }
+            stack.append(contentsOf: cur.children)
+        }
+        return nil
+    }
+
+    /// Pull the local node's domain UUID. Lives one level under the controller.
+    private func domainUUID() -> String? {
+        for c in node.children where c.kind == .localNode {
+            if let u = c.properties["Domain UUID"]?.asString { return u }
+        }
+        return nil
     }
 
     private func findRoot(_ n: TBNode) -> TBNode? {

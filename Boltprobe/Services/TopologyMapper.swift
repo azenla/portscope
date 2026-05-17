@@ -229,9 +229,15 @@ enum TopologyMapper {
     }
 
     private static func modeFromAccessory(_ acc: PortAccessoryInfo) -> PhysicalPortMode {
+        // HPDAsserted can linger after a display is unplugged. If nothing is
+        // currently connected, treat the port as empty regardless of any
+        // residual signal state.
+        guard acc.connectionActive || acc.detected || !acc.activeTransports.isEmpty else {
+            return .empty
+        }
         if acc.carriesThunderbolt { return .thunderbolt(linkSpeed: 0) }
         if acc.activeTransports.contains(.usb3) { return .usbOnly(speed: nil) }
-        if acc.carriesDisplay { return .displayOnly }
+        if acc.activeTransports.contains(.displayPort) { return .displayOnly }
         if acc.connection.isConnected { return .unknown }
         return .empty
     }

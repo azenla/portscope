@@ -66,7 +66,7 @@ struct PhysicalPortDetailView: View {
                 HStack(spacing: 6) {
                     ModeBadge(mode: port.mode)
                     if let acc = port.accessory {
-                        AccessoryBadges(acc: acc)
+                        AccessoryBadges(acc: acc, suppressDisplay: port.mode == .displayOnly)
                     }
                 }
             }
@@ -86,8 +86,13 @@ struct PhysicalPortDetailView: View {
         if let acc = port.accessory {
             if acc.connection.isConnected { return acc.connection.label }
         }
-        if port.mode == .empty { return "No device connected" }
-        return "Link up"
+        switch port.mode {
+        case .empty: return "No device connected"
+        case .displayOnly: return "Display only"
+        case .usbOnly: return "USB device"
+        case .thunderbolt: return "Thunderbolt device"
+        case .unknown: return "Link up"
+        }
     }
 
     // MARK: - Stats grid
@@ -105,7 +110,10 @@ struct PhysicalPortDetailView: View {
         let width = lane.properties["Current Link Width"]?.asUInt
             ?? port.laneAdapter.properties["Current Link Width"]?.asUInt
             ?? 0
-        let bw = lane.properties["Link Bandwidth"]?.asUInt ?? 0
+        // Only show link capacity when a link is actually up. The host's root
+        // lane advertises potential capacity even when nothing is plugged in,
+        // which would be misleading on empty ports.
+        let bw = speed > 0 ? (lane.properties["Link Bandwidth"]?.asUInt ?? 0) : 0
         let acc = port.accessory
 
         return StatGrid(stats: [
@@ -382,9 +390,13 @@ private struct ModeBadge: View {
 
 private struct AccessoryBadges: View {
     let acc: PortAccessoryInfo
+    /// True when the mode badge already conveys "Display" — skip the
+    /// accessory-side display badge to avoid two adjacent identical chips.
+    let suppressDisplay: Bool
+
     var body: some View {
         HStack(spacing: 6) {
-            if acc.carriesDisplay {
+            if acc.carriesDisplay && !suppressDisplay {
                 badge("Display", icon: "display", color: .pink)
             }
             if acc.activeCable {

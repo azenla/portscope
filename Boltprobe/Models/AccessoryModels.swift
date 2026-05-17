@@ -268,8 +268,13 @@ struct PortAccessoryInfo: Identifiable, Hashable {
 
     /// Whether this port is currently carrying Thunderbolt / USB4 (CIO transport).
     var carriesThunderbolt: Bool { activeTransports.contains(.cio) }
-    /// Whether this port is driving a display.
-    var carriesDisplay: Bool { activeTransports.contains(.displayPort) || hpdAsserted }
+    /// Whether this port is actively driving a display. Requires the
+    /// connection to actually be live — `HPDAsserted` alone can linger from
+    /// a previous attachment even after the cable is unplugged.
+    var carriesDisplay: Bool {
+        guard connectionActive else { return false }
+        return activeTransports.contains(.displayPort) || hpdAsserted
+    }
 
     /// Vendor & product label, e.g. `"Infineon (VID 0x291A · PID 0x83B5)"`.
     var cableLabel: String? {
