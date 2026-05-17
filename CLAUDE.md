@@ -54,6 +54,8 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 - `Models/AccessoryModels.swift` — `PortAccessoryInfo` (per-physical-receptacle struct), `USBPDProfile` (winning + offered + brick-ID PDOs), `USBPDOption` (a single fixed-voltage PDO with volt / current / power labels), `USBCTransport` (`.cc / .usb2 / .usb3 / .cio / .displayPort / .other`), `PlugOrientation`, `AccessoryConnection` ("Device" / "Host" / "Audio Adapter" / "Debug" / none), `PortConnectorType` (`.usbC / .magsafe / .other`), and `displayPortPinAssignmentLabel(_:)` for the USB-IF Type-C alt-mode pin assignments A..F.
 
+  `PhysicalPortMode` (in `USBModels.swift`) is `.empty | .thunderbolt(linkSpeed) | .usbOnly(speed?) | .displayOnly | .unknown` — `.displayOnly` is used when a port is carrying only DisplayPort alt-mode (no TB tunnel, no USB SuperSpeed pair active).
+
 ### ViewModel
 
 - `ViewModels/BoltprobeViewModel.swift` — `@MainActor ObservableObject`. Owns the `SystemSnapshot`, runs both scanners off-main via `Task.detached`, debounces hot-plug rescans, and exposes selection plus `node(for:)` / `parent(of:)` lookups. `selectionRoots` walks **TB controllers + USB controllers + TB-tunneled PCIe/USB flat lists**, so both sidebar trees resolve.
@@ -63,10 +65,10 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 ### Views
 
 - `Views/SidebarView.swift` — four-section nav:
-  1. **Physical Ports** — `PhysicalPort` rows showing mode-coloured icon and live status (`Thunderbolt · TB5 · ×2`, `USB · USB 3.0`, `Empty`). Expanding reveals the connected TB device and up to 6 USB devices reachable through that port.
-  2. **Thunderbolt** — controllers expand into the full TB tree (uses `FullTopologyRow`).
+  1. **Physical Ports** — rows labelled `USB-C Port N` with a mode-coloured icon and live status (`Thunderbolt · TB5 · ×2`, `USB · USB 3.0`, `Empty`). Expanding reveals the connected TB device and up to 6 USB devices reachable through that port.
+  2. **Thunderbolt** — TB host controllers each expand into their tree via `FullTopologyRow`. The controller's own row carries an enriched subtitle (`Connected · <vendor> <model>` when a depth>0 router lives downstream, else `No external device`).
   3. **USB** — USB host controllers expand into hubs/devices. `.usbInterface` and `.other` children are hidden in this section to keep it clean (interfaces appear in the device's detail view).
-  4. **Full Topology** disclosure — raw IOKit tree with `kind == .other` wrappers filtered out and their meaningful descendants promoted up.
+  4. **Full Topology** disclosure — `FullTopologyRow` over the TB controllers; identical recursion to the Thunderbolt section except (a) it doesn't show the enriched "connected device" subtitle on the controller row and (b) it doesn't auto-expand attached hosts. `FullTopologyRow` filters out `.other` wrappers and *recursively promotes* their meaningful descendants up (e.g. IOService wrappers around real TB ports).
 
 - `Views/DetailView.swift` — kind-specific summary cards. Dispatches on `TBNodeKind`: `.controller` → `ControllerView`, `.switch` → `RouterView`, `.port` → `PortView`, `.usbController` → `USBControllerView`, `.usbHub` → `USBHubView`, `.usbDevice` → `USBDeviceView`, `.usbInterface` → `USBInterfaceView`. Hosts the **`Developer details` disclosure** at the bottom that embeds `PropertyTableView` for the raw IORegistry dump. Receives both a `parentLookup` closure (for `RouterView.findUpstreamLane()`) and a **`tbContextForUSB`** closure that resolves a USB controller's TB switch ancestor; `DetailView.ancestorTBContext(for:)` walks parents to find the enclosing USB controller, then queries the closure.
 
@@ -74,7 +76,7 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 - `Views/PhysicalPortDetailView.swift` — shown when the selection is a `PhysicalPortSelector` synthetic ID. Hero header with mode badge + accessory badges (display / active cable / optical / plug count) + a USB-PD wattage callout in the top-right when power is flowing. Stat grid (operating mode, link speed, lane width, link capacity, power-in, plug orientation, TB device count, USB device count), mode-explanation prose, TB bandwidth bar in TB mode, **Active Transports** card with chips for CC / USB 2 / USB 3 / Thunderbolt-USB4 / DisplayPort showing active vs provisioned vs supported, **Connector & Cable** card with cable type + e-marker VID/PID/manufacturer + lifetime plug & overcurrent counts, **USB Power Delivery** card with a big winning-PDO display + full PDO table (winner marked with a yellow checkmark), **DisplayPort Alt-Mode** card with HPD state and pin-assignment label, then the existing tunnels / USB / connected-TB-device / Jump-to cards.
 
-- `Views/DiagramView.swift` — sheet-based visual topology. Uses SwiftUI's `anchorPreferences` pattern: every node (`MacBlock`, `PortBox`, `RouterBox`, `AdapterGroupRow`) reports its bounds via `.diagramAnchor(id)`, then the container's `backgroundPreferenceValue(NodeAnchorKey)` reads those anchors and draws connection lines and per-category tunnel paths. Takes a `TBSnapshot` (TB-only) — it intentionally doesn't render USB-only ports.
+- `Views/DiagramView.swift` — sheet-based visual topology. Takes a full `SystemSnapshot` and iterates `TopologyMapper.physicalPorts(from:)` so port numbering and mode info come from the same source as the sidebar. Uses SwiftUI's `anchorPreferences` pattern: every node (`MacBlock`, `PortBox`, `RouterBox`, `AdapterGroupRow`) reports its bounds via `.diagramAnchor(id)`, then the container's `backgroundPreferenceValue(NodeAnchorKey)` reads those anchors and draws connection lines and per-category tunnel paths. `PortBox` label says `USB-C Port N`; rendering still focuses on the TB side — USB-only ports show an empty/connected box but no router or tunnel paths.
 
 - `Views/PropertyTableView.swift` — generic key/value renderer for the Developer-details disclosure. Filterable, expandable rows for `Data`/array/dict values, includes a hex+ASCII dump for `Data`. Uses `TBNode.formatValue(_:_:)` which knows how to pretty-print both TB keys (`Adapter Type`, `Link Bandwidth`, `Current Link Speed`) and USB keys (`bcdUSB`, `bDeviceClass`, `Device Speed`, `idVendor`, `idProduct`).
 

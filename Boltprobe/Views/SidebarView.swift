@@ -99,7 +99,7 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showDiagram) {
-            DiagramView(snapshot: vm.tbSnapshot)
+            DiagramView(snapshot: vm.snapshot)
         }
         .onAppear {
             // Auto-expand ports that have a device attached.

@@ -85,7 +85,7 @@ private enum AdapterCategory: String, Hashable {
 // MARK: - DiagramView
 
 struct DiagramView: View {
-    let snapshot: TBSnapshot
+    let snapshot: SystemSnapshot
     @Environment(\.dismiss) private var dismiss
     @State private var highlight: AdapterCategory? = nil
 
@@ -276,7 +276,7 @@ private struct PortBox: View {
             Image(systemName: connected ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle")
                 .font(.system(size: 22))
                 .foregroundStyle(connected ? Color.blue : .secondary)
-            Text("TB Port \(port.number)").font(.subheadline.bold())
+            Text("USB-C Port \(port.number)").font(.subheadline.bold())
             Text(connected ? "Connected" : "Empty")
                 .font(.caption).foregroundStyle(.secondary)
         }
