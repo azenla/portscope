@@ -24,6 +24,7 @@ struct ContentView: View {
                let port = TopologyMapper.physicalPorts(from: vm.snapshot).first(where: { $0.number == portNumber }) {
                 PhysicalPortDetailView(port: port,
                                        onNavigate: { vm.select($0) })
+                .id(sel)
             } else if let node = vm.node(for: sel) {
                 DetailView(
                     node: node,

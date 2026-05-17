@@ -232,11 +232,17 @@ enum PhysicalPortMode: Hashable {
     }
 }
 
-/// Snapshot of the entire system across TB + USB (+ stubs for fabric).
+/// Snapshot of the entire system across TB + USB + connector-level state.
 struct SystemSnapshot {
     let tb: TBSnapshot
     let usb: USBSnapshot
+    /// Per-physical-port runtime state from `IOAccessoryManager`.
+    /// Empty on Macs that don't expose `AppleHPMInterfaceType10` (e.g. Intel hosts).
+    let accessories: [PortAccessoryInfo]
     let capturedAt: Date
 
-    static let empty = SystemSnapshot(tb: .empty, usb: .empty, capturedAt: .distantPast)
+    static let empty = SystemSnapshot(tb: .empty,
+                                      usb: .empty,
+                                      accessories: [],
+                                      capturedAt: .distantPast)
 }

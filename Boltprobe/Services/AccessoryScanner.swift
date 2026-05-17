@@ -1,0 +1,150 @@
+//
+//  AccessoryScanner.swift
+//  Boltprobe
+//
+//  Walks `AppleHPMInterfaceType10` entries under `IOAccessoryManager` to
+//  capture per-physical-port runtime state. This data is invisible to the
+//  Thunderbolt and USB IOKit families — it lives in IOAccessory, and tells
+//  us what's actually being negotiated on each USB-C / MagSafe receptacle
+//  (active transports, USB-PD voltage, plug orientation, displayport HPD,
+//  cable e-marker info, etc.).
+//
+
+import Foundation
+import IOKit
+
+enum AccessoryScanner {
+    /// Find every `AppleHPMInterfaceType10` service and turn it into a
+    /// `PortAccessoryInfo`. Sorted by physical port number ascending.
+    static func scan() -> [PortAccessoryInfo] {
+        var seen: Set<UInt64> = []
+        var out: [PortAccessoryInfo] = []
+
+        for svc in IORegBridge.services(matchingClass: "AppleHPMInterfaceType10") {
+            defer { IOObjectRelease(svc) }
+            guard let id = IORegBridge.entryID(of: svc), !seen.contains(id) else { continue }
+            seen.insert(id)
+
+            let props = IORegBridge.properties(of: svc)
+            guard let port = makePort(entry: svc, id: id, props: props) else { continue }
+            out.append(port)
+        }
+        out.sort { $0.portNumber < $1.portNumber }
+        return out
+    }
+
+    private static func makePort(entry: io_registry_entry_t,
+                                 id: UInt64,
+                                 props: [String: IORegValue]) -> PortAccessoryInfo? {
+        guard let portNumber = props["PortNumber"]?.asUInt else { return nil }
+
+        let supported = parseTransports(props["TransportsSupported"])
+        let provisioned = parseTransports(props["TransportsProvisioned"])
+        let active = parseTransports(props["TransportsActive"])
+
+        let pd = readUSBPDProfile(under: entry)
+
+        return PortAccessoryInfo(
+            id: TBNodeID(raw: id),
+            portNumber: Int(portNumber),
+            connector: PortConnectorType(props["PortTypeDescription"]?.asString),
+            connection: AccessoryConnection(props["IOAccessoryUSBConnectString"]?.asString),
+            connectionActive: props["ConnectionActive"]?.asBool ?? false,
+            detected: props["IOAccessoryDetect"]?.asBool ?? false,
+            plugOrientation: PlugOrientation(props["PlugOrientation"]?.asUInt),
+            supportedTransports: supported,
+            provisionedTransports: provisioned,
+            activeTransports: active,
+            hpdAsserted: props["HPDAsserted"]?.asBool ?? false,
+            displayPortPinAssignment: props["DisplayPortPinAssignment"]?.asUInt ?? 0,
+            activeCable: props["ActiveCable"]?.asBool ?? false,
+            opticalCable: props["OpticalCable"]?.asBool ?? false,
+            connectionCount: props["ConnectionCount"]?.asUInt ?? 0,
+            plugEventCount: props["Plug Event Count"]?.asUInt ?? 0,
+            overcurrentCount: props["Overcurrent Count"]?.asUInt ?? 0,
+            cableVendorID: readDataAsUInt(props["SOPVID"]),
+            cableProductID: readDataAsUInt(props["SOPPID"]),
+            cableManufacturer: props["SOPMfgString"]?.asString,
+            usbPD: pd,
+            registryProperties: props
+        )
+    }
+
+    /// Parse a `Transports*` array (kernel publishes them as arrays of strings).
+    private static func parseTransports(_ value: IORegValue?) -> Set<USBCTransport> {
+        guard case .array(let arr) = value else { return [] }
+        var out: Set<USBCTransport> = []
+        for v in arr {
+            if case .string(let s) = v { out.insert(USBCTransport(s)) }
+        }
+        return out
+    }
+
+    /// Children of an HPM port include a `Power In` wrapper, which itself has
+    /// a `USB-PD` and (when an Apple charger is plugged in) a `Brick ID`
+    /// `IOPortFeaturePowerSource` child. Walk both to pull the offered + winning
+    /// power profiles.
+    private static func readUSBPDProfile(under entry: io_registry_entry_t) -> USBPDProfile? {
+        var winning: USBPDOption?
+        var offered: [USBPDOption] = []
+        var brickID: USBPDOption?
+
+        for child in IORegBridge.children(of: entry) {
+            defer { IOObjectRelease(child) }
+            guard let name = IORegBridge.name(of: child), name == "Power In" else { continue }
+
+            for source in IORegBridge.children(of: child) {
+                defer { IOObjectRelease(source) }
+                guard let sourceName = IORegBridge.name(of: source) else { continue }
+                let p = IORegBridge.properties(of: source)
+                let options = parsePDOArray(p["PowerSourceOptions"])
+                let win = parsePDODict(p["WinningPowerSourceOption"])
+
+                switch sourceName {
+                case "USB-PD":
+                    winning = win
+                    offered = options
+                case "Brick ID":
+                    brickID = options.first
+                default:
+                    break
+                }
+            }
+        }
+
+        if winning == nil, offered.isEmpty, brickID == nil { return nil }
+        return USBPDProfile(winning: winning, offered: offered, brickID: brickID)
+    }
+
+    private static func parsePDOArray(_ value: IORegValue?) -> [USBPDOption] {
+        guard case .array(let arr) = value else { return [] }
+        var out: [USBPDOption] = []
+        for v in arr {
+            if let opt = parsePDODict(v) { out.append(opt) }
+        }
+        // Sort by voltage so the rendered table reads naturally.
+        out.sort { $0.voltageMV < $1.voltageMV }
+        return out
+    }
+
+    private static func parsePDODict(_ value: IORegValue?) -> USBPDOption? {
+        guard case .dictionary(let kv) = value else { return nil }
+        let dict = Dictionary(kv, uniquingKeysWith: { a, _ in a })
+        guard let v = dict["Voltage (mV)"]?.asUInt,
+              let i = dict["Max Current (mA)"]?.asUInt,
+              let p = dict["Max Power (mW)"]?.asUInt else { return nil }
+        return USBPDOption(voltageMV: v, maxCurrentMA: i, maxPowerMW: p)
+    }
+
+    /// SOPVID / SOPPID come back as 2-byte little-endian `Data` blobs.
+    /// Convert them to a UInt64.
+    private static func readDataAsUInt(_ value: IORegValue?) -> UInt64? {
+        if let v = value?.asUInt { return v }
+        guard case .data(let d) = value else { return nil }
+        var result: UInt64 = 0
+        for (idx, byte) in d.enumerated() where idx < 8 {
+            result |= UInt64(byte) << (idx * 8)
+        }
+        return result == 0 ? nil : result
+    }
+}

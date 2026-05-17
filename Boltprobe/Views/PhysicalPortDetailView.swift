@@ -3,7 +3,9 @@
 //  Boltprobe
 //
 //  Unified per-port view shown when the user selects a Physical Port row.
-//  Aggregates Thunderbolt mode, link state, tunnels, and attached USB devices.
+//  Pulls together TB mode + link state, IOAccessoryManager runtime state
+//  (active transports, USB-PD, plug orientation, displayport HPD, cable
+//  e-marker), and a rolled-up view of TB tunnels and attached USB devices.
 //
 
 import SwiftUI
@@ -18,6 +20,16 @@ struct PhysicalPortDetailView: View {
                 header
                 stats
                 modeCard
+                if port.accessory != nil {
+                    transportsCard
+                    connectorCableCard
+                }
+                if let pd = port.accessory?.usbPD {
+                    powerDeliveryCard(pd: pd)
+                }
+                if let acc = port.accessory, acc.carriesDisplay {
+                    displayCard(acc: acc)
+                }
                 if !port.tunnels.isEmpty {
                     tunnelsCard
                 }
@@ -36,6 +48,8 @@ struct PhysicalPortDetailView: View {
         .background(.background)
     }
 
+    // MARK: - Hero header
+
     private var header: some View {
         HStack(alignment: .center, spacing: 16) {
             ZStack {
@@ -47,24 +61,43 @@ struct PhysicalPortDetailView: View {
                     .foregroundStyle(port.mode.color)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("USB-C Port \(port.number)").font(.title2).bold()
-                if let dev = port.connectedDevice {
-                    Text(dev.title).foregroundStyle(.secondary)
-                } else {
-                    Text(port.mode == .empty ? "No device connected" : "Connected")
-                        .foregroundStyle(.secondary)
+                Text(portTitle).font(.title2).bold()
+                Text(subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    ModeBadge(mode: port.mode)
+                    if let acc = port.accessory {
+                        AccessoryBadges(acc: acc)
+                    }
                 }
-                ModeBadge(mode: port.mode)
             }
             Spacer()
+            if let watts = port.accessory?.usbPD?.winning?.powerLabel {
+                PowerCallout(watts: watts)
+            }
         }
     }
+
+    private var portTitle: String {
+        "USB-C Port \(port.number)"
+    }
+
+    private var subheadline: String {
+        if let dev = port.connectedDevice { return dev.title }
+        if let acc = port.accessory {
+            if acc.connection.isConnected { return acc.connection.label }
+        }
+        if port.mode == .empty { return "No device connected" }
+        return "Link up"
+    }
+
+    // MARK: - Stats grid
 
     private var stats: some View {
         let lane = port.laneAdapter
         let speed = lane.properties["Current Link Speed"]?.asUInt ?? 0
         let width = lane.properties["Current Link Width"]?.asUInt ?? 0
         let bw = lane.properties["Link Bandwidth"]?.asUInt ?? 0
+        let acc = port.accessory
 
         return StatGrid(stats: [
             Stat(label: "Operating Mode",
@@ -79,6 +112,12 @@ struct PhysicalPortDetailView: View {
             Stat(label: "Link Capacity",
                  value: bw > 0 ? tbBandwidthLabel(bw) : "—",
                  symbol: "gauge.with.dots.needle.67percent"),
+            Stat(label: "Power In",
+                 value: acc?.usbPD?.winning?.powerLabel ?? "—",
+                 symbol: "bolt.fill"),
+            Stat(label: "Plug Orientation",
+                 value: acc?.plugOrientation.label ?? "—",
+                 symbol: acc?.plugOrientation.symbol ?? "arrow.up.arrow.down"),
             Stat(label: "TB Devices",
                  value: port.connectedDevice == nil ? "0" : "\(countRouters(port.connectedDevice!))",
                  symbol: "shippingbox"),
@@ -88,11 +127,13 @@ struct PhysicalPortDetailView: View {
         ])
     }
 
+    // MARK: - "What's happening on this port" card
+
     @ViewBuilder
     private var modeCard: some View {
         SectionCard(title: "What's happening on this port", symbol: "info.circle") {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(explanation(for: port.mode))
+            VStack(alignment: .leading, spacing: 8) {
+                Text(explanation(for: port.mode, accessory: port.accessory))
                     .foregroundStyle(.secondary)
                     .font(.callout)
                 if case .thunderbolt = port.mode {
@@ -108,23 +149,129 @@ struct PhysicalPortDetailView: View {
         }
     }
 
-    private func explanation(for mode: PhysicalPortMode) -> String {
+    private func explanation(for mode: PhysicalPortMode, accessory acc: PortAccessoryInfo?) -> String {
         switch mode {
         case .empty:
+            if let acc, acc.detected {
+                return "A connector is inserted but no transport has been negotiated yet."
+            }
             return "Nothing detected on this port. Plug in a Thunderbolt or USB-C device to bring up the link."
         case .thunderbolt(let speed):
-            return "A Thunderbolt device is connected and negotiated at \(tbLinkSpeedLabel(speed))."
+            let speedPart = speed > 0
+                ? " and negotiated at \(tbLinkSpeedLabel(speed))"
+                : ""
+            return "A Thunderbolt / USB4 device is connected\(speedPart)."
         case .usbOnly(let s):
             if let s, s > 0 {
                 return "A USB-C device is connected without Thunderbolt; it negotiated \(usbSpeedLabel(s))."
             }
             return "A USB-C device is connected without Thunderbolt."
         case .displayOnly:
-            return "Only a DisplayPort signal is active on this port."
+            return "DisplayPort is the only active alt-mode on this port — typically a passive HDMI / DP adapter or a monitor connected without USB hub functionality."
         case .unknown:
             return "Link is up but no device is reachable through the registry. Connection may still be negotiating."
         }
     }
+
+    // MARK: - Active transports
+
+    private var transportsCard: some View {
+        SectionCard(title: "Active Transports", symbol: "waveform.path") {
+            VStack(alignment: .leading, spacing: 10) {
+                TransportChipsRow(accessory: port.accessory!)
+                Text(transportsLegend(port.accessory!))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func transportsLegend(_ acc: PortAccessoryInfo) -> String {
+        let active = acc.activeTransports.count
+        let prov = acc.provisionedTransports.count
+        let supp = acc.supportedTransports.count
+        return "\(active) active · \(prov) provisioned · \(supp) supported by the cable & partner."
+    }
+
+    // MARK: - Connector & Cable card
+
+    private var connectorCableCard: some View {
+        let acc = port.accessory!
+        let rows: [InfoRow] = [
+            InfoRow(label: "Connector",
+                    value: acc.connector.label,
+                    symbol: acc.connector.symbol),
+            InfoRow(label: "Connection",
+                    value: acc.connection.label,
+                    symbol: acc.connection.isConnected ? "checkmark.circle.fill" : "circle.dashed",
+                    tint: acc.connection.isConnected ? .green : .secondary),
+            InfoRow(label: "Cable Type",
+                    value: cableTypeLabel(acc),
+                    symbol: "cable.connector"),
+            InfoRow(label: "Cable E-Marker",
+                    value: acc.cableLabel ?? "Not reported",
+                    symbol: "barcode"),
+            InfoRow(label: "Plug Events (since boot)",
+                    value: "\(acc.plugEventCount)",
+                    symbol: "arrow.up.arrow.down.circle"),
+            InfoRow(label: "Overcurrent Events",
+                    value: "\(acc.overcurrentCount)",
+                    symbol: "exclamationmark.triangle",
+                    tint: acc.overcurrentCount > 0 ? .red : .secondary)
+        ]
+        return SectionCard(title: "Connector & Cable", symbol: "cable.connector") {
+            InfoRowsView(rows: rows)
+        }
+    }
+
+    private func cableTypeLabel(_ acc: PortAccessoryInfo) -> String {
+        if acc.opticalCable { return "Optical" }
+        if acc.activeCable { return "Active (powered e-marker)" }
+        if acc.connection.isConnected { return "Passive" }
+        return "—"
+    }
+
+    // MARK: - Power Delivery
+
+    private func powerDeliveryCard(pd: USBPDProfile) -> some View {
+        SectionCard(title: "USB Power Delivery", symbol: "bolt.fill") {
+            VStack(alignment: .leading, spacing: 12) {
+                if let win = pd.winning {
+                    WinningPDO(option: win, brickID: pd.brickID)
+                } else {
+                    Text("No active power profile negotiated.")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                }
+                if !pd.offered.isEmpty {
+                    Divider()
+                    Text("Profiles offered by the source")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    PDOTable(options: pd.offered, winning: pd.winning)
+                }
+            }
+        }
+    }
+
+    // MARK: - DisplayPort
+
+    private func displayCard(acc: PortAccessoryInfo) -> some View {
+        SectionCard(title: "DisplayPort Alt-Mode", symbol: "display") {
+            let rows: [InfoRow] = [
+                InfoRow(label: "Hot-Plug Detect",
+                        value: acc.hpdAsserted ? "Asserted — display attached" : "Idle",
+                        symbol: "dot.radiowaves.up.forward",
+                        tint: acc.hpdAsserted ? .pink : .secondary),
+                InfoRow(label: "Pin Assignment",
+                        value: displayPortPinAssignmentLabel(acc.displayPortPinAssignment),
+                        symbol: "rectangle.connected.to.line.below")
+            ]
+            InfoRowsView(rows: rows)
+        }
+    }
+
+    // MARK: - Existing cards (tunnels / USB / connected device / related)
 
     private var tunnelsCard: some View {
         SectionCard(title: "Active Tunnels", symbol: "arrow.triangle.swap") {
@@ -204,6 +351,8 @@ struct PhysicalPortDetailView: View {
     }
 }
 
+// MARK: - Badges
+
 private struct ModeBadge: View {
     let mode: PhysicalPortMode
     var body: some View {
@@ -217,6 +366,273 @@ private struct ModeBadge: View {
         .clipShape(Capsule())
     }
 }
+
+private struct AccessoryBadges: View {
+    let acc: PortAccessoryInfo
+    var body: some View {
+        HStack(spacing: 6) {
+            if acc.carriesDisplay {
+                badge("Display", icon: "display", color: .pink)
+            }
+            if acc.activeCable {
+                badge("Active cable", icon: "bolt.circle", color: .yellow)
+            }
+            if acc.opticalCable {
+                badge("Optical", icon: "fibrechannel", color: .indigo)
+            }
+            if acc.connectionCount > 0 {
+                badge("\(acc.connectionCount) plug\(acc.connectionCount == 1 ? "" : "s")",
+                      icon: "arrow.up.arrow.down.circle",
+                      color: .secondary)
+            }
+        }
+    }
+
+    private func badge(_ text: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.caption2)
+            Text(text).font(.caption.weight(.medium))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(color.opacity(0.12))
+        .clipShape(Capsule())
+    }
+}
+
+// MARK: - Power callout (top-right of hero header)
+
+private struct PowerCallout: View {
+    let watts: String
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            HStack(spacing: 4) {
+                Image(systemName: "bolt.fill").foregroundStyle(.yellow)
+                Text(watts).font(.title2.weight(.semibold).monospacedDigit())
+            }
+            Text("USB-PD in").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.background.secondary)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+// MARK: - Transport chips row
+
+private struct TransportChipsRow: View {
+    let accessory: PortAccessoryInfo
+
+    var body: some View {
+        FlowChips {
+            ForEach(USBCTransport.allCases, id: \.self) { t in
+                TransportChip(transport: t,
+                              state: state(for: t))
+            }
+            // Render any vendor / unknown transports the kernel published.
+            ForEach(Array(otherTransports), id: \.self) { t in
+                TransportChip(transport: t, state: state(for: t))
+            }
+        }
+    }
+
+    private var otherTransports: Set<USBCTransport> {
+        let known = Set(USBCTransport.allCases)
+        let all = accessory.supportedTransports
+            .union(accessory.provisionedTransports)
+            .union(accessory.activeTransports)
+        return all.subtracting(known)
+    }
+
+    private func state(for t: USBCTransport) -> TransportChip.State {
+        if accessory.activeTransports.contains(t) { return .active }
+        if accessory.provisionedTransports.contains(t) { return .provisioned }
+        if accessory.supportedTransports.contains(t) { return .supported }
+        return .unavailable
+    }
+}
+
+private struct TransportChip: View {
+    let transport: USBCTransport
+
+    enum State { case active, provisioned, supported, unavailable }
+    let state: State
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: transport.symbol)
+                .font(.caption2)
+            Text(transport.label).font(.caption.weight(.medium))
+            if let badge = stateBadge {
+                Text(badge).font(.caption2)
+                    .opacity(0.7)
+            }
+        }
+        .foregroundStyle(foreground)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(background)
+        .overlay(
+            Capsule().strokeBorder(border, lineWidth: 0.5)
+        )
+        .clipShape(Capsule())
+        .help(helpText)
+    }
+
+    private var stateBadge: String? {
+        switch state {
+        case .active: return "· live"
+        case .provisioned: return "· ready"
+        case .supported, .unavailable: return nil
+        }
+    }
+
+    private var foreground: Color {
+        switch state {
+        case .active: return transport.color
+        case .provisioned: return transport.color.opacity(0.85)
+        case .supported: return .secondary
+        case .unavailable: return Color.secondary.opacity(0.55)
+        }
+    }
+
+    private var background: Color {
+        switch state {
+        case .active: return transport.color.opacity(0.18)
+        case .provisioned: return transport.color.opacity(0.10)
+        case .supported, .unavailable: return Color.secondary.opacity(0.07)
+        }
+    }
+
+    private var border: Color {
+        switch state {
+        case .active: return transport.color.opacity(0.5)
+        case .provisioned: return transport.color.opacity(0.3)
+        case .supported, .unavailable: return Color.secondary.opacity(0.2)
+        }
+    }
+
+    private var helpText: String {
+        switch state {
+        case .active: return "\(transport.label) — active. \(transport.detail)"
+        case .provisioned: return "\(transport.label) — provisioned but not currently carrying data."
+        case .supported: return "\(transport.label) — supported by the cable & partner, not in use."
+        case .unavailable: return "\(transport.label) — not available on this connection."
+        }
+    }
+}
+
+// MARK: - USB-PD displays
+
+private struct WinningPDO: View {
+    let option: USBPDOption
+    let brickID: USBPDOption?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.powerLabel)
+                    .font(.system(size: 34, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.yellow)
+                Text("\(option.voltageLabel)  ·  \(option.currentLabel)")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let brick = brickID {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Brick ID")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text("\(brick.voltageLabel) · \(brick.currentLabel)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct PDOTable: View {
+    let options: [USBPDOption]
+    let winning: USBPDOption?
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 4) {
+            GridRow {
+                Text("").gridColumnAlignment(.center)
+                Text("Voltage").gridColumnAlignment(.trailing)
+                Text("Current").gridColumnAlignment(.trailing)
+                Text("Power").gridColumnAlignment(.trailing)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            ForEach(options) { opt in
+                let isWinner = matchesWinner(opt)
+                GridRow {
+                    Image(systemName: isWinner ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isWinner ? Color.yellow : Color.secondary.opacity(0.5))
+                        .font(.caption)
+                    Text(opt.voltageLabel)
+                        .gridColumnAlignment(.trailing)
+                        .monospacedDigit()
+                    Text(opt.currentLabel)
+                        .gridColumnAlignment(.trailing)
+                        .monospacedDigit()
+                    Text(opt.powerLabel)
+                        .gridColumnAlignment(.trailing)
+                        .monospacedDigit()
+                        .foregroundStyle(isWinner ? .primary : .secondary)
+                }
+                .font(.callout)
+            }
+        }
+    }
+
+    private func matchesWinner(_ opt: USBPDOption) -> Bool {
+        guard let w = winning else { return false }
+        return w.voltageMV == opt.voltageMV
+            && w.maxCurrentMA == opt.maxCurrentMA
+            && w.maxPowerMW == opt.maxPowerMW
+    }
+}
+
+// MARK: - Information rows (re-usable for Connector & Cable / Display alt-mode)
+
+private struct InfoRow: Hashable {
+    let label: String
+    let value: String
+    let symbol: String
+    var tint: Color? = nil
+}
+
+private struct InfoRowsView: View {
+    let rows: [InfoRow]
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(rows, id: \.self) { r in
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: r.symbol)
+                        .foregroundStyle(r.tint ?? .secondary)
+                        .frame(width: 22)
+                    Text(r.label)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(r.value)
+                        .font(.callout)
+                        .foregroundStyle(r.tint ?? .primary)
+                        .multilineTextAlignment(.trailing)
+                        .textSelection(.enabled)
+                }
+                .padding(.vertical, 6)
+                if r != rows.last { Divider() }
+            }
+        }
+    }
+}
+
+// MARK: - Tunnel row
 
 private struct TunnelRow: View {
     let tunnel: PortTunnel

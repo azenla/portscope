@@ -32,7 +32,10 @@ final class IORegMonitor {
             "IOThunderboltLocalNode",
             "AppleThunderboltUSBType2DownAdapter",
             "IOUSBHostController",
-            "IOUSBHostDevice"
+            "IOUSBHostDevice",
+            // Per-physical-port HPM interface — fires on cable insertion /
+            // removal, USB-PD renegotiation, alt-mode entry, etc.
+            "AppleHPMInterfaceType10"
         ]
 
         for cls in classes {

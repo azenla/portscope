@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Boltprobe is a macOS-only SwiftUI app (target `macOS 26.5`, Swift 5, default actor isolation = `MainActor`) that introspects the host's hardware buses via IOKit. The original focus was Thunderbolt — controllers, routers (switches), ports, adapters, downstream PCIe/USB devices, hop tables / tunnels, and bandwidth allocations — and it has since expanded to a full USB explorer (host controllers, hubs, devices, interfaces with bandwidth / speed / class info) and a unified **Physical Ports** view that reports each USB-C port's live operating mode (TB / USB / Empty), tunnels, and attached devices.
+Boltprobe is a macOS-only SwiftUI app (target `macOS 26.5`, Swift 5, default actor isolation = `MainActor`) that introspects the host's hardware buses via IOKit. The original focus was Thunderbolt — controllers, routers (switches), ports, adapters, downstream PCIe/USB devices, hop tables / tunnels, and bandwidth allocations — and it has since expanded to a full USB explorer (host controllers, hubs, devices, interfaces with bandwidth / speed / class info), a unified **Physical Ports** view that reports each USB-C port's live operating mode, and **per-receptacle accessory state** pulled from `IOAccessoryManager` (active transports CC / USB 2 / USB 3 / CIO / DisplayPort, USB-PD voltage and current, plug orientation, displayport HPD, cable e-marker VID/PID/manufacturer).
 
 ## Build / run
 
@@ -22,7 +22,7 @@ Built bundle lives under `~/Library/Developer/Xcode/DerivedData/Boltprobe-*/Buil
 
 ## Architecture
 
-Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Model → SwiftUI views**. There are two scanners (Thunderbolt and USB), but both produce `TBNode` trees using a single shared builder + formatter so node metadata stays consistent across the app.
+Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Model → SwiftUI views**. There are three scanners (Thunderbolt, USB, Accessory). TB and USB produce `TBNode` trees through a single shared builder + formatter so node metadata stays consistent; the accessory scanner is shape-different (one struct per physical receptacle, not a tree) and gets merged into `PhysicalPort` by `TopologyMapper`.
 
 ### Services
 
@@ -36,17 +36,23 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 - `Services/USBScanner.swift` — matches `IOUSBHostController` / `AppleUSBHostController` / `IOUSBController`, dedupes by entry ID, recurses via `NodeBuilder`, produces a `USBSnapshot`. **For each controller, walks parents looking for a `IOThunderboltSwitch` ancestor and records the mapping in `USBSnapshot.tbContext: [TBNodeID: TBNodeID]`** so USB detail views can cross-link into the TB tree (used by `TBLinkCard`).
 
-- `Services/IORegMonitor.swift` — hot-plug notifications. Registers `IOServiceAddMatchingNotification` for both `kIOMatchedNotification` and `kIOTerminatedNotification` against TB controller/switch/port/local-node/USB-Type-2-adapter classes **and** `IOUSBHostController` / `IOUSBHostDevice`, then posts a debounced `Notification.Name` that triggers `BoltprobeViewModel.rescan()`.
+- `Services/AccessoryScanner.swift` — matches `AppleHPMInterfaceType10` (one instance per physical USB-C / MagSafe receptacle), reads per-port runtime state from `IOAccessoryManager`, and walks the port's `Power In → USB-PD` children to capture USB-PD `WinningPowerSourceOption` + offered PDOs and the Apple "Brick ID" PDO when a charger is identifying itself. Returns `[PortAccessoryInfo]` sorted by `PortNumber`. **This is the only place the app touches IOAccessory plane data**; it surfaces signal information (active transports, plug orientation, displayport HPD, cable e-marker VID/PID/manufacturer string) that is invisible to the Thunderbolt and USB IOKit families.
 
-- `Services/TopologyMapper.swift` — derives the **simplified user-facing topology** (`PhysicalPort` → optional `ConnectedDevice` → daisy-chained devices) from a snapshot. Each `PhysicalPort` carries an inferred `mode: PhysicalPortMode` (`.thunderbolt(speed)` / `.usbOnly(speed?)` / `.empty` / `.unknown`), the flat list of `attachedUSBDevices` reachable through the port's connected router, and `tunnels: [PortTunnel]` summarising DP/USB/PCIe reserved+max bandwidth.
+- `Services/IORegMonitor.swift` — hot-plug notifications. Registers `IOServiceAddMatchingNotification` for both `kIOMatchedNotification` and `kIOTerminatedNotification` against TB controller/switch/port/local-node/USB-Type-2-adapter classes, `IOUSBHostController` / `IOUSBHostDevice`, **and `AppleHPMInterfaceType10`** (so cable insertions, USB-PD renegotiation, and alt-mode entry all fire a rescan). Then posts a debounced `Notification.Name` that triggers `BoltprobeViewModel.rescan()`.
+
+- `Services/TopologyMapper.swift` — derives the **simplified user-facing topology** (`PhysicalPort` → optional `ConnectedDevice` → daisy-chained devices) from a snapshot. Each `PhysicalPort` carries an inferred `mode: PhysicalPortMode` (`.thunderbolt(speed)` / `.usbOnly(speed?)` / `.empty` / `.unknown`), the flat list of `attachedUSBDevices` reachable through the port's connected router, `tunnels: [PortTunnel]` summarising DP/USB/PCIe reserved+max bandwidth, and an optional `accessory: PortAccessoryInfo` for the receptacle's HPM state.
 
   Knows about Apple-Silicon specifics: each TB host controller maps to one physical USB-C port (the controller's root switch has paired lane adapters on Port@1/@2 that form one dual-link physical port), and the dock switch is **two** levels below the host's lane adapter (`host lane → peer lane → dock switch`), so `downstreamSwitch(of:)` BFS-descends through peer-port wrappers to find it.
+
+  **Numbering** comes from `AppleHPMInterfaceType10.PortNumber` when accessory data is available (1, 2, 3 as etched on the chassis). The HPM-to-TB-controller pairing is a two-pass heuristic: ports with `TransportsActive` containing `CIO` first claim a TB controller that has a downstream router; remaining HPM ports get the leftover controllers in order. Without HPM data (e.g. on Intel hosts) the mapper falls back to TB-controller iteration order.
 
 ### Models
 
 - `Models/TBModels.swift` — `TBNode` (one entry in the topology tree, identifiable by IORegistry entry ID), `TBNodeKind` (covers TB and USB kinds: `.controller`, `.switch`, `.port`, `.usbController`, `.usbHub`, `.usbDevice`, `.usbInterface`, `.appleFabric`, etc.), `TBAdapterType`, `TBSnapshot`. Also the shared TB formatters: `tbLinkSpeedLabel`, `tbGenerationShortLabel`, `tbBandwidthLabel`. **`TBNode` is used for any IOKit-derived entity, not just TB** — the name predates the USB expansion.
 
-- `Models/USBModels.swift` — `USBSpeed` (with `rateMbps`, `rateLabel`, `accentColor`), `USBDeviceClass`, formatters (`usbSpeedLabel`, `usbBcdVersion`, `usbDeviceClassLabel`), `USBSnapshot` (with `tbContext` map), `PhysicalPortMode`, and the top-level **`SystemSnapshot { tb, usb, capturedAt }`** that the view model owns.
+- `Models/USBModels.swift` — `USBSpeed` (with `rateMbps`, `rateLabel`, `accentColor`), `USBDeviceClass`, formatters (`usbSpeedLabel`, `usbBcdVersion`, `usbDeviceClassLabel`), `USBSnapshot` (with `tbContext` map), `PhysicalPortMode`, and the top-level **`SystemSnapshot { tb, usb, accessories, capturedAt }`** that the view model owns.
+
+- `Models/AccessoryModels.swift` — `PortAccessoryInfo` (per-physical-receptacle struct), `USBPDProfile` (winning + offered + brick-ID PDOs), `USBPDOption` (a single fixed-voltage PDO with volt / current / power labels), `USBCTransport` (`.cc / .usb2 / .usb3 / .cio / .displayPort / .other`), `PlugOrientation`, `AccessoryConnection` ("Device" / "Host" / "Audio Adapter" / "Debug" / none), `PortConnectorType` (`.usbC / .magsafe / .other`), and `displayPortPinAssignmentLabel(_:)` for the USB-IF Type-C alt-mode pin assignments A..F.
 
 ### ViewModel
 
@@ -66,7 +72,7 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 - `Views/USBViews.swift` — `USBControllerView` / `USBHubView` / `USBDeviceView` / `USBInterfaceView`, plus shared building blocks: `USBLinkRateCard` (log-scale capsule bar so 1.5 Mb/s isn't invisible against 20 Gb/s), `TBLinkCard` (cross-link button into the TB tree when `tbContext` is non-nil), `USBDeviceTreeCard`, `USBDeviceRow`, `InterfacesCard`.
 
-- `Views/PhysicalPortDetailView.swift` — shown when the selection is a `PhysicalPortSelector` synthetic ID. Mode badge, mode-explanation prose, TB bandwidth bar in TB mode, active-tunnels list (DP/USB/PCIe with reserved+max), attached-USB-devices list (capped at 20 with a "+ N more" line), and **Jump to** buttons for the lane adapter and host controller.
+- `Views/PhysicalPortDetailView.swift` — shown when the selection is a `PhysicalPortSelector` synthetic ID. Hero header with mode badge + accessory badges (display / active cable / optical / plug count) + a USB-PD wattage callout in the top-right when power is flowing. Stat grid (operating mode, link speed, lane width, link capacity, power-in, plug orientation, TB device count, USB device count), mode-explanation prose, TB bandwidth bar in TB mode, **Active Transports** card with chips for CC / USB 2 / USB 3 / Thunderbolt-USB4 / DisplayPort showing active vs provisioned vs supported, **Connector & Cable** card with cable type + e-marker VID/PID/manufacturer + lifetime plug & overcurrent counts, **USB Power Delivery** card with a big winning-PDO display + full PDO table (winner marked with a yellow checkmark), **DisplayPort Alt-Mode** card with HPD state and pin-assignment label, then the existing tunnels / USB / connected-TB-device / Jump-to cards.
 
 - `Views/DiagramView.swift` — sheet-based visual topology. Uses SwiftUI's `anchorPreferences` pattern: every node (`MacBlock`, `PortBox`, `RouterBox`, `AdapterGroupRow`) reports its bounds via `.diagramAnchor(id)`, then the container's `backgroundPreferenceValue(NodeAnchorKey)` reads those anchors and draws connection lines and per-category tunnel paths. Takes a `TBSnapshot` (TB-only) — it intentionally doesn't render USB-only ports.
 
@@ -84,7 +90,13 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 - **`Sendable` won't synthesise on `IORegValue`** because `case dictionary([(String, IORegValue)])` uses a tuple-in-array that doesn't conform. The data types deliberately don't claim `Sendable`; everything is used on `@MainActor` (or the scanner copies values into the snapshot before bouncing back to main).
 
-- **Don't show IOKit class names or IORegistry entry IDs in the main UI.** The user view should read like a Thunderbolt utility, not an ioreg viewer. Class names, raw `Adapter Type` numbers, `IOClass`/`IOProviderClass`, registry paths, etc. belong in the Developer details disclosure only.
+- **Don't show IOKit class names or IORegistry entry IDs in the main UI.** The user view should read like a Thunderbolt utility, not an ioreg viewer. Class names, raw `Adapter Type` numbers, `IOClass`/`IOProviderClass`, registry paths, etc. belong in the Developer details disclosure only. Specifically: `AppleT8142USBXHCI` → "Thunderbolt USB 3.1 Controller", `AppleT6050USBXHCIAUSS` → "Internal USB 4.0 Controller", `IOThunderboltControllerType7.Generation = 45` is a kernel revision number not a TB spec generation — don't surface it. `NodeFormatter.controllerFriendlyName` keys off the `IONameMatch` token (`usb-drd,t8142` / `usb-auss,t6050`) + `UsbHostControllerProtocolRevision` string, not the class name.
+
+- **`SOPVID` / `SOPPID` come back as 2-byte little-endian `Data` blobs**, not numbers. `AccessoryScanner.readDataAsUInt` parses them; don't assume `IORegValue.asUInt` will work for these keys. They identify the USB-PD SOP partner (the cable's e-marker chip, or the attached device if there's no e-marker).
+
+- **`Transports*` arrays are arrays of strings.** Members observed so far: `"CC"` (USB-PD configuration channel), `"USB2"`, `"USB3"`, `"CIO"` (cooperative I/O — the bundle carrying Thunderbolt / USB4), `"DisplayPort"`. `USBCTransport.init(_:)` maps the strings; anything unrecognised falls into `.other(String)` so the chip row still renders it.
+
+- **Don't trust port number = TB controller iteration order.** On Apple Silicon the canonical physical port number lives in `AppleHPMInterfaceType10.PortNumber` (1, 2, 3 as labelled on the chassis), and the TB controllers come back in an unrelated order. `TopologyMapper.physicalPorts(from: SystemSnapshot)` pairs them by a two-pass heuristic (CIO-active HPM ports first claim TB controllers with downstream devices); when accessory data is absent the mapper falls back to TB-controller iteration order with a warning that numbering may not match chassis labels.
 
 - **TB-tunneled USB controllers appear in two trees.** A `IOUSBHostController` that lives beneath a `IOThunderboltSwitch` shows up both (a) as a deep descendant inside the TB controller's tree and (b) as a top-level controller in `USBSnapshot.controllers`. They share the same `TBNodeID`. This is intentional — each view surfaces the right context. The cross-link from the USB side is built by `USBScanner` recording `tbContext[usbControllerID] = tbSwitchID` at scan time; `DetailView.ancestorTBContext(for:)` walks parents from any USB hub/device up to its enclosing controller to look it up.
 

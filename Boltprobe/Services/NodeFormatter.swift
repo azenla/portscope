@@ -59,8 +59,8 @@ enum NodeFormatter {
                            props: [String: IORegValue]) -> (String, String?) {
         switch kind {
         case .controller:
-            let gen = props["Generation"]?.asUInt.map { "Apple Silicon gen \($0)" }
-            return ("Thunderbolt Host Controller", gen)
+            return (controllerTitle(class: cls, props: props),
+                    controllerSubtitle(class: cls, props: props))
 
         case .switch:
             let depth = props["Depth"]?.asUInt ?? 0
@@ -111,7 +111,12 @@ enum NodeFormatter {
             let portCount = props["Number of Ports"]?.asUInt
                 ?? props["NumberOfPorts"]?.asUInt
             var sub: [String] = []
-            if let v = props["kUSBControllerVersion"]?.asUInt {
+            // Prefer the protocol revision string ("3.1", "4.0"), since that
+            // matches what most users know. Fall back to the BCD-encoded
+            // `kUSBControllerVersion` field if needed.
+            if let s = props["UsbHostControllerProtocolRevision"]?.asString {
+                sub.append("xHCI \(s)")
+            } else if let v = props["kUSBControllerVersion"]?.asUInt {
                 sub.append("xHCI \(usbBcdVersion(v))")
             }
             if let c = portCount { sub.append("\(c) ports") }
@@ -177,16 +182,62 @@ enum NodeFormatter {
     }
 
     /// Pretty-name a USB host controller. We hide implementation class names
-    /// (AppleT8112USBXHCI etc.) from the title and surface them in the subtitle.
+    /// (AppleT8142USBXHCI, AppleT6050USBXHCIAUSS, etc.) from the title and
+    /// translate them into human terms based on `IONameMatch` tokens and the
+    /// USB protocol revision.
     private static func controllerFriendlyName(class cls: String,
                                                name: String,
                                                props: [String: IORegValue]) -> String {
-        if let model = props["model"]?.asString { return model }
-        if let provider = props["IOClass"]?.asString { return provider }
-        if cls.contains("XHCI") { return "USB xHCI Host Controller" }
-        if cls.contains("EHCI") { return "USB eHCI Host Controller" }
-        if cls.contains("OHCI") { return "USB oHCI Host Controller" }
+        // `IONameMatch` follows the pattern `usb-<kind>,<silicon>`:
+        //   usb-drd,t8142   → dual-role-device USB-C controller on a T-series TB chip
+        //   usb-auss,t6050  → "all USB SuperSpeed" controller built into the SoC fabric
+        //   usb-host,...    → generic host controller
+        let nameMatch = props["IONameMatch"]?.asString
+            ?? props["IONameMatched"]?.asString
+            ?? ""
+        let proto = props["UsbHostControllerProtocolRevision"]?.asString
+        let revLabel = proto.map { " \($0)" } ?? ""
+
+        if nameMatch.hasPrefix("usb-drd") {
+            // Per-Thunderbolt-port USB-C controller (one per TB receptacle on Apple Silicon).
+            return "Thunderbolt USB\(revLabel) Controller"
+        }
+        if nameMatch.hasPrefix("usb-auss") {
+            // SoC-internal USB SuperSpeed root (drives FaceTime cam, internal peripherals,
+            // and on desktops the rear / front USB-A jacks).
+            return "Internal USB\(revLabel) Controller"
+        }
+        if nameMatch.hasPrefix("usb-host") {
+            return "USB\(revLabel) Host Controller"
+        }
+        // Fallback heuristics by class name. Hide the chip family token.
+        if cls.contains("XHCI") { return "USB\(revLabel) Host Controller" }
+        if cls.contains("EHCI") { return "USB 2.0 Host Controller" }
+        if cls.contains("OHCI") { return "USB 1.1 Host Controller" }
         return name.isEmpty ? "USB Host Controller" : name
+    }
+
+    /// Title for a Thunderbolt host controller. All current Apple Silicon TB
+    /// controllers report `IOThunderboltControllerType7`, which is the kernel
+    /// class — useless to the user. We say "Thunderbolt Host Controller" and
+    /// let the subtitle carry the spec version.
+    private static func controllerTitle(class cls: String,
+                                        props: [String: IORegValue]) -> String {
+        return "Thunderbolt Host Controller"
+    }
+
+    /// Subtitle for a Thunderbolt host controller. The `Generation` IORegistry
+    /// field is an internal kernel revision number (1, 45, …) and isn't a
+    /// human-meaningful spec, so we elide it. Surface the highest TB spec
+    /// generation we can observe from the controller's child router instead.
+    private static func controllerSubtitle(class cls: String,
+                                           props: [String: IORegValue]) -> String? {
+        // For now we don't have child props at label-time. Hint at the family
+        // ("Apple-designed") and the user client API revision when present,
+        // which at least changes meaningfully across chip generations.
+        let uc = props["User Client Version"]?.asUInt
+        if let uc { return "Apple-designed · API v\(uc)" }
+        return "Apple-designed Thunderbolt host"
     }
 
     static func usbProductName(_ props: [String: IORegValue]) -> String? {

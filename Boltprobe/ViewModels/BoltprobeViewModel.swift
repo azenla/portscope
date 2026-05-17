@@ -41,7 +41,8 @@ final class BoltprobeViewModel: ObservableObject {
         Task.detached(priority: .userInitiated) {
             let tb = ThunderboltScanner.scan()
             let usb = USBScanner.scan()
-            let snap = SystemSnapshot(tb: tb, usb: usb, capturedAt: Date())
+            let accessories = AccessoryScanner.scan()
+            let snap = SystemSnapshot(tb: tb, usb: usb, accessories: accessories, capturedAt: Date())
             await MainActor.run {
                 self.snapshot = snap
                 self.isScanning = false
@@ -111,7 +112,7 @@ final class BoltprobeViewModel: ObservableObject {
     }
 
     private func firstSelectable() -> TBNodeID? {
-        if let first = TopologyMapper.physicalPorts(from: snapshot.tb).first {
+        if let first = TopologyMapper.physicalPorts(from: snapshot).first {
             return PhysicalPortSelector.id(for: first)
         }
         return snapshot.tb.controllers.first?.id

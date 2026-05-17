@@ -26,13 +26,18 @@ struct USBControllerView: View {
             ?? node.properties["idProduct"]?.asUInt
         let attached = countDevices(under: node)
 
+        let chip = chipFamily(from: node)
+        let protoLabel = node.properties["UsbHostControllerProtocolRevision"]?.asString
+            ?? xhciVersion.map(usbBcdVersion)
+            ?? "—"
+
         VStack(alignment: .leading, spacing: 16) {
             StatGrid(stats: [
-                Stat(label: "Controller Class",
-                     value: shortClass(node.className),
+                Stat(label: "Hardware",
+                     value: chip,
                      symbol: "cpu"),
                 Stat(label: "USB Spec",
-                     value: xhciVersion.map { "xHCI \(usbBcdVersion($0))" } ?? "—",
+                     value: protoLabel == "—" ? "—" : "xHCI \(protoLabel)",
                      symbol: "memorychip"),
                 Stat(label: "Downstream Ports",
                      value: portCount.map(String.init) ?? "—",
@@ -44,9 +49,9 @@ struct USBControllerView: View {
                      value: pciVendor.map { String(format: "0x%04X", $0) }
                         .flatMap { v in pciDevice.map { "\(v):\(String(format: "0x%04X", $0))" } } ?? "—",
                      symbol: "barcode"),
-                Stat(label: "Built-In",
-                     value: (node.properties["Built-In"]?.asBool ?? false) ? "Yes" : "No",
-                     symbol: "macbook")
+                Stat(label: "Sleep Capable",
+                     value: (node.properties["kUSBSleepSupported"]?.asBool ?? false) ? "Yes" : "No",
+                     symbol: "moon.zzz")
             ])
 
             if let tb = tbContext {
@@ -59,11 +64,31 @@ struct USBControllerView: View {
         }
     }
 
-    private func shortClass(_ cls: String) -> String {
-        return cls
-            .replacingOccurrences(of: "AppleEmbedded", with: "")
-            .replacingOccurrences(of: "USBXHCI", with: " xHCI")
-            .replacingOccurrences(of: "Apple", with: "")
+    /// Translate IORegistry hints into a human chip-family label. Uses
+    /// `IONameMatch` tokens ("usb-drd,t8142", "usb-auss,t6050") instead of
+    /// raw class names so the user doesn't see "AppleT8142USBXHCI".
+    private func chipFamily(from node: TBNode) -> String {
+        let nameMatch = node.properties["IONameMatch"]?.asString
+            ?? node.properties["IONameMatched"]?.asString
+            ?? ""
+        let kind: String
+        if nameMatch.hasPrefix("usb-drd") {
+            kind = "Thunderbolt-attached"
+        } else if nameMatch.hasPrefix("usb-auss") {
+            kind = "SoC-integrated"
+        } else if nameMatch.hasPrefix("usb-host") {
+            kind = "Host"
+        } else {
+            kind = "USB"
+        }
+        // Pull the silicon token (e.g. "t8142") if present.
+        if let comma = nameMatch.firstIndex(of: ",") {
+            let silicon = String(nameMatch[nameMatch.index(after: comma)...]).uppercased()
+            if !silicon.isEmpty {
+                return "\(kind) (\(silicon))"
+            }
+        }
+        return kind == "USB" ? "USB Controller" : kind
     }
 }
 

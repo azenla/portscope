@@ -24,6 +24,11 @@ struct PhysicalPort {
     let attachedUSBDevices: [TBNode]
     /// Tunnel summaries on the port's connected router (active tunnels by class).
     let tunnels: [PortTunnel]
+    /// Per-receptacle runtime state from `IOAccessoryManager`, when available.
+    /// Carries transport state, USB-PD power, plug orientation, displayport
+    /// HPD, cable e-marker info — the data that doesn't show up in the
+    /// Thunderbolt or USB IOKit families.
+    let accessory: PortAccessoryInfo?
 }
 
 struct PortTunnel: Hashable {
@@ -89,22 +94,137 @@ extension ConnectedDevice {
 }
 
 enum TopologyMapper {
-    /// Build the simplified topology from a TB-only snapshot.
-    /// Kept for callers that haven't been moved to SystemSnapshot.
+    /// Build the simplified topology from a TB-only snapshot. Used as a fall
+    /// back when no `IOAccessoryManager` data is available.
     static func physicalPorts(from snapshot: TBSnapshot) -> [PhysicalPort] {
         var out: [PhysicalPort] = []
         for (idx, controller) in snapshot.controllers.enumerated() {
-            guard let port = makePort(number: idx + 1, controller: controller) else { continue }
+            guard let port = makePort(number: idx + 1, controller: controller, accessory: nil) else { continue }
             out.append(port)
         }
         return out
     }
 
+    /// Build the simplified topology from a system snapshot, merging in
+    /// `IOAccessoryManager` per-port state. The HPM `PortNumber` field gives
+    /// the canonical physical port label (1..N as etched on the chassis), so
+    /// when accessory data is available the sidebar numbering follows it
+    /// instead of arbitrary TB-controller iteration order.
     static func physicalPorts(from snapshot: SystemSnapshot) -> [PhysicalPort] {
-        return physicalPorts(from: snapshot.tb)
+        let tbPorts = snapshot.tb.controllers.compactMap {
+            makePort(number: 0, controller: $0, accessory: nil)
+        }
+        let usbCAccessories = snapshot.accessories.filter {
+            if case .usbC = $0.connector { return true }
+            return false
+        }
+
+        guard !usbCAccessories.isEmpty else {
+            // No HPM data — number ports by TB controller iteration order.
+            return tbPorts.enumerated().map { idx, p in
+                PhysicalPort(
+                    number: idx + 1,
+                    id: p.id, laneAdapter: p.laneAdapter, controller: p.controller,
+                    connectedDevice: p.connectedDevice, mode: p.mode,
+                    attachedUSBDevices: p.attachedUSBDevices, tunnels: p.tunnels,
+                    accessory: nil
+                )
+            }
+        }
+
+        // Match each AppleHPM USB-C port to the best TB controller. Ports with
+        // CIO active match the controller whose lane has a downstream switch;
+        // remaining ports get assigned in order.
+        var remainingTB = tbPorts
+        var paired: [(PortAccessoryInfo, PhysicalPort?)] = []
+
+        // Pass 1: TB-active accessory ports claim a TB controller with a downstream device.
+        for acc in usbCAccessories where acc.carriesThunderbolt {
+            if let idx = remainingTB.firstIndex(where: { $0.connectedDevice != nil }) {
+                paired.append((acc, remainingTB.remove(at: idx)))
+            } else if let idx = remainingTB.indices.first {
+                paired.append((acc, remainingTB.remove(at: idx)))
+            } else {
+                paired.append((acc, nil))
+            }
+        }
+        // Pass 2: any other accessory ports take remaining TB controllers in order.
+        for acc in usbCAccessories where !acc.carriesThunderbolt {
+            if let first = remainingTB.first {
+                remainingTB.removeFirst()
+                paired.append((acc, first))
+            } else {
+                paired.append((acc, nil))
+            }
+        }
+        // Sort the result back into physical port order.
+        paired.sort { $0.0.portNumber < $1.0.portNumber }
+
+        var out: [PhysicalPort] = []
+        for (acc, tb) in paired {
+            if let tb {
+                out.append(PhysicalPort(
+                    number: acc.portNumber,
+                    id: tb.id, laneAdapter: tb.laneAdapter, controller: tb.controller,
+                    connectedDevice: tb.connectedDevice, mode: refineMode(tb.mode, with: acc),
+                    attachedUSBDevices: tb.attachedUSBDevices, tunnels: tb.tunnels,
+                    accessory: acc
+                ))
+            } else {
+                // HPM port with no matching TB controller (rare; fall back to a
+                // synthetic stub that still surfaces the receptacle in the UI).
+                out.append(PhysicalPort(
+                    number: acc.portNumber,
+                    id: acc.id, laneAdapter: synthLane(accessoryID: acc.id),
+                    controller: synthLane(accessoryID: acc.id),
+                    connectedDevice: nil, mode: modeFromAccessory(acc),
+                    attachedUSBDevices: [], tunnels: [],
+                    accessory: acc
+                ))
+            }
+        }
+        // Append any leftover TB controllers (uncommon: HPM count < TB count).
+        for (i, tb) in remainingTB.enumerated() {
+            out.append(PhysicalPort(
+                number: out.count + i + 1,
+                id: tb.id, laneAdapter: tb.laneAdapter, controller: tb.controller,
+                connectedDevice: tb.connectedDevice, mode: tb.mode,
+                attachedUSBDevices: tb.attachedUSBDevices, tunnels: tb.tunnels,
+                accessory: nil
+            ))
+        }
+        return out
     }
 
-    private static func makePort(number: Int, controller: TBNode) -> PhysicalPort? {
+    /// Upgrade an inferred mode when accessory data clarifies it. E.g. a port
+    /// the TB tree thinks is empty might actually be carrying DisplayPort
+    /// alt-mode to a connected monitor.
+    private static func refineMode(_ mode: PhysicalPortMode,
+                                   with acc: PortAccessoryInfo) -> PhysicalPortMode {
+        switch mode {
+        case .empty, .unknown:
+            return modeFromAccessory(acc)
+        default:
+            return mode
+        }
+    }
+
+    private static func modeFromAccessory(_ acc: PortAccessoryInfo) -> PhysicalPortMode {
+        if acc.carriesThunderbolt { return .thunderbolt(linkSpeed: 0) }
+        if acc.activeTransports.contains(.usb3) { return .usbOnly(speed: nil) }
+        if acc.carriesDisplay { return .displayOnly }
+        if acc.connection.isConnected { return .unknown }
+        return .empty
+    }
+
+    /// Placeholder TBNode used when an HPM port has no matching TB controller.
+    private static func synthLane(accessoryID id: TBNodeID) -> TBNode {
+        TBNode(id: id, kind: .other, title: "Receptacle", subtitle: nil,
+               className: "", properties: [:], propertyOrder: [],
+               children: [], registryPath: nil)
+    }
+
+    private static func makePort(number: Int, controller: TBNode, accessory: PortAccessoryInfo?) -> PhysicalPort? {
         guard let root = findRootSwitch(in: controller) else { return nil }
 
         let lanes = root.children.filter { isLaneAdapter($0) }
@@ -125,7 +245,8 @@ enum TopologyMapper {
             connectedDevice: connected,
             mode: mode,
             attachedUSBDevices: usbDevices,
-            tunnels: tunnels
+            tunnels: tunnels,
+            accessory: accessory
         )
     }
 
