@@ -15,6 +15,10 @@ import SwiftUI
 struct SidebarView: View {
     @ObservedObject var vm: BoltprobeViewModel
     @State private var expanded: Set<TBNodeID> = []
+    /// IDs we've already seeded into `expanded` for first-render auto-open.
+    /// Tracking this separately means a user collapse sticks — we never
+    /// re-add an ID after it's been seen once.
+    @State private var seeded: Set<TBNodeID> = []
     @State private var showDiagram: Bool = false
 
     var body: some View {
@@ -86,13 +90,48 @@ struct SidebarView: View {
         .sheet(isPresented: $showDiagram) {
             DiagramView(snapshot: vm.snapshot)
         }
-        .onAppear {
-            // Auto-expand any port with something attached — TB device or
-            // a populated USB bus.
-            for p in ports where p.connectedDevice != nil || !p.usbDeviceRoots.isEmpty {
-                expanded.insert(PhysicalPortSelector.id(for: p))
-            }
+        .task(id: vm.snapshot.capturedAt) {
+            seedExpansion(ports: ports)
         }
+    }
+
+    /// Auto-open the rows the user almost certainly wants to see on first
+    /// render, but only once per ID — so a manual collapse sticks.
+    private func seedExpansion(ports: [PhysicalPort]) {
+        var toOpen: [TBNodeID] = []
+        for p in ports {
+            let pid = PhysicalPortSelector.id(for: p)
+            if p.connectedDevice != nil || !p.usbDeviceRoots.isEmpty {
+                toOpen.append(pid)
+            }
+            // Top-level USB hubs get their immediate children visible.
+            for root in p.usbDeviceRoots { toOpen.append(root.id) }
+        }
+        // TB controllers with a downstream router auto-open in the
+        // Thunderbolt section.
+        for ctrl in vm.tbSnapshot.controllers where controllerHasAttachedHost(ctrl) {
+            toOpen.append(ctrl.id)
+        }
+        // USB host controllers in the USB section auto-open once.
+        for ctrl in vm.usbSnapshot.controllers {
+            toOpen.append(ctrl.id)
+        }
+        for id in toOpen where !seeded.contains(id) {
+            expanded.insert(id)
+            seeded.insert(id)
+        }
+    }
+
+    private func controllerHasAttachedHost(_ node: TBNode) -> Bool {
+        var stack = node.children
+        while !stack.isEmpty {
+            let n = stack.removeFirst()
+            if n.kind == .switch, (n.properties["Depth"]?.asUInt ?? 0) > 0 {
+                return true
+            }
+            stack.append(contentsOf: n.children)
+        }
+        return false
     }
 }
 
@@ -219,7 +258,7 @@ private struct ControllerBranch: View {
         let kids = promotedChildren(of: node)
         DisclosureGroup(
             isExpanded: Binding(
-                get: { expanded.contains(node.id) || isAttachedHost },
+                get: { expanded.contains(node.id) },
                 set: { isOn in
                     if isOn { expanded.insert(node.id) } else { expanded.remove(node.id) }
                 }
@@ -296,7 +335,7 @@ private struct USBBranch: View {
         } else {
             DisclosureGroup(
                 isExpanded: Binding(
-                    get: { expanded.contains(node.id) || depth < 1 },
+                    get: { expanded.contains(node.id) },
                     set: { isOn in
                         if isOn { expanded.insert(node.id) } else { expanded.remove(node.id) }
                     }
@@ -371,7 +410,7 @@ private struct FullTopologyRow: View {
         } else {
             DisclosureGroup(
                 isExpanded: Binding(
-                    get: { expanded.contains(node.id) || depth < 1 },
+                    get: { expanded.contains(node.id) },
                     set: { isOn in
                         if isOn { expanded.insert(node.id) } else { expanded.remove(node.id) }
                     }

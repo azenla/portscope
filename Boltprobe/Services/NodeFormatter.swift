@@ -131,10 +131,12 @@ enum NodeFormatter {
 
         case .usbHub:
             let product = usbProductName(props) ?? "USB Hub"
+            let vendor = usbVendorName(props)
             let speed = props["Device Speed"]?.asUInt
                 ?? props["kUSBCurrentSpeed"]?.asUInt
             let portCount = props["Number of Ports"]?.asUInt
             var sub: [String] = []
+            if let v = vendor, !v.isEmpty { sub.append(v) }
             if let s = speed, s > 0 { sub.append(usbSpeedShortLabel(s)) }
             if let c = portCount { sub.append("\(c) ports") }
             return (product, sub.isEmpty ? nil : sub.joined(separator: " · "))
