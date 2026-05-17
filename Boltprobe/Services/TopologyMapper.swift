@@ -2,22 +2,51 @@
 //  TopologyMapper.swift
 //  Boltprobe
 //
-//  Translates the raw IOKit tree into the simplified user-facing topology:
-//  physical Thunderbolt ports → connected devices → daisy-chained devices.
+//  Translates the raw IOKit trees (Thunderbolt + USB) into the simplified
+//  user-facing topology: physical USB-C / Thunderbolt ports → connected
+//  devices → daisy-chained devices, plus the USB devices reached through
+//  each port.
 //
 
 import Foundation
 
-/// One physical USB-C / Thunderbolt port on the Mac. Backed by the controller's
-/// "active" lane adapter (or port 1 if no device is plugged in).
+/// One physical USB-C / Thunderbolt port on the Mac. Backed by the
+/// controller's "active" lane adapter (or port 1 if no device is plugged in).
 struct PhysicalPort {
     let number: Int
-    /// IORegistry entry of the lane adapter we represent. Used for selection
-    /// so the detail view renders bandwidth + link negotiation for that port.
     let id: TBNodeID
     let laneAdapter: TBNode
     let controller: TBNode
     let connectedDevice: ConnectedDevice?
+    /// Inferred operating mode of the port. Drives the badge/colour in the UI.
+    let mode: PhysicalPortMode
+    /// USB devices reachable through this port (flat list, hubs included).
+    let attachedUSBDevices: [TBNode]
+    /// Tunnel summaries on the port's connected router (active tunnels by class).
+    let tunnels: [PortTunnel]
+}
+
+struct PortTunnel: Hashable {
+    enum Kind: Hashable { case displayPort, usb, pcie }
+    let kind: Kind
+    let reservedBandwidth: UInt64
+    let maxBandwidth: UInt64
+    let adapterCount: Int
+
+    var label: String {
+        switch kind {
+        case .displayPort: return "DisplayPort / HDMI"
+        case .usb: return "USB"
+        case .pcie: return "PCIe"
+        }
+    }
+    var symbol: String {
+        switch kind {
+        case .displayPort: return "display"
+        case .usb: return "cable.connector"
+        case .pcie: return "square.stack.3d.up"
+        }
+    }
 }
 
 /// A Thunderbolt device (router) attached over the fabric. Recursive so we can
@@ -31,21 +60,27 @@ struct ConnectedDevice {
 }
 
 extension PhysicalPort {
-    /// Subtitle shown beneath the port in the sidebar. Keep it short — the
-    /// connected device name appears as a child row, so don't repeat it.
+    /// Subtitle shown beneath the port in the sidebar.
     var statusLabel: String {
-        guard connectedDevice != nil else { return "Empty" }
-        let speed = laneAdapter.properties["Current Link Speed"]?.asUInt ?? 0
-        let width = laneAdapter.properties["Current Link Width"]?.asUInt ?? 0
-        var parts: [String] = ["Connected"]
-        if speed > 0 { parts.append(tbGenerationShortLabel(speed)) }
-        if width > 0 { parts.append("×\(width)") }
-        return parts.joined(separator: " · ")
+        switch mode {
+        case .empty: return "Empty"
+        case .thunderbolt:
+            var parts: [String] = ["Thunderbolt"]
+            let speed = laneAdapter.properties["Current Link Speed"]?.asUInt ?? 0
+            let width = laneAdapter.properties["Current Link Width"]?.asUInt ?? 0
+            if speed > 0 { parts.append(tbGenerationShortLabel(speed)) }
+            if width > 0 { parts.append("×\(width)") }
+            return parts.joined(separator: " · ")
+        case .usbOnly(let s):
+            if let s, s > 0 { return "USB · \(usbSpeedShortLabel(s))" }
+            return "USB"
+        case .displayOnly: return "Display"
+        case .unknown: return "Link up"
+        }
     }
 }
 
 extension ConnectedDevice {
-    /// Short title used in port subtitles.
     var shortTitle: String {
         return routerNode.properties["Device Model Name"]?.asString
             ?? routerNode.properties["Device Vendor Name"]?.asString
@@ -54,7 +89,8 @@ extension ConnectedDevice {
 }
 
 enum TopologyMapper {
-    /// Build the simplified topology from a TBSnapshot.
+    /// Build the simplified topology from a TB-only snapshot.
+    /// Kept for callers that haven't been moved to SystemSnapshot.
     static func physicalPorts(from snapshot: TBSnapshot) -> [PhysicalPort] {
         var out: [PhysicalPort] = []
         for (idx, controller) in snapshot.controllers.enumerated() {
@@ -64,25 +100,101 @@ enum TopologyMapper {
         return out
     }
 
+    static func physicalPorts(from snapshot: SystemSnapshot) -> [PhysicalPort] {
+        return physicalPorts(from: snapshot.tb)
+    }
+
     private static func makePort(number: Int, controller: TBNode) -> PhysicalPort? {
         guard let root = findRootSwitch(in: controller) else { return nil }
 
-        // Find lane adapters on the root switch (paired into one physical port).
         let lanes = root.children.filter { isLaneAdapter($0) }
-        // Prefer the one with a downstream switch (= active port), else lowest port number.
         let active = lanes.first(where: { downstreamSwitch(of: $0) != nil })
         let chosen = active ?? lanes.sorted(by: portOrder).first
         guard let lane = chosen else { return nil }
 
         let connected = downstreamSwitch(of: lane).map { describe(device: $0) }
+        let usbDevices = connected.map { collectUSBDevices(under: $0.routerNode) } ?? []
+        let tunnels = connected.map { summariseTunnels(in: $0.routerNode) } ?? []
+        let mode = inferMode(lane: lane, connectedDevice: connected, usbDevices: usbDevices)
 
         return PhysicalPort(
             number: number,
             id: lane.id,
             laneAdapter: lane,
             controller: controller,
-            connectedDevice: connected
+            connectedDevice: connected,
+            mode: mode,
+            attachedUSBDevices: usbDevices,
+            tunnels: tunnels
         )
+    }
+
+    private static func inferMode(lane: TBNode,
+                                  connectedDevice: ConnectedDevice?,
+                                  usbDevices: [TBNode]) -> PhysicalPortMode {
+        let speed = lane.properties["Current Link Speed"]?.asUInt ?? 0
+        if connectedDevice != nil {
+            return .thunderbolt(linkSpeed: speed)
+        }
+        if !usbDevices.isEmpty {
+            let highest = usbDevices.compactMap {
+                $0.properties["Device Speed"]?.asUInt ?? $0.properties["kUSBCurrentSpeed"]?.asUInt
+            }.max()
+            return .usbOnly(speed: highest)
+        }
+        if speed > 0 { return .unknown }
+        return .empty
+    }
+
+    /// Walk the router's subtree and pull out every USB device (host devices,
+    /// hubs, and leaf devices). Used for the per-port USB device list.
+    private static func collectUSBDevices(under node: TBNode) -> [TBNode] {
+        var out: [TBNode] = []
+        var stack = node.children
+        while !stack.isEmpty {
+            let n = stack.removeFirst()
+            if n.kind == .usbDevice || n.kind == .usbHub {
+                out.append(n)
+            }
+            stack.append(contentsOf: n.children)
+        }
+        return out
+    }
+
+    /// Summarise the active tunnels on a router by adapter class.
+    private static func summariseTunnels(in router: TBNode) -> [PortTunnel] {
+        var totals: [PortTunnel.Kind: (reserved: UInt64, max: UInt64, count: Int)] = [:]
+        for child in router.children where child.kind == .port {
+            let desc = child.properties["Description"]?.asString ?? ""
+            guard let kind = tunnelKind(for: desc) else { continue }
+            let reserved = child.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
+            let maxBw = child.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
+            var entry = totals[kind] ?? (0, 0, 0)
+            entry.reserved += reserved
+            entry.max += maxBw
+            entry.count += 1
+            totals[kind] = entry
+        }
+        return totals
+            .filter { $0.value.reserved > 0 || $0.value.max > 0 }
+            .map {
+                PortTunnel(
+                    kind: $0.key,
+                    reservedBandwidth: $0.value.reserved,
+                    maxBandwidth: $0.value.max,
+                    adapterCount: $0.value.count
+                )
+            }
+            .sorted { $0.label < $1.label }
+    }
+
+    private static func tunnelKind(for description: String) -> PortTunnel.Kind? {
+        switch description {
+        case "DP or HDMI Adapter": return .displayPort
+        case "USB Adapter", "USB Gen T Adapter": return .usb
+        case "PCIe Adapter": return .pcie
+        default: return nil
+        }
     }
 
     private static func findRootSwitch(in node: TBNode) -> TBNode? {
@@ -90,7 +202,6 @@ enum TopologyMapper {
             if c.kind == .switch, (c.properties["Depth"]?.asUInt ?? 0) == 0 {
                 return c
             }
-            // Root switch can sit beneath an NHI port. Recurse one level.
             for cc in c.children where cc.kind == .switch {
                 if (cc.properties["Depth"]?.asUInt ?? 0) == 0 { return cc }
             }
@@ -123,7 +234,6 @@ enum TopologyMapper {
             < (b.properties["Port Number"]?.asUInt ?? 0)
     }
 
-    /// Recursively describe a connected router and its daisy chain.
     private static func describe(device router: TBNode) -> ConnectedDevice {
         let vendor = router.properties["Device Vendor Name"]?.asString
         let model = router.properties["Device Model Name"]?.asString
@@ -144,7 +254,6 @@ enum TopologyMapper {
         if depth > 0 { subParts.append("hop \(depth)") }
         let subtitle = subParts.isEmpty ? nil : subParts.joined(separator: " · ")
 
-        // Daisy-chained = any switch below this one's lane adapters.
         var chained: [ConnectedDevice] = []
         for child in router.children where isLaneAdapter(child) {
             if let next = downstreamSwitch(of: child), next.id != router.id {

@@ -30,7 +30,9 @@ final class IORegMonitor {
             "IOThunderboltSwitch",
             "IOThunderboltPort",
             "IOThunderboltLocalNode",
-            "AppleThunderboltUSBType2DownAdapter"
+            "AppleThunderboltUSBType2DownAdapter",
+            "IOUSBHostController",
+            "IOUSBHostDevice"
         ]
 
         for cls in classes {

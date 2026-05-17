@@ -2,9 +2,11 @@
 //  SidebarView.swift
 //  Boltprobe
 //
-//  Two-tier navigation:
-//    1. Thunderbolt Ports — minimal user view (physical ports → connected device).
-//    2. Full Topology — the raw IOKit tree for power users.
+//  Four-tier navigation:
+//    1. Physical Ports — unified user view (TB / USB / Empty mode per port).
+//    2. Thunderbolt — TB controllers and routers.
+//    3. USB — USB host controllers, hubs, devices.
+//    4. Full Topology — the raw IOKit tree for power users.
 //
 
 import SwiftUI
@@ -19,7 +21,7 @@ struct SidebarView: View {
         let ports = TopologyMapper.physicalPorts(from: vm.snapshot)
 
         List(selection: $vm.selection) {
-            Section("Thunderbolt Ports") {
+            Section("Physical Ports") {
                 if ports.isEmpty {
                     Text(vm.isScanning ? "Scanning…" : "No Thunderbolt controllers")
                         .foregroundStyle(.secondary)
@@ -31,9 +33,33 @@ struct SidebarView: View {
                 }
             }
 
+            Section("Thunderbolt") {
+                if vm.tbSnapshot.controllers.isEmpty {
+                    Text("No Thunderbolt controllers")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                } else {
+                    ForEach(vm.tbSnapshot.controllers, id: \.id) { node in
+                        ControllerBranch(node: node, expanded: $expanded)
+                    }
+                }
+            }
+
+            Section("USB") {
+                if vm.usbSnapshot.controllers.isEmpty {
+                    Text(vm.isScanning ? "Scanning…" : "No USB controllers")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                } else {
+                    ForEach(vm.usbSnapshot.controllers, id: \.id) { node in
+                        USBBranch(node: node, depth: 0, expanded: $expanded)
+                    }
+                }
+            }
+
             Section {
                 DisclosureGroup(isExpanded: $showFullTopology) {
-                    ForEach(vm.snapshot.controllers, id: \.id) { node in
+                    ForEach(vm.tbSnapshot.controllers, id: \.id) { node in
                         FullTopologyRow(node: node, depth: 0, expanded: $expanded)
                     }
                 } label: {
@@ -73,41 +99,55 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showDiagram) {
-            DiagramView(snapshot: vm.snapshot)
+            DiagramView(snapshot: vm.tbSnapshot)
         }
         .onAppear {
             // Auto-expand ports that have a device attached.
             for p in ports where p.connectedDevice != nil {
-                expanded.insert(p.id)
+                expanded.insert(PhysicalPortSelector.id(for: p))
             }
         }
     }
 }
 
-// MARK: - Simplified view branches
+// MARK: - Physical Ports section
 
 private struct PortBranch: View {
     let port: PhysicalPort
     @Binding var expanded: Set<TBNodeID>
 
     var body: some View {
-        if let device = port.connectedDevice {
+        let selectionID = PhysicalPortSelector.id(for: port)
+        let device = port.connectedDevice
+        let usbDevices = port.attachedUSBDevices.prefix(6)
+
+        if device == nil && port.attachedUSBDevices.isEmpty {
+            PortRow(port: port).tag(selectionID)
+        } else {
             DisclosureGroup(
                 isExpanded: Binding(
-                    get: { expanded.contains(port.id) },
+                    get: { expanded.contains(selectionID) },
                     set: { isOn in
-                        if isOn { expanded.insert(port.id) }
-                        else { expanded.remove(port.id) }
+                        if isOn { expanded.insert(selectionID) }
+                        else { expanded.remove(selectionID) }
                     }
                 )
             ) {
-                DeviceBranch(device: device, expanded: $expanded)
+                if let device {
+                    DeviceBranch(device: device, expanded: $expanded)
+                }
+                ForEach(Array(usbDevices), id: \.id) { dev in
+                    USBLeafRow(node: dev).tag(dev.id)
+                }
+                if port.attachedUSBDevices.count > usbDevices.count {
+                    Text("+ \(port.attachedUSBDevices.count - usbDevices.count) more USB")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             } label: {
-                PortRow(port: port).tag(port.id)
+                PortRow(port: port).tag(selectionID)
             }
-            .tag(port.id)
-        } else {
-            PortRow(port: port).tag(port.id)
+            .tag(selectionID)
         }
     }
 }
@@ -145,12 +185,11 @@ private struct PortRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: port.connectedDevice == nil ? "bolt.horizontal.circle"
-                                                          : "bolt.horizontal.circle.fill")
-                .foregroundStyle(port.connectedDevice == nil ? Color.secondary : .blue)
+            Image(systemName: port.mode.symbol)
+                .foregroundStyle(port.mode.color)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Thunderbolt Port \(port.number)")
+                Text("USB-C Port \(port.number)")
                 Text(port.statusLabel)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -175,6 +214,81 @@ private struct DeviceRow: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+            }
+        }
+    }
+}
+
+private struct USBLeafRow: View {
+    let node: TBNode
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: node.kind.sfSymbol)
+                .foregroundStyle(node.kind.accentColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(node.title).lineLimit(1).font(.callout)
+                if let s = node.subtitle, !s.isEmpty {
+                    Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Thunderbolt section (controllers expand to show full TB tree)
+
+private struct ControllerBranch: View {
+    let node: TBNode
+    @Binding var expanded: Set<TBNodeID>
+
+    var body: some View {
+        FullTopologyRow(node: node, depth: 0, expanded: $expanded)
+    }
+}
+
+// MARK: - USB section
+
+private struct USBBranch: View {
+    let node: TBNode
+    let depth: Int
+    @Binding var expanded: Set<TBNodeID>
+
+    var body: some View {
+        // Hide interface nodes in the sidebar — surface them in the device's
+        // detail view instead.
+        let kids = node.children.filter { $0.kind != .usbInterface && $0.kind != .other }
+        if kids.isEmpty {
+            label.tag(node.id)
+        } else {
+            DisclosureGroup(
+                isExpanded: Binding(
+                    get: { expanded.contains(node.id) || depth < 1 },
+                    set: { isOn in
+                        if isOn { expanded.insert(node.id) } else { expanded.remove(node.id) }
+                    }
+                )
+            ) {
+                ForEach(kids, id: \.id) { child in
+                    USBBranch(node: child, depth: depth + 1, expanded: $expanded)
+                }
+            } label: {
+                label
+            }
+            .tag(node.id)
+        }
+    }
+
+    private var label: some View {
+        HStack(spacing: 6) {
+            Image(systemName: node.kind.sfSymbol)
+                .foregroundStyle(node.kind.accentColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(node.title).lineLimit(1).font(.callout)
+                if let s = node.subtitle, !s.isEmpty {
+                    Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }
@@ -211,9 +325,6 @@ private struct FullTopologyRow: View {
         }
     }
 
-    /// Skip kernel-extension / framework wrappers (kind == .other) and promote
-    /// their meaningful descendants up. Keeps the tree shaped around TB concepts
-    /// rather than driver implementation details.
     private func visibleChildren(of node: TBNode) -> [TBNode] {
         var out: [TBNode] = []
         for c in node.children {

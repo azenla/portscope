@@ -22,11 +22,15 @@ enum TBNodeKind: String {
     case localNode     // IOThunderboltLocalNode
     case `switch`      // IOThunderboltSwitch* (router)
     case port          // IOThunderboltPort (lane / DP / USB / PCIe adapter)
-    case usbBus        // AppleThunderboltUSB*Adapter, IOUSBHostController over TB
+    case usbBus        // AppleThunderboltUSB*Adapter (TB-side USB adapter)
+    case usbController // IOUSBHostController / AppleUSBXHCI
+    case usbHub        // IOUSBHostDevice that's also a hub (bDeviceClass == 0x09)
+    case usbInterface  // IOUSBHostInterface (a single function of a USB device)
     case pcieBridge    // IOPCIBridge sitting downstream
     case pcieDevice    // IOPCIDevice
     case usbDevice     // IOUSBHostDevice
-    case networkIf     // IOEthernetInterface (TBnet)
+    case networkIf     // IOEthernetInterface (TBnet, USB-Ethernet)
+    case appleFabric   // AppleFabricController / AppleFabricEndpoint
     case other
 
     var sfSymbol: String {
@@ -37,10 +41,14 @@ enum TBNodeKind: String {
         case .switch: return "rectangle.connected.to.line.below"
         case .port: return "bolt.horizontal.circle"
         case .usbBus: return "cable.connector.horizontal"
+        case .usbController: return "cpu.fill"
+        case .usbHub: return "rectangle.3.group"
+        case .usbInterface: return "puzzlepiece.extension"
         case .pcieBridge: return "square.stack.3d.up"
         case .pcieDevice: return "square.stack.3d.up.fill"
         case .usbDevice: return "cable.connector"
         case .networkIf: return "network"
+        case .appleFabric: return "fibrechannel"
         case .other: return "questionmark.circle"
         }
     }
@@ -53,9 +61,13 @@ enum TBNodeKind: String {
         case .switch: return .purple
         case .port: return .orange
         case .usbBus: return .teal
+        case .usbController: return .teal
+        case .usbHub: return .cyan
+        case .usbInterface: return .mint
         case .pcieBridge, .pcieDevice: return .green
         case .usbDevice: return .teal
         case .networkIf: return .mint
+        case .appleFabric: return .brown
         case .other: return .gray
         }
     }
@@ -178,6 +190,16 @@ extension TBNode {
             if let v = value.asUInt { return tbLinkSpeedLabel(v) }
         case "Current Link Width", "Target Link Width", "Supported Link Width":
             if let v = value.asUInt { return "\(v)× lanes" }
+        case "Device Speed", "kUSBCurrentSpeed":
+            if let v = value.asUInt { return usbSpeedLabel(v) }
+        case "bcdUSB", "bcdDevice":
+            if let v = value.asUInt { return "\(usbBcdVersion(v)) (0x\(String(v, radix: 16, uppercase: true)))" }
+        case "bDeviceClass":
+            if let v = value.asUInt {
+                return "\(usbDeviceClassLabel(v)) (0x\(String(format: "%02X", v)))"
+            }
+        case "idVendor", "idProduct":
+            if let v = value.asUInt { return String(format: "0x%04X (%d)", v, v) }
         default: break
         }
         return value.display

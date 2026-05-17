@@ -9,9 +9,13 @@ import SwiftUI
 
 @MainActor
 final class BoltprobeViewModel: ObservableObject {
-    @Published private(set) var snapshot: TBSnapshot = .empty
+    @Published private(set) var snapshot: SystemSnapshot = .empty
     @Published private(set) var isScanning = false
     @Published var selection: TBNodeID?
+
+    /// Convenience accessor for the TB-only portion of the snapshot.
+    var tbSnapshot: TBSnapshot { snapshot.tb }
+    var usbSnapshot: USBSnapshot { snapshot.usb }
 
     private let monitor = IORegMonitor()
     private var cancellables: Set<AnyCancellable> = []
@@ -30,14 +34,14 @@ final class BoltprobeViewModel: ObservableObject {
 
     deinit {
         debounceTask?.cancel()
-        // Monitor is main-actor; let ARC tear it down with the view model.
     }
 
     func rescan() {
         isScanning = true
-        // Move the IOKit walk off the main actor since it can be slow on deep topologies.
         Task.detached(priority: .userInitiated) {
-            let snap = ThunderboltScanner.scan()
+            let tb = ThunderboltScanner.scan()
+            let usb = USBScanner.scan()
+            let snap = SystemSnapshot(tb: tb, usb: usb, capturedAt: Date())
             await MainActor.run {
                 self.snapshot = snap
                 self.isScanning = false
@@ -61,15 +65,18 @@ final class BoltprobeViewModel: ObservableObject {
 
     // MARK: - Selection helpers
 
+    /// Roots that the selection lookup walks. Includes TB controllers,
+    /// USB controllers, and the flattened TB-tunneled device lists.
+    private var selectionRoots: [TBNode] {
+        snapshot.tb.controllers
+            + snapshot.usb.controllers
+            + snapshot.tb.pcieDevicesOverTB
+            + snapshot.tb.usbDevicesOverTB
+    }
+
     func node(for id: TBNodeID) -> TBNode? {
-        for c in snapshot.controllers {
-            if let n = find(id: id, in: c) { return n }
-        }
-        for n in snapshot.pcieDevicesOverTB {
-            if let f = find(id: id, in: n) { return f }
-        }
-        for n in snapshot.usbDevicesOverTB {
-            if let f = find(id: id, in: n) { return f }
+        for root in selectionRoots {
+            if let n = find(id: id, in: root) { return n }
         }
         return nil
     }
@@ -82,10 +89,10 @@ final class BoltprobeViewModel: ObservableObject {
         return nil
     }
 
-    /// Return the node that has `id` as a direct child, anywhere in the snapshot.
+    /// Parent in any of the roots that this view model owns.
     func parent(of id: TBNodeID) -> TBNode? {
-        for c in snapshot.controllers {
-            if let p = findParent(id: id, in: c) { return p }
+        for root in selectionRoots {
+            if let p = findParent(id: id, in: root) { return p }
         }
         return nil
     }
@@ -99,16 +106,38 @@ final class BoltprobeViewModel: ObservableObject {
     }
 
     private func exists(id: TBNodeID) -> Bool {
-        node(for: id) != nil
+        if PhysicalPortSelector.isPortID(id) { return true }
+        return node(for: id) != nil
     }
 
     private func firstSelectable() -> TBNodeID? {
-        // Prefer the first physical Thunderbolt port (the active lane adapter).
-        TopologyMapper.physicalPorts(from: snapshot).first?.id
-            ?? snapshot.controllers.first?.id
+        if let first = TopologyMapper.physicalPorts(from: snapshot.tb).first {
+            return PhysicalPortSelector.id(for: first)
+        }
+        return snapshot.tb.controllers.first?.id
     }
 
     func select(_ id: TBNodeID) {
         selection = id
+    }
+}
+
+/// Synthetic IDs used to select a "physical port" row in the sidebar without
+/// colliding with real IORegistry entry IDs.
+enum PhysicalPortSelector {
+    /// High bit reserved for synthetic IDs.
+    private static let portMask: UInt64 = 0xC0DE_C0DE_0000_0000
+
+    static func id(for port: PhysicalPort) -> TBNodeID {
+        TBNodeID(raw: portMask | UInt64(port.number))
+    }
+
+    static func isPortID(_ id: TBNodeID) -> Bool {
+        (id.raw & 0xFFFF_FFFF_0000_0000) == portMask
+    }
+
+    static func portNumber(_ id: TBNodeID) -> Int? {
+        guard isPortID(id) else { return nil }
+        return Int(id.raw & 0xFFFF_FFFF)
     }
 }

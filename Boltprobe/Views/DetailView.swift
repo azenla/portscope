@@ -9,30 +9,24 @@
 import SwiftUI
 
 struct DetailView: View {
-    let node: TBNode?
+    let node: TBNode
     let onNavigate: (TBNodeID) -> Void
     let parentLookup: (TBNodeID) -> TBNode?
+    /// Looks up the TB switch ancestor for a USB controller, when applicable.
+    let tbContextForUSB: (TBNodeID) -> TBNodeID?
 
     var body: some View {
-        if let node {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    HeroHeader(node: node)
-                    summary(for: node)
-                    DeveloperDisclosure(node: node)
-                }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HeroHeader(node: node)
+                summary(for: node)
+                DeveloperDisclosure(node: node)
             }
-            .frame(minWidth: 620)
-            .background(.background)
-        } else {
-            ContentUnavailableView(
-                "Select a Thunderbolt port",
-                systemImage: "bolt.horizontal.circle",
-                description: Text("Pick a Thunderbolt port from the sidebar.")
-            )
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(minWidth: 620)
+        .background(.background)
     }
 
     @ViewBuilder
@@ -42,11 +36,36 @@ struct DetailView: View {
         case .switch: RouterView(node: node, onNavigate: onNavigate, parentLookup: parentLookup)
         case .port: PortView(node: node)
         case .localNode: LocalNodeView(node: node)
-        case .usbDevice, .pcieDevice, .pcieBridge, .networkIf, .usbBus:
+        case .usbController:
+            USBControllerView(node: node,
+                              tbContext: tbContextForUSB(node.id),
+                              onNavigate: onNavigate)
+        case .usbHub:
+            USBHubView(node: node,
+                       tbContext: ancestorTBContext(for: node),
+                       onNavigate: onNavigate)
+        case .usbDevice:
+            USBDeviceView(node: node,
+                          tbContext: ancestorTBContext(for: node),
+                          onNavigate: onNavigate)
+        case .usbInterface:
+            USBInterfaceView(node: node)
+        case .pcieDevice, .pcieBridge, .networkIf, .usbBus:
             GenericDeviceView(node: node)
         default:
             EmptyView()
         }
+    }
+
+    /// Walk parents up to find a USB controller, then look up its TB context.
+    private func ancestorTBContext(for node: TBNode) -> TBNodeID? {
+        var current: TBNode? = node
+        for _ in 0..<16 {
+            guard let c = current else { return nil }
+            if c.kind == .usbController { return tbContextForUSB(c.id) }
+            current = parentLookup(c.id)
+        }
+        return nil
     }
 }
 
