@@ -2,20 +2,23 @@
 //  ContentView.swift
 //  Boltprobe
 //
-//  Created by Alex Zenla on 5/17/26.
-//
 
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject private var vm = BoltprobeViewModel()
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        NavigationSplitView {
+            SidebarView(vm: vm)
+        } detail: {
+            DetailView(
+                node: vm.selection.flatMap { vm.node(for: $0) },
+                onNavigate: { vm.select($0) },
+                parentLookup: { vm.parent(of: $0) }
+            )
         }
-        .padding()
+        .frame(minWidth: 980, minHeight: 600)
     }
 }
 
