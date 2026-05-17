@@ -233,14 +233,16 @@ func tbGenerationShortLabel(_ raw: UInt64) -> String {
     }
 }
 
-/// Format a "Link Bandwidth" raw value as a human Gb/s string. Field is in 100 Mb/s units.
+/// Format a "Link Bandwidth" raw value as a human bandwidth string. Field is
+/// in 100 Mb/s units. Anything below 1 Gb/s is rendered in Mb/s — "100 Mb/s"
+/// reads better than "0.1 Gb/s".
 func tbBandwidthLabel(_ raw: UInt64) -> String {
-    let gbps = Double(raw) / 10.0
-    if gbps >= 1 {
-        return String(format: "%.0f Gb/s", gbps)
-    } else {
-        return String(format: "%.1f Gb/s", gbps)
+    if raw == 0 { return "0 Gb/s" }
+    if raw < 10 {
+        return "\(raw * 100) Mb/s"
     }
+    let gbps = Double(raw) / 10.0
+    return String(format: "%.0f Gb/s", gbps)
 }
 
 /// Snapshot of the entire Thunderbolt subsystem captured at scan time.
