@@ -20,13 +20,24 @@ struct SidebarView: View {
     /// re-add an ID after it's been seen once.
     @State private var seeded: Set<TBNodeID> = []
     @State private var showDiagram: Bool = false
+    /// Top-level sidebar sections that the user has collapsed. Each entry
+    /// keys a section by its stable name; missing = expanded (the default).
+    @State private var collapsedSections: Set<String> = []
 
     var body: some View {
         let ports = TopologyMapper.physicalPorts(from: vm.snapshot)
+        let hw = vm.snapshot.internalHardware
 
         List(selection: $vm.selection) {
-            Section("Physical Ports") {
-                if ports.isEmpty {
+            collapsibleSection("Physical Ports", icon: "powerplug.fill") {
+                // MagSafe lives at the very top of Physical Ports when present
+                // — it's a chassis receptacle just like the USB-C ports, even
+                // though it only carries power.
+                if let magsafe = hw.magsafe {
+                    MagSafeRow(accessory: magsafe)
+                        .tag(MagSafeSelector.id)
+                }
+                if ports.isEmpty && hw.magsafe == nil {
                     Text(vm.isScanning ? "Scanning…" : "No Thunderbolt controllers")
                         .foregroundStyle(.secondary)
                         .font(.callout)
@@ -37,7 +48,7 @@ struct SidebarView: View {
                 }
             }
 
-            Section("Thunderbolt") {
+            collapsibleSection("Thunderbolt", icon: "bolt.horizontal.circle") {
                 if vm.tbSnapshot.controllers.isEmpty {
                     Text("No Thunderbolt controllers")
                         .foregroundStyle(.secondary)
@@ -49,7 +60,7 @@ struct SidebarView: View {
                 }
             }
 
-            Section("USB") {
+            collapsibleSection("USB", icon: "cable.connector") {
                 if vm.usbSnapshot.controllers.isEmpty {
                     Text(vm.isScanning ? "Scanning…" : "No USB controllers")
                         .foregroundStyle(.secondary)
@@ -127,16 +138,13 @@ struct SidebarView: View {
     @ViewBuilder
     private var internalHardwareSection: some View {
         let hw = vm.snapshot.internalHardware
-        let hasAny = hw.magsafe != nil
-            || hw.batteryManager != nil
+        // MagSafe moved to Physical Ports; this section now covers buses +
+        // battery + anything else internal.
+        let hasAny = hw.batteryManager != nil
             || !hw.i2cBuses.isEmpty
             || !hw.spiBuses.isEmpty
         if hasAny {
-            Section("Internal Hardware") {
-                if let magsafe = hw.magsafe {
-                    MagSafeRow(accessory: magsafe)
-                        .tag(MagSafeSelector.id)
-                }
+            collapsibleSection("Internal Hardware", icon: "cpu") {
                 if let bm = hw.batteryManager {
                     // The manager wraps the battery — surface the battery
                     // directly as the row, since the manager itself is
@@ -155,6 +163,40 @@ struct SidebarView: View {
                     FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
                 }
             }
+        }
+    }
+
+    /// A sidebar `Section` whose header is a clickable chevron that
+    /// hides/shows its body. Section name doubles as the collapse key, so
+    /// state persists across rescans (the body recomputes from `vm.snapshot`
+    /// every render but the header state lives on the view).
+    @ViewBuilder
+    private func collapsibleSection<Content: View>(
+        _ name: String,
+        icon: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let isCollapsed = collapsedSections.contains(name)
+        Section {
+            if !isCollapsed { content() }
+        } header: {
+            Button {
+                if isCollapsed { collapsedSections.remove(name) }
+                else { collapsedSections.insert(name) }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .frame(width: 10)
+                    Image(systemName: icon)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(name)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
     }
 
