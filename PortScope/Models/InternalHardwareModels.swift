@@ -29,14 +29,62 @@ struct InternalHardwareSnapshot {
     let magsafe: PortAccessoryInfo?
     /// Named SoC blocks pulled out of the `AppleARMIODevice` haystack —
     /// Secure Enclave, Always-On Processor, Apple Neural Engine, display /
-    /// video / image-signal coprocessors, NAND controller, SMC, etc. These
-    /// are read-only from userland but help the user reason about what
-    /// silicon is involved in their machine. Empty on Intel hosts where
-    /// no `AppleARMIODevice` entries exist.
-    let socCoprocessors: [TBNode]
+    /// video / image-signal coprocessors, NAND controller, SMC, etc.
+    /// Grouped by function so the sidebar can render them as small,
+    /// thematic subsections rather than one long alphabetical list.
+    let coprocessorGroups: [SoCCoprocessorGroup]
+
+    /// Flat view across all groups, in display order. Lookup helper used
+    /// when resolving sidebar selections to nodes.
+    var socCoprocessors: [TBNode] {
+        coprocessorGroups.flatMap(\.coprocessors)
+    }
 
     static let empty = InternalHardwareSnapshot(
         i2cBuses: [], spiBuses: [], batteryManager: nil, magsafe: nil,
-        socCoprocessors: []
+        coprocessorGroups: []
     )
+}
+
+/// A thematic bucket of SoC coprocessors. The grouping mirrors how a user
+/// would naturally reason about the silicon: display engines together,
+/// media codecs together, security blocks together, etc.
+struct SoCCoprocessorGroup: Hashable, Identifiable {
+    var id: SoCCoprocessorCategory { category }
+    let category: SoCCoprocessorCategory
+    let coprocessors: [TBNode]
+}
+
+enum SoCCoprocessorCategory: String, CaseIterable, Hashable {
+    case displayAndGraphics
+    case mediaImage
+    case mediaVideo
+    case storageMemory
+    case securityPower
+    case radios
+    case other
+
+    var title: String {
+        switch self {
+        case .displayAndGraphics: return "Display & Graphics"
+        case .mediaImage:         return "Image / ML"
+        case .mediaVideo:         return "Video Codecs"
+        case .storageMemory:      return "Storage & Memory"
+        case .securityPower:      return "Security & Power"
+        case .radios:             return "Radios"
+        case .other:              return "Other Coprocessors"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .displayAndGraphics: return "rectangle.on.rectangle"
+        case .mediaImage:         return "photo.stack"
+        case .mediaVideo:         return "film"
+        case .storageMemory:      return "internaldrive"
+        case .securityPower:      return "lock.shield"
+        case .radios:             return "antenna.radiowaves.left.and.right"
+        case .other:              return "cpu"
+        }
+    }
 }

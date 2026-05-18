@@ -806,15 +806,15 @@ private struct SoCCoprocessorView: View {
     }
 
     private var compatibleString: String? {
-        // `compatible` is normally an array of device-tree strings; format the
-        // first one so the user can grep upstream device-tree sources.
-        let val = node.properties["compatible"]
-        if case let .array(arr) = val {
-            for v in arr {
-                if case let .string(s) = v, !s.isEmpty { return s }
-            }
+        // `compatible` is an array of device-tree match strings — the
+        // primary name + a chain of older-silicon aliases the kext also
+        // binds against. Render the full chain (e.g. "jpeg,t8110jpeg ·
+        // s5l8920x") so the user sees the bus name *and* knows the kext
+        // is a long-lived design with backwards compatibility built in.
+        if let val = node.properties["compatible"] {
+            return prettyCompatibleString(val)
         }
-        return stringValue(val)
+        return nil
     }
 
     private func stringValue(_ value: IORegValue?) -> String? {

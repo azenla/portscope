@@ -56,13 +56,108 @@ enum SnapshotDumper {
                 )
             ],
             "accessories": s.accessories.map(accessoryToJSON(_:)),
+            "bluetooth": bluetoothJSON(s.bluetooth),
+            "displays": s.displays.displays.map(displayToJSON(_:)),
+            "pcie": s.pcie.roots.map(pciNodeToJSON(_:)),
             "internal_hardware": [
                 "battery": s.internalHardware.batteryManager.map(nodeToJSON(_:)) ?? NSNull(),
                 "magsafe": s.internalHardware.magsafe.map(accessoryToJSON(_:)) ?? NSNull(),
                 "i2c_buses": s.internalHardware.i2cBuses.map(nodeToJSON(_:)),
                 "spi_buses": s.internalHardware.spiBuses.map(nodeToJSON(_:)),
+                "soc_coprocessor_groups": s.internalHardware.coprocessorGroups.map { g in
+                    [
+                        "category": g.category.rawValue,
+                        "title": g.category.title,
+                        "coprocessors": g.coprocessors.map(nodeToJSON(_:))
+                    ] as [String: Any]
+                },
                 "soc_coprocessors": s.internalHardware.socCoprocessors.map(nodeToJSON(_:))
             ]
+        ]
+    }
+
+    private static func bluetoothJSON(_ bt: BluetoothSnapshot) -> [String: Any] {
+        let controller: Any = bt.controller.map { c -> [String: Any] in
+            [
+                "address": c.address ?? NSNull(),
+                "chipset": c.chipset ?? NSNull(),
+                "firmware_version": c.firmwareVersion ?? NSNull(),
+                "vendor_id": c.vendorID ?? NSNull(),
+                "product_id": c.productID ?? NSNull(),
+                "transport": c.transport ?? NSNull(),
+                "is_on": c.isOn,
+                "is_discoverable": c.isDiscoverable,
+                "supported_services": c.supportedServices
+            ]
+        } ?? NSNull()
+        return [
+            "controller": controller,
+            "connected": bt.connected.map(btDeviceJSON(_:)),
+            "paired": bt.paired.map(btDeviceJSON(_:))
+        ]
+    }
+
+    private static func btDeviceJSON(_ d: BluetoothDevice) -> [String: Any] {
+        return [
+            "name": d.name,
+            "address": d.address ?? NSNull(),
+            "vendor_id": d.vendorID ?? NSNull(),
+            "product_id": d.productID ?? NSNull(),
+            "firmware_version": d.firmwareVersion ?? NSNull(),
+            "minor_type": d.minorType ?? NSNull(),
+            "rssi": d.rssi ?? NSNull(),
+            "serial_number": d.serialNumber ?? NSNull(),
+            "is_connected": d.isConnected,
+            "category": d.category.rawValue,
+            "services": d.services,
+            "battery_level": d.batteryLevel ?? NSNull(),
+            "battery_level_left": d.batteryLevelLeft ?? NSNull(),
+            "battery_level_right": d.batteryLevelRight ?? NSNull(),
+            "battery_level_case": d.batteryLevelCase ?? NSNull()
+        ]
+    }
+
+    private static func displayToJSON(_ d: DisplayInfo) -> [String: Any] {
+        return [
+            "id": String(format: "0x%llX", d.backingID.raw),
+            "device_tree_name": d.deviceTreeName,
+            "title": d.title,
+            "subtitle": d.subtitle ?? NSNull(),
+            "is_built_in": d.isBuiltIn,
+            "is_connected": d.isConnected,
+            "width_pixels": d.widthPixels.map { NSNumber(value: $0) } ?? NSNull(),
+            "height_pixels": d.heightPixels.map { NSNumber(value: $0) } ?? NSNull(),
+            "min_refresh_hz": d.minRefreshHz.map { NSNumber(value: $0) } ?? NSNull(),
+            "max_refresh_hz": d.maxRefreshHz.map { NSNumber(value: $0) } ?? NSNull(),
+            "color_bit_depth": d.colorBitDepth.map { NSNumber(value: $0) } ?? NSNull(),
+            "color_accuracy_index": d.colorAccuracyIndex.map { NSNumber(value: $0) } ?? NSNull(),
+            "supports_hdr": d.supportsHDR,
+            "timing_mode_count": d.timingModeCount,
+            "node": nodeToJSON(d.node)
+        ]
+    }
+
+    private static func pciNodeToJSON(_ n: PCINode) -> [String: Any] {
+        return [
+            "id": String(format: "0x%llX", n.backingID.raw),
+            "kind": n.kind.rawValue,
+            "title": n.title,
+            "subtitle": n.subtitle ?? NSNull(),
+            "vendor_id": n.vendorID.map { NSNumber(value: $0) } ?? NSNull(),
+            "device_id": n.deviceID.map { NSNumber(value: $0) } ?? NSNull(),
+            "vendor_name": n.vendorID.flatMap(pciVendorName) ?? NSNull(),
+            "class_code": n.classCode.map { NSNumber(value: $0) } ?? NSNull(),
+            "subclass_code": n.subclassCode.map { NSNumber(value: $0) } ?? NSNull(),
+            "prog_if": n.progIF.map { NSNumber(value: $0) } ?? NSNull(),
+            "class_label": n.classCode.map { pciClassLabel($0, n.subclassCode, n.progIF) } ?? NSNull(),
+            "link_speed": n.linkSpeed.map { NSNumber(value: $0) } ?? NSNull(),
+            "link_width": n.linkWidth.map { NSNumber(value: $0) } ?? NSNull(),
+            "max_link_speed": n.maxLinkSpeed.map { NSNumber(value: $0) } ?? NSNull(),
+            "max_link_width": n.maxLinkWidth.map { NSNumber(value: $0) } ?? NSNull(),
+            "bdf": n.bdf ?? NSNull(),
+            "slot_name": n.slotName ?? NSNull(),
+            "is_built_in": n.isBuiltIn,
+            "children": n.children.map(pciNodeToJSON(_:))
         ]
     }
 
@@ -232,6 +327,9 @@ enum SnapshotDumper {
         p.physicalPorts(TopologyMapper.physicalPorts(from: snapshot))
         p.thunderbolt(snapshot.tb)
         p.usb(snapshot.usb)
+        p.displays(snapshot.displays)
+        p.bluetooth(snapshot.bluetooth)
+        p.pcie(snapshot.pcie)
         p.internalHardware(snapshot.internalHardware)
         return p.flush()
     }
@@ -427,16 +525,114 @@ private final class PrettyPrinter {
                 line(prefix + (isLast ? "└─ " : "├─ ") + bold(bus.title) + dim(bus.subtitle.map { " · \($0)" } ?? ""))
             }
         }
-        if !hw.socCoprocessors.isEmpty {
+        if !hw.coprocessorGroups.isEmpty {
             line("   \(blue("◈"))  SoC Coprocessors")
-            for (i, cop) in hw.socCoprocessors.enumerated() {
-                let isLast = i == hw.socCoprocessors.count - 1
-                let prefix = "      "
-                let emoji = coprocessorEmoji(for: cop)
-                line(prefix + (isLast ? "└─ " : "├─ ") + "\(emoji) " + bold(cop.title) + dim(cop.subtitle.map { " · \($0)" } ?? ""))
+            for (g, group) in hw.coprocessorGroups.enumerated() {
+                let isLastGroup = g == hw.coprocessorGroups.count - 1
+                let groupPrefix = "      "
+                line(groupPrefix + (isLastGroup ? "└ " : "├ ") + bold(group.category.title))
+                for (i, cop) in group.coprocessors.enumerated() {
+                    let isLast = i == group.coprocessors.count - 1
+                    let childPrefix = groupPrefix + (isLastGroup ? "    " : "│   ")
+                    let emoji = coprocessorEmoji(for: cop)
+                    line(childPrefix + (isLast ? "└─ " : "├─ ") + "\(emoji) " + cop.title + dim(cop.subtitle.map { " · \($0)" } ?? ""))
+                }
             }
         }
         line()
+    }
+
+    // MARK: Bluetooth
+
+    func bluetooth(_ snap: BluetoothSnapshot) {
+        let total = snap.totalDeviceCount
+        let sub = snap.controller == nil ? "no controller" : "\(total) device\(total == 1 ? "" : "s")"
+        section("📶 Bluetooth", sub)
+        if let c = snap.controller {
+            let state = c.isOn ? green("on") : dim("off")
+            line("   \(bold(c.displayChipset)) · \(state) · \(c.transport ?? "—") · \(c.address ?? "—")")
+            if let fw = c.firmwareVersion {
+                line("   " + dim("firmware: \(fw)"))
+            }
+        }
+        if !snap.connected.isEmpty {
+            line("   " + dim("Connected:"))
+            for d in snap.connected {
+                line("      " + green("◉ ") + d.name + dim(deviceSubtitle(d)))
+            }
+        }
+        if !snap.paired.isEmpty {
+            line("   " + dim("Paired:"))
+            for d in snap.paired {
+                line("      " + dim("○ ") + d.name + dim(deviceSubtitle(d)))
+            }
+        }
+        line()
+    }
+
+    private func deviceSubtitle(_ d: BluetoothDevice) -> String {
+        var parts: [String] = []
+        if let m = d.minorType, !m.isEmpty { parts.append(m) }
+        if let addr = d.address { parts.append(addr) }
+        if let rssi = d.rssi { parts.append("\(rssi) dBm") }
+        return parts.isEmpty ? "" : " · \(parts.joined(separator: " · "))"
+    }
+
+    // MARK: Displays
+
+    func displays(_ snap: DisplaySnapshot) {
+        section("🖥  Displays", "\(snap.totalCount) total, \(snap.connectedCount) active")
+        if snap.displays.isEmpty {
+            line(dim("   none"))
+            line()
+            return
+        }
+        for d in snap.displays {
+            let icon = d.isBuiltIn ? "💻" : (d.isConnected ? "🖥 " : "⊟ ")
+            line("   \(icon) \(bold(d.title))\(d.subtitle.map { dim(" · \($0)") } ?? "")")
+            if d.isConnected {
+                var bits: [String] = []
+                if let depth = d.colorBitDepth { bits.append("\(depth)-bit") }
+                if d.supportsHDR { bits.append("HDR") }
+                if d.timingModeCount > 0 { bits.append("\(d.timingModeCount) modes") }
+                if !bits.isEmpty {
+                    line("      " + dim(bits.joined(separator: " · ")))
+                }
+            }
+        }
+        line()
+    }
+
+    // MARK: PCIe
+
+    func pcie(_ snap: PCISnapshot) {
+        section("🚌 PCIe", "\(snap.roots.count) root bridge(s), \(snap.endpointCount) endpoint(s)")
+        if snap.roots.isEmpty {
+            line(dim("   none"))
+            line()
+            return
+        }
+        for (idx, root) in snap.roots.enumerated() {
+            let last = idx == snap.roots.count - 1
+            renderPCI(root, prefix: "   ", isLast: last)
+        }
+        line()
+    }
+
+    private func renderPCI(_ n: PCINode, prefix: String, isLast: Bool) {
+        let connector = isLast ? "└─ " : "├─ "
+        let speedBadge: String
+        if let s = n.linkSpeed, let w = n.linkWidth {
+            speedBadge = dim(" · ") + cyan("\(pciLinkSpeedShortLabel(s)) ×\(w)")
+        } else {
+            speedBadge = ""
+        }
+        let body = bold(n.title) + (n.subtitle.map { dim(" · \($0)") } ?? "") + speedBadge
+        line(prefix + connector + body)
+        let nextPrefix = prefix + (isLast ? "   " : "│  ")
+        for (i, c) in n.children.enumerated() {
+            renderPCI(c, prefix: nextPrefix, isLast: i == n.children.count - 1)
+        }
     }
 
     private func renderBattery(_ node: TBNode) {

@@ -43,9 +43,14 @@ final class PortScopeViewModel: ObservableObject {
             let usb = USBScanner.scan()
             let accessories = AccessoryScanner.scan()
             let internalHardware = InternalHardwareScanner.scan(accessories: accessories)
+            let bluetooth = BluetoothScanner.scan()
+            let displays = DisplayScanner.scan()
+            let pcie = PCIScanner.scan()
             let snap = SystemSnapshot(
                 tb: tb, usb: usb, accessories: accessories,
-                internalHardware: internalHardware, capturedAt: Date()
+                internalHardware: internalHardware,
+                bluetooth: bluetooth, displays: displays, pcie: pcie,
+                capturedAt: Date()
             )
             await MainActor.run {
                 self.snapshot = snap
@@ -73,7 +78,8 @@ final class PortScopeViewModel: ObservableObject {
     /// Roots that the selection lookup walks. Includes TB controllers,
     /// USB controllers, the flattened TB-tunneled device lists, and the
     /// internal-hardware buses + battery (so I²C / SPI children and the
-    /// battery node resolve from the sidebar).
+    /// battery node resolve from the sidebar). PCIe nodes and displays are
+    /// added so their developer-detail rows resolve too.
     private var selectionRoots: [TBNode] {
         var roots = snapshot.tb.controllers
             + snapshot.usb.controllers
@@ -82,10 +88,26 @@ final class PortScopeViewModel: ObservableObject {
             + snapshot.internalHardware.i2cBuses
             + snapshot.internalHardware.spiBuses
             + snapshot.internalHardware.socCoprocessors
+            + snapshot.displays.displays.map(\.node)
+            + pciRootNodes()
         if let bm = snapshot.internalHardware.batteryManager {
             roots.append(bm)
         }
         return roots
+    }
+
+    /// Flatten PCI tree into the underlying TBNodes so selection lookups
+    /// resolve every device. We can't just include the IORegistry tree —
+    /// the PCI tree promotes children through bridge boundaries the
+    /// IOService plane wouldn't preserve, so we walk the PCINode tree.
+    private func pciRootNodes() -> [TBNode] {
+        var out: [TBNode] = []
+        func walk(_ n: PCINode) {
+            out.append(n.node)
+            for c in n.children { walk(c) }
+        }
+        for r in snapshot.pcie.roots { walk(r) }
+        return out
     }
 
     func node(for id: TBNodeID) -> TBNode? {
@@ -122,6 +144,11 @@ final class PortScopeViewModel: ObservableObject {
     private func exists(id: TBNodeID) -> Bool {
         if PhysicalPortSelector.isPortID(id) { return true }
         if MagSafeSelector.isMagSafeID(id) { return snapshot.internalHardware.magsafe != nil }
+        if BluetoothSelector.isControllerID(id) { return snapshot.bluetooth.controller != nil }
+        if BluetoothSelector.isDeviceID(id) {
+            let all = snapshot.bluetooth.connected + snapshot.bluetooth.paired
+            return all.contains { BluetoothSelector.id(for: $0).raw == id.raw }
+        }
         return node(for: id) != nil
     }
 
@@ -134,6 +161,46 @@ final class PortScopeViewModel: ObservableObject {
 
     func select(_ id: TBNodeID) {
         selection = id
+    }
+}
+
+/// Synthetic IDs used for sidebar rows that don't have a unique IORegistry
+/// entry to point at (Bluetooth controller, paired Bluetooth devices, etc.).
+/// The high 32 bits act as a namespace tag so the IDs never collide with
+/// real registry entry IDs.
+enum BluetoothSelector {
+    private static let controllerMask: UInt64 = 0xB7E0_0000_0000_0000
+    private static let deviceMask: UInt64     = 0xB7E1_0000_0000_0000
+
+    static let controllerID = TBNodeID(raw: controllerMask)
+
+    static func isControllerID(_ id: TBNodeID) -> Bool {
+        id.raw == controllerMask
+    }
+
+    /// Synthesise an ID from the device's stable identifier (BD_ADDR). A
+    /// simple hash is fine — collisions across the user's paired-device
+    /// set are astronomically unlikely, and even on a collision we'd just
+    /// route to the wrong device's detail card.
+    static func id(for device: BluetoothDevice) -> TBNodeID {
+        let key = (device.address ?? device.name).lowercased()
+        let h = UInt64(bitPattern: Int64(stableHash(key)))
+        return TBNodeID(raw: deviceMask | (h & 0x0000_FFFF_FFFF_FFFF))
+    }
+
+    static func isDeviceID(_ id: TBNodeID) -> Bool {
+        (id.raw & 0xFFFF_0000_0000_0000) == deviceMask
+    }
+
+    private static func stableHash(_ s: String) -> Int {
+        // Deterministic 64-bit FNV-1a so the row identity survives rescans
+        // (Swift's `String.hashValue` is randomised per launch).
+        var h: UInt64 = 0xcbf29ce484222325
+        for b in s.utf8 {
+            h ^= UInt64(b)
+            h = h &* 0x100000001b3
+        }
+        return Int(bitPattern: UInt(h))
     }
 }
 

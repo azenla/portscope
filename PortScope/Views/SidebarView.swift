@@ -72,6 +72,9 @@ struct SidebarView: View {
                 }
             }
 
+            displaysSection
+            bluetoothSection
+            pcieSection
             internalHardwareSection
         }
         .listStyle(.sidebar)
@@ -136,14 +139,65 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
+    private var displaysSection: some View {
+        let displays = vm.snapshot.displays
+        if !displays.displays.isEmpty {
+            collapsibleSection("Displays", icon: "display") {
+                ForEach(displays.displays) { display in
+                    DisplaySidebarRow(display: display).tag(display.id)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var bluetoothSection: some View {
+        let bt = vm.snapshot.bluetooth
+        if bt.controller != nil || bt.totalDeviceCount > 0 {
+            collapsibleSection("Bluetooth", icon: "dot.radiowaves.left.and.right") {
+                if let _ = bt.controller {
+                    BluetoothControllerRow(snapshot: bt)
+                        .tag(BluetoothSelector.controllerID)
+                }
+                if !bt.connected.isEmpty {
+                    BluetoothSubgroupHeader(title: "Connected (\(bt.connected.count))")
+                    ForEach(bt.connected) { dev in
+                        BluetoothDeviceRow(device: dev)
+                            .tag(BluetoothSelector.id(for: dev))
+                    }
+                }
+                if !bt.paired.isEmpty {
+                    BluetoothSubgroupHeader(title: "Paired (\(bt.paired.count))")
+                    ForEach(bt.paired) { dev in
+                        BluetoothDeviceRow(device: dev)
+                            .tag(BluetoothSelector.id(for: dev))
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pcieSection: some View {
+        let pcie = vm.snapshot.pcie
+        if !pcie.roots.isEmpty {
+            collapsibleSection("PCIe", icon: "square.stack.3d.up") {
+                ForEach(pcie.roots) { root in
+                    PCIBranch(node: root, expanded: $expanded)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private var internalHardwareSection: some View {
         let hw = vm.snapshot.internalHardware
-        // MagSafe moved to Physical Ports; this section now covers buses +
-        // battery + anything else internal.
+        // MagSafe moved to Physical Ports; this section covers buses +
+        // battery + SoC coprocessors grouped thematically.
         let hasAny = hw.batteryManager != nil
             || !hw.i2cBuses.isEmpty
             || !hw.spiBuses.isEmpty
-            || !hw.socCoprocessors.isEmpty
+            || !hw.coprocessorGroups.isEmpty
         if hasAny {
             collapsibleSection("Internal Hardware", icon: "cpu") {
                 if let bm = hw.batteryManager {
@@ -157,17 +211,52 @@ struct SidebarView: View {
                         BatteryRow(node: bm).tag(bm.id)
                     }
                 }
-                ForEach(hw.i2cBuses, id: \.id) { bus in
-                    FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
+
+                if !hw.i2cBuses.isEmpty || !hw.spiBuses.isEmpty {
+                    coprocessorSubsection(title: "Buses", icon: "point.3.connected.trianglepath.dotted") {
+                        ForEach(hw.i2cBuses, id: \.id) { bus in
+                            FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
+                        }
+                        ForEach(hw.spiBuses, id: \.id) { bus in
+                            FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
+                        }
+                    }
                 }
-                ForEach(hw.spiBuses, id: \.id) { bus in
-                    FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
-                }
-                ForEach(hw.socCoprocessors, id: \.id) { block in
-                    FullTopologyRow(node: block, depth: 0, expanded: $expanded)
+
+                ForEach(hw.coprocessorGroups) { group in
+                    coprocessorSubsection(title: group.category.title,
+                                          icon: group.category.symbol) {
+                        ForEach(group.coprocessors, id: \.id) { block in
+                            FullTopologyRow(node: block, depth: 0, expanded: $expanded)
+                        }
+                    }
                 }
             }
         }
+    }
+
+    /// Render a labelled subsection inside the Internal Hardware section.
+    /// Stateless on collapse: these aren't expensive to render so we keep
+    /// them always-open for now. Visual grouping cuts the formerly-flat
+    /// list of 30+ coprocessors into bite-sized chunks.
+    @ViewBuilder
+    private func coprocessorSubsection<Content: View>(
+        title: String, icon: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .frame(width: 14)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+            Spacer()
+        }
+        .padding(.top, 4)
+        content()
     }
 
     /// A sidebar `Section` whose header is a clickable chevron that
@@ -612,4 +701,143 @@ enum MagSafeSelector {
     static let id = TBNodeID(raw: mask)
 
     static func isMagSafeID(_ id: TBNodeID) -> Bool { id.raw == mask }
+}
+
+// MARK: - Bluetooth rows
+
+private struct BluetoothControllerRow: View {
+    let snapshot: BluetoothSnapshot
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .foregroundStyle(snapshot.controller?.isOn == true ? .blue : .secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Bluetooth Controller")
+                Text(subtitle)
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+    }
+
+    private var subtitle: String {
+        guard let c = snapshot.controller else { return "—" }
+        var parts: [String] = []
+        if c.isOn { parts.append("On") } else { parts.append("Off") }
+        if !c.displayChipset.isEmpty && c.displayChipset != "Unknown" {
+            parts.append(c.displayChipset)
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+private struct BluetoothDeviceRow: View {
+    let device: BluetoothDevice
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: device.category.symbol)
+                .foregroundStyle(device.isConnected ? device.category.color : .secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(device.name).lineLimit(1)
+                if let s = subtitle, !s.isEmpty {
+                    Text(s)
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private var subtitle: String? {
+        var parts: [String] = []
+        if device.isConnected { parts.append("Connected") }
+        if let m = device.minorType, !m.isEmpty { parts.append(m) }
+        if let rssi = device.rssi { parts.append("\(rssi) dBm") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+private struct BluetoothSubgroupHeader: View {
+    let title: String
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 4))
+                .foregroundStyle(.tertiary)
+                .frame(width: 14)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+            Spacer()
+        }
+        .padding(.top, 4)
+    }
+}
+
+// MARK: - Display row
+
+private struct DisplaySidebarRow: View {
+    let display: DisplayInfo
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: display.iconSymbol)
+                .foregroundStyle(display.isConnected ? .blue : .secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(display.title).lineLimit(1)
+                if let s = display.subtitle, !s.isEmpty {
+                    Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    Text("Idle").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - PCI branch
+
+struct PCIBranch: View {
+    let node: PCINode
+    @Binding var expanded: Set<TBNodeID>
+
+    var body: some View {
+        if node.children.isEmpty {
+            label.tag(node.id)
+        } else {
+            DisclosureGroup(
+                isExpanded: Binding(
+                    get: { expanded.contains(node.id) },
+                    set: { isOn in
+                        if isOn { expanded.insert(node.id) } else { expanded.remove(node.id) }
+                    }
+                )
+            ) {
+                ForEach(node.children) { child in
+                    PCIBranch(node: child, expanded: $expanded)
+                }
+            } label: {
+                label
+            }
+            .tag(node.id)
+        }
+    }
+
+    private var label: some View {
+        HStack(spacing: 8) {
+            Image(systemName: node.kind.symbol)
+                .foregroundStyle(node.kind.color)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(node.title).lineLimit(1).font(.callout)
+                if let s = node.subtitle, !s.isEmpty {
+                    Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+    }
 }

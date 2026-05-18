@@ -32,9 +32,14 @@ enum PortScopeMain {
             let usb = USBScanner.scan()
             let accessories = AccessoryScanner.scan()
             let internalHardware = InternalHardwareScanner.scan(accessories: accessories)
+            let bluetooth = BluetoothScanner.scan()
+            let displays = DisplayScanner.scan()
+            let pcie = PCIScanner.scan()
             return SystemSnapshot(
                 tb: tb, usb: usb, accessories: accessories,
-                internalHardware: internalHardware, capturedAt: Date()
+                internalHardware: internalHardware,
+                bluetooth: bluetooth, displays: displays, pcie: pcie,
+                capturedAt: Date()
             )
         }
         let output: String

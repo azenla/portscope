@@ -34,6 +34,30 @@ struct ContentView: View {
                 }
                 .frame(minWidth: 620)
                 .id(sel)
+            } else if BluetoothSelector.isControllerID(sel),
+                      let controller = vm.snapshot.bluetooth.controller {
+                ScrollView {
+                    BluetoothControllerView(controller: controller,
+                                            snapshot: vm.snapshot.bluetooth,
+                                            onNavigate: { vm.select($0) })
+                        .padding(24)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minWidth: 620)
+                .id(sel)
+            } else if BluetoothSelector.isDeviceID(sel),
+                      let device = findBluetoothDevice(id: sel) {
+                ScrollView {
+                    BluetoothDeviceView(device: device)
+                        .padding(24)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minWidth: 620)
+                .id(sel)
+            } else if let display = vm.snapshot.displays.displays.first(where: { $0.id == sel }) {
+                DisplayDetailView(display: display).id(sel)
+            } else if let pciNode = findPCINode(id: sel, in: vm.snapshot.pcie.roots) {
+                PCIDeviceView(node: pciNode).id(sel)
             } else if let node = vm.node(for: sel) {
                 DetailView(
                     node: node,
@@ -47,6 +71,19 @@ struct ContentView: View {
         } else {
             emptyState
         }
+    }
+
+    private func findBluetoothDevice(id: TBNodeID) -> BluetoothDevice? {
+        let all = vm.snapshot.bluetooth.connected + vm.snapshot.bluetooth.paired
+        return all.first { BluetoothSelector.id(for: $0).raw == id.raw }
+    }
+
+    private func findPCINode(id: TBNodeID, in roots: [PCINode]) -> PCINode? {
+        for r in roots {
+            if r.id == id { return r }
+            if let f = findPCINode(id: id, in: r.children) { return f }
+        }
+        return nil
     }
 
     private var emptyState: some View {

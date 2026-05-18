@@ -19,13 +19,85 @@ enum InternalHardwareScanner {
             if case .magsafe = port.connector { return true }
             return false
         }
+        let groups = groupCoprocessors(arm.coprocessors)
         return InternalHardwareSnapshot(
             i2cBuses: arm.i2c,
             spiBuses: arm.spi,
             batteryManager: battery,
             magsafe: magsafe,
-            socCoprocessors: arm.coprocessors
+            coprocessorGroups: groups
         )
+    }
+
+    /// Bucket the flat list of named SoC blocks by function. The mapping
+    /// follows the device-tree naming Apple has used since M1; new
+    /// generations have added more `dispext` / `dcpext` instances but the
+    /// short prefixes haven't changed. Anything unknown ends up in `.other`
+    /// rather than being dropped so future silicon doesn't go silent.
+    private static func groupCoprocessors(_ all: [TBNode]) -> [SoCCoprocessorGroup] {
+        var buckets: [SoCCoprocessorCategory: [TBNode]] = [:]
+        for node in all {
+            let name = deviceTreeName(of: node)
+            let category = categorise(name: name)
+            buckets[category, default: []].append(node)
+        }
+        return SoCCoprocessorCategory.allCases.compactMap { category in
+            guard let nodes = buckets[category], !nodes.isEmpty else { return nil }
+            return SoCCoprocessorGroup(
+                category: category,
+                coprocessors: nodes.sorted { $0.title < $1.title }
+            )
+        }
+    }
+
+    private static func categorise(name: String) -> SoCCoprocessorCategory {
+        let displayPrefixes = ["dcp", "dcpext", "disp", "dispext", "gfx-asc", "sgx", "agx"]
+        let imagePrefixes   = ["isp", "ane", "jpeg", "scaler"]
+        let videoPrefixes   = ["avd", "ave"]
+        let storagePrefixes = ["ans", "mcc"]
+        let securityPrefixes = ["sep", "aop", "pmgr", "pmp", "smc", "aic"]
+        let radioPrefixes   = ["wlan", "bluetooth"]
+
+        if displayPrefixes.contains(where: { matches(name: name, prefix: $0) }) {
+            return .displayAndGraphics
+        }
+        if imagePrefixes.contains(where: { matches(name: name, prefix: $0) }) {
+            return .mediaImage
+        }
+        if videoPrefixes.contains(where: { matches(name: name, prefix: $0) }) {
+            return .mediaVideo
+        }
+        if storagePrefixes.contains(where: { matches(name: name, prefix: $0) }) {
+            return .storageMemory
+        }
+        if securityPrefixes.contains(where: { matches(name: name, prefix: $0) }) {
+            return .securityPower
+        }
+        if radioPrefixes.contains(where: { matches(name: name, prefix: $0) }) {
+            return .radios
+        }
+        return .other
+    }
+
+    private static func matches(name: String, prefix: String) -> Bool {
+        if name == prefix { return true }
+        if name.hasPrefix(prefix) {
+            let suffix = name.dropFirst(prefix.count)
+            return suffix.isEmpty || suffix.allSatisfy(\.isNumber)
+        }
+        return false
+    }
+
+    private static func deviceTreeName(of node: TBNode) -> String {
+        if case .string(let s) = node.properties["name"] ?? .string("") { return s }
+        if case .data(let d) = node.properties["name"] ?? .string("") {
+            return String(data: d, encoding: .utf8)?
+                .trimmingCharacters(in: .controlCharacters) ?? ""
+        }
+        // Fall back to device-tree title heuristic: the IORegistry entry's
+        // `name` is what NodeBuilder fed into the formatter, so the title's
+        // tail is usually the device-tree token.
+        return node.title.lowercased().replacingOccurrences(of: " ", with: "")
     }
 
     // MARK: - ARM I/O buses + coprocessors

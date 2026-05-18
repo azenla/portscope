@@ -205,8 +205,45 @@ extension TBNode {
             }
         case "idVendor", "idProduct":
             if let v = value.asUInt { return String(format: "0x%04X (%d)", v, v) }
+        case "compatible", "IONameMatch", "IONameMatched":
+            // These come back as arrays of device-tree match strings. The
+            // first entry is the primary match (`jpeg,t8110jpeg`), the
+            // remainder are legacy/older-silicon aliases the kext also
+            // binds against. Show the array contents joined with " · " so
+            // the user gets the bus name + family at a glance instead of
+            // a tuple-syntax `("jpeg,t8110jpeg","s5l8920x")`.
+            return prettyCompatibleString(value)
         default: break
         }
+        return value.display
+    }
+}
+
+/// Render a `compatible` / `IONameMatch` array as a friendly inline list.
+/// Handles three forms: a plain string, an array of strings, and a data
+/// blob (some device-tree entries serialise the value as a NUL-separated
+/// byte string instead of a CFArray).
+func prettyCompatibleString(_ value: IORegValue) -> String {
+    switch value {
+    case .string(let s):
+        return s
+    case .array(let arr):
+        let strs: [String] = arr.compactMap {
+            if case let .string(s) = $0 { return s }
+            return nil
+        }
+        if strs.isEmpty { return value.display }
+        return strs.joined(separator: " · ")
+    case .data(let d):
+        // The kernel sometimes serialises a NUL-separated device-tree
+        // string array as raw bytes. Split on NUL and reconstitute.
+        let pieces = d
+            .split(separator: 0)
+            .compactMap { String(data: Data($0), encoding: .utf8) }
+            .filter { !$0.isEmpty }
+        if pieces.isEmpty { return value.display }
+        return pieces.joined(separator: " · ")
+    default:
         return value.display
     }
 }

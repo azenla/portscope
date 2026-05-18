@@ -243,11 +243,21 @@ struct SystemSnapshot {
     let accessories: [PortAccessoryInfo]
     /// Internal-fabric buses and devices: I²C, SPI, smart battery, MagSafe.
     let internalHardware: InternalHardwareSnapshot
+    /// Bluetooth controller + paired/connected devices, from SPBluetoothDataType.
+    let bluetooth: BluetoothSnapshot
+    /// Built-in + external displays. Empty on Intel hosts.
+    let displays: DisplaySnapshot
+    /// PCIe topology rooted at host bridges. Empty on Macs without a
+    /// visible PCIe complex (rare; even Apple Silicon laptops have one).
+    let pcie: PCISnapshot
     let capturedAt: Date
 
     static let empty = SystemSnapshot(tb: .empty,
                                       usb: .empty,
                                       accessories: [],
                                       internalHardware: .empty,
+                                      bluetooth: .empty,
+                                      displays: .empty,
+                                      pcie: .empty,
                                       capturedAt: .distantPast)
 }
