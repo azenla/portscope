@@ -16,13 +16,51 @@ xcodebuild -project PortScope.xcodeproj -scheme PortScope -configuration Debug -
 
 Built bundle lives under `~/Library/Developer/Xcode/DerivedData/PortScope-*/Build/Products/Debug/PortScope.app`. Launch with `open path/to/PortScope.app`. There are no tests.
 
+## CLI dump mode — use this to check your assumptions
+
+The app binary inside the bundle is **dual-mode**. With no arguments it launches the GUI; with `--pretty` or `--json` it runs the same scanners synchronously, prints to stdout, and exits without ever opening a window. This is the right way for a future Claude (you) to inspect what the live `SystemSnapshot` looks like on the host — **prefer this over running `ioreg` / `system_profiler` by hand**, because the dump goes through the same `ThunderboltScanner` / `USBScanner` / `AccessoryScanner` / `InternalHardwareScanner` / `TopologyMapper` pipeline the UI uses, so what you see is exactly what the GUI would show.
+
+```sh
+# After `xcodebuild build`, find the bundle:
+APP=$(ls -td ~/Library/Developer/Xcode/DerivedData/PortScope-*/Build/Products/Debug/PortScope.app | head -1)
+BIN="$APP/Contents/MacOS/PortScope"
+
+"$BIN" --pretty                 # colourful tree with emoji (auto-detects TTY)
+"$BIN" --pretty --no-color      # plain text, safe for piping
+"$BIN" --json | jq .            # full structured dump (stable key ordering)
+"$BIN" --help
+```
+
+Common diagnostic recipes:
+
+```sh
+# What does Physical Port 1 actually look like?
+"$BIN" --json | jq '.physical_ports[0]'
+
+# Every property the kernel publishes on the first USB-C receptacle:
+"$BIN" --json | jq '.accessories[0].raw_properties'
+
+# Which SoC coprocessors did the scanner find?
+"$BIN" --json | jq '.internal_hardware.soc_coprocessors[].title'
+
+# IORegistry class of every TB controller (a quick way to confirm Type5 vs Type7):
+"$BIN" --json | jq '.thunderbolt.controllers[].class'
+
+# Tunneled-USB cross-link map (USB controller id → TB switch id):
+"$BIN" --json | jq '.usb.tb_context'
+```
+
+When `ioreg` and the CLI dump disagree, **trust the CLI dump** — it reflects whatever `IORegBridge` + scanners + classifiers actually produce for the running app. If you're tempted to spelunk `ioreg` to validate a hypothesis about what the app sees, run `--json` first; the difference between "what the kernel exposes" and "what PortScope's pipeline turns it into" is usually the bug.
+
+Source lives at `Services/SnapshotDumper.swift` (pretty + JSON rendering) and the argv branch lives in `PortScopeApp.swift` (`PortScopeMain` enum). Don't re-add `@main` to `PortScopeApp` — `PortScopeMain.main()` decides whether to call `PortScopeApp.main()` based on the argv flags.
+
 ## Entitlements
 
 `PortScope/PortScope.entitlements` sets `com.apple.security.app-sandbox = false`. The sandbox is intentionally **off** so `IOServiceAddMatchingNotification` and full IOKit registry reads work. Don't re-enable `ENABLE_APP_SANDBOX` in `project.pbxproj` without also moving everything that touches IOKit into a helper or exception list — TB hot-plug notifications break under the sandbox.
 
 ## Architecture
 
-Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Model → SwiftUI views**. There are three scanners (Thunderbolt, USB, Accessory). TB and USB produce `TBNode` trees through a single shared builder + formatter so node metadata stays consistent; the accessory scanner is shape-different (one struct per physical receptacle, not a tree) and gets merged into `PhysicalPort` by `TopologyMapper`.
+Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Model → SwiftUI views**. There are four scanners (Thunderbolt, USB, Accessory, InternalHardware). TB and USB produce `TBNode` trees through a single shared builder + formatter so node metadata stays consistent; the accessory scanner is shape-different (one struct per physical receptacle, not a tree) and gets merged into `PhysicalPort` by `TopologyMapper`; the InternalHardware scanner pulls SoC-internal blocks (I²C / SPI buses, the smart battery, and named SoC coprocessors — Secure Enclave, Always-On Processor, ANE, ISP, DCP, NAND controller, SMC, etc.) out of `AppleARMIODevice` for the Internal Hardware sidebar section.
 
 ### Services
 
@@ -36,9 +74,9 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 - `Services/USBScanner.swift` — matches `IOUSBHostController` / `AppleUSBHostController` / `IOUSBController`, dedupes by entry ID, recurses via `NodeBuilder`, produces a `USBSnapshot`. **For each controller, walks parents looking for a `IOThunderboltSwitch` ancestor and records the mapping in `USBSnapshot.tbContext: [TBNodeID: TBNodeID]`** so USB detail views can cross-link into the TB tree (used by `TBLinkCard`).
 
-- `Services/AccessoryScanner.swift` — matches `AppleHPMInterfaceType10` (one instance per physical USB-C / MagSafe receptacle), reads per-port runtime state from `IOAccessoryManager`, and walks the port's `Power In → USB-PD` children to capture USB-PD `WinningPowerSourceOption` + offered PDOs and the Apple "Brick ID" PDO when a charger is identifying itself. Returns `[PortAccessoryInfo]` sorted by `PortNumber`. **This is the only place the app touches IOAccessory plane data**; it surfaces signal information (active transports, plug orientation, displayport HPD, cable e-marker VID/PID/manufacturer string) that is invisible to the Thunderbolt and USB IOKit families.
+- `Services/AccessoryScanner.swift` — matches the per-physical-receptacle accessory classes (`AppleHPMInterfaceType10/11` on M3+ / TB5 hosts, `AppleTCControllerType10/11` on the M1 / M2 / T6000 family — both expose an identical property schema), reads per-port runtime state from `IOAccessoryManager`, and walks the port's `Power In → USB-PD` children to capture USB-PD `WinningPowerSourceOption` + offered PDOs and the Apple "Brick ID" PDO when a charger is identifying itself. Returns `[PortAccessoryInfo]` sorted by `PortNumber`. **This is the only place the app touches IOAccessory plane data**; it surfaces signal information (active transports, plug orientation, displayport HPD, cable e-marker VID/PID/manufacturer string) that is invisible to the Thunderbolt and USB IOKit families. Type11 = MagSafe 3 receptacle; Type10 = USB-C receptacle. **Empty on Intel hosts**.
 
-- `Services/IORegMonitor.swift` — hot-plug notifications. Registers `IOServiceAddMatchingNotification` for both `kIOMatchedNotification` and `kIOTerminatedNotification` against TB controller/switch/port/local-node/USB-Type-2-adapter classes, `IOUSBHostController` / `IOUSBHostDevice`, **and `AppleHPMInterfaceType10`** (so cable insertions, USB-PD renegotiation, and alt-mode entry all fire a rescan). Then posts a debounced `Notification.Name` that triggers `PortScopeViewModel.rescan()`.
+- `Services/IORegMonitor.swift` — hot-plug notifications. Registers `IOServiceAddMatchingNotification` for both `kIOMatchedNotification` and `kIOTerminatedNotification` against TB controller/switch/port/local-node and the TB USB tunnel adapter (both `…Type2DownAdapter` for M3+/Type7 hosts and `…USBDownAdapter` for M1/M2 Type5 hosts), `IOUSBHostController` / `IOUSBHostDevice`, **and the four accessory classes** `AppleHPMInterfaceType10/11` + `AppleTCControllerType10/11` (so cable insertions, USB-PD renegotiation, and alt-mode entry all fire a rescan on every generation). Then posts a debounced `Notification.Name` that triggers `PortScopeViewModel.rescan()`.
 
 - `Services/TopologyMapper.swift` — derives the **simplified user-facing topology** (`PhysicalPort` → optional `ConnectedDevice` → daisy-chained devices) from a snapshot. Each `PhysicalPort` carries an inferred `mode: PhysicalPortMode` (`.thunderbolt(speed)` / `.usbOnly(speed?)` / `.displayOnly` / `.empty` / `.unknown`), the flat `attachedUSBDevices` (used for stats / overview cards), the hierarchical `usbDeviceRoots` (top-level hubs/devices with their full subtrees intact, used by the sidebar to render the real USB bus tree), `tunnels: [PortTunnel]` summarising DP/USB/PCIe reserved+max bandwidth, and an optional `accessory: PortAccessoryInfo` for the receptacle's HPM state.
 
@@ -81,7 +119,9 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 ## Things that bit me — read before "fixing"
 
-- **`Adapter Type` integer codes vary by chip vendor.** Apple's `IOThunderboltSwitchType7` uses one encoding; Intel's `IOThunderboltSwitchIntelJHL9580` (in third-party TB5 docks) **swaps the codes for DP/HDMI and PCIe**. Don't categorize adapters by `Adapter Type`. Use the kernel's `Description` string (`"PCIe Adapter"`, `"DP or HDMI Adapter"`, `"USB Adapter"`, `"USB Gen T Adapter"`, `"Thunderbolt Port"`, `"Port is inactive"`, `"Thunderbolt Native Host Interface Adapter"`) — it's authoritative across all vendors. `TBAdapterType` (Apple-encoded) is still around but is for labelling only, not categorisation.
+- **`Adapter Type` integer codes vary by chip vendor *and* by Apple controller generation.** Apple's `IOThunderboltSwitchType7` (M3+/TB5) uses one encoding; Apple's `IOThunderboltSwitchType5` (M1/M2 family) **swaps the PCIe / USB / DP codes relative to Type7** (e.g. on Type5 `0x100001` is *PCIe*, not DP/HDMI); third-party TB5 docks built around Intel's `IOThunderboltSwitchIntelJHL95xx` permute them yet again. Don't categorise adapters by `Adapter Type` raw values. Use the kernel's `Description` string (`"PCIe Adapter"`, `"DP or HDMI Adapter"`, `"USB Adapter"`, `"USB Gen T Adapter"`, `"Thunderbolt Port"`, `"Port is inactive"`, `"Thunderbolt Native Host Interface Adapter"`) — it's authoritative across all vendors. `TBAdapterType` only decodes the universally-stable codes (`0` inactive, `1` lane, `2` NHI); everything else falls into `.unknown(rawValue)` deliberately.
+
+- **The accessory class hierarchy differs by host generation.** M3+ / TB5 hosts publish per-USB-C / MagSafe receptacle state under `AppleHPMInterfaceType10/Type11`. M1 / M2 / T6000-class hosts publish the **same property schema** under `AppleTCControllerType10/Type11`. `AccessoryScanner.hpmClasses` lists all four; the loop is identical for both because the IORegistry properties (`PortNumber`, `Transports*`, `PlugOrientation`, `HPDAsserted`, the `Power In → USB-PD` subtree, etc.) are unchanged across classes. If you go back to matching only one of them you'll silently lose all physical-port / USB-PD / MagSafe data on the other half of the Mac fleet. Likewise the TB USB tunnel adapter is `AppleThunderboltUSBType2DownAdapter` on Type7 hosts and `AppleThunderboltUSBDownAdapter` (no `Type2` suffix) on Type5 hosts — `IORegMonitor` watches both.
 
 - **Bandwidth fields are in 100 Mb/s units, not 10 Mb/s.** `Link Bandwidth = 800` is 80 Gb/s, `= 1200` is 120 Gb/s (TB5 asymmetric tx). `tbBandwidthLabel(raw)` divides by 10 — don't change it.
 
