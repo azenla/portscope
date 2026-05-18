@@ -13,49 +13,62 @@ import IOKit
 
 enum InternalHardwareScanner {
     static func scan(accessories: [PortAccessoryInfo]) -> InternalHardwareSnapshot {
-        let buses = scanARMBuses()
+        let arm = scanARMDevices()
         let battery = scanBatteryManager()
         let magsafe = accessories.first { port in
             if case .magsafe = port.connector { return true }
             return false
         }
         return InternalHardwareSnapshot(
-            i2cBuses: buses.i2c,
-            spiBuses: buses.spi,
+            i2cBuses: arm.i2c,
+            spiBuses: arm.spi,
             batteryManager: battery,
-            magsafe: magsafe
+            magsafe: magsafe,
+            socCoprocessors: arm.coprocessors
         )
     }
 
-    // MARK: - ARM I/O buses
+    // MARK: - ARM I/O buses + coprocessors
 
-    /// Walk every `AppleARMIODevice` and pick out the i2c / SPI / QSPI ones
-    /// by their device-tree name prefix. There are dozens of `AppleARMIODevice`
-    /// instances on a typical Apple Silicon host (DARTs, GPIO blocks, audio,
-    /// AOP, etc.); we only care about the buses that carry observable
-    /// peripherals.
-    private static func scanARMBuses() -> (i2c: [TBNode], spi: [TBNode]) {
+    /// Walk every `AppleARMIODevice` once. We classify each by its
+    /// device-tree name into one of three buckets: i2c bus, SPI/QSPI bus, or
+    /// a user-meaningful SoC coprocessor (Secure Enclave, Always-On
+    /// Processor, NAND controller, image signal processor, etc.). The
+    /// dozens of remaining entries (DARTs, GPIO blocks, DMA controllers,
+    /// timers, AOP MMIO regions, etc.) are dropped — surfacing every one
+    /// would bury the meaningful blocks under a wall of plumbing.
+    private static func scanARMDevices() -> (i2c: [TBNode], spi: [TBNode], coprocessors: [TBNode]) {
         var i2c: [TBNode] = []
         var spi: [TBNode] = []
+        var coprocessors: [TBNode] = []
+        var seenCoprocessorLabels: Set<String> = []
 
         for svc in IORegBridge.services(matchingClass: "AppleARMIODevice") {
             defer { IOObjectRelease(svc) }
             guard let name = IORegBridge.name(of: svc) else { continue }
             let isI2C = name.hasPrefix("i2c")
             let isSPI = name.hasPrefix("spi") || name.hasPrefix("qspi")
-            guard isI2C || isSPI else { continue }
+            let coprocessorTitle = NodeFormatter.socCoprocessorTitle(for: name)
+            guard isI2C || isSPI || coprocessorTitle != nil else { continue }
             guard let node = NodeBuilder.build(from: svc) else { continue }
-            // Promote slaves out from under the IOKit controller wrapper
-            // (AppleS5L8940XI2CController / AppleSPIMCController / etc.) so
-            // the bus view reads `i2c1 → audio-speaker@38`, not
-            // `i2c1 → AppleS5L8940XI2CController → audio-speaker@38`.
-            let promoted = promoteBusSlaves(under: node)
-            if isI2C { i2c.append(promoted) } else { spi.append(promoted) }
+            if isI2C {
+                i2c.append(promoteBusSlaves(under: node))
+            } else if isSPI {
+                spi.append(promoteBusSlaves(under: node))
+            } else if let title = coprocessorTitle {
+                // De-duplicate by friendly title rather than by device-tree
+                // name: e.g. `dcp` and `dcp-sac-controller` would otherwise
+                // both surface as "Display Coprocessor". Keep the first.
+                if seenCoprocessorLabels.insert(title).inserted {
+                    coprocessors.append(node)
+                }
+            }
         }
 
         i2c.sort { $0.title < $1.title }
         spi.sort { $0.title < $1.title }
-        return (i2c, spi)
+        coprocessors.sort { $0.title < $1.title }
+        return (i2c, spi, coprocessors)
     }
 
     /// The bus controller (AppleS5L8940XI2CController / AppleSPIMCController)

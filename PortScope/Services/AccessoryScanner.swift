@@ -2,23 +2,34 @@
 //  AccessoryScanner.swift
 //  PortScope
 //
-//  Walks `AppleHPMInterfaceType10` entries under `IOAccessoryManager` to
-//  capture per-physical-port runtime state. This data is invisible to the
-//  Thunderbolt and USB IOKit families — it lives in IOAccessory, and tells
-//  us what's actually being negotiated on each USB-C / MagSafe receptacle
-//  (active transports, USB-PD voltage, plug orientation, displayport HPD,
-//  cable e-marker info, etc.).
+//  Walks the per-receptacle accessory entries (HPM Type10/Type11 on M3+ /
+//  Apple Silicon TB5 hosts, AppleTCControllerType10/Type11 on T6000-class
+//  M1 Max / Pro and T8103 M1) to capture per-physical-port runtime state.
+//  This data is invisible to the Thunderbolt and USB IOKit families — it
+//  lives in IOAccessory, and tells us what's actually being negotiated on
+//  each USB-C / MagSafe receptacle (active transports, USB-PD voltage,
+//  plug orientation, displayport HPD, cable e-marker info, etc.).
 //
 
 import Foundation
 import IOKit
 
 enum AccessoryScanner {
-    /// IORegistry classes the HPM driver matches against. Type10 is the
-    /// per-USB-C receptacle interface; Type11 is the MagSafe 3 receptacle.
-    /// They expose the same property schema (port number, transports, USB-PD
-    /// children) so we can handle both with the same code path.
-    private static let hpmClasses = ["AppleHPMInterfaceType10", "AppleHPMInterfaceType11"]
+    /// IORegistry classes that publish per-receptacle accessory state.
+    /// Type10 = USB-C receptacle, Type11 = MagSafe 3 receptacle, and the
+    /// property schema is identical (port number, transports, USB-PD
+    /// children) regardless of which class hierarchy the host exposes:
+    ///   - `AppleHPMInterfaceType10/11`  — M3+ Apple Silicon, TB5 hosts
+    ///   - `AppleTCControllerType10/11`  — M1 / M2 family (T6000 + T8103)
+    /// Both classes wrap the same `Port-USB-C@N` / `Port-MagSafe 3@N`
+    /// IOAccessory entry, so matching either gives the same data. Empty on
+    /// Intel hosts where no equivalent exists.
+    private static let hpmClasses = [
+        "AppleHPMInterfaceType10",
+        "AppleHPMInterfaceType11",
+        "AppleTCControllerType10",
+        "AppleTCControllerType11"
+    ]
 
     /// Find every HPM interface (USB-C + MagSafe) and turn it into a
     /// `PortAccessoryInfo`. The `connector` field on each entry distinguishes

@@ -66,6 +66,8 @@ struct DetailView: View {
             BusView(node: node, onNavigate: onNavigate)
         case .busDevice:
             BusSlaveView(node: node)
+        case .socCoprocessor:
+            SoCCoprocessorView(node: node)
         default:
             EmptyView()
         }
@@ -724,6 +726,106 @@ private struct GenericDeviceView: View {
     var body: some View {
         Text("Connected device. Open Developer details below for the raw IORegistry entry.")
             .foregroundStyle(.secondary)
+    }
+}
+
+/// Read-only summary of a named SoC block (Secure Enclave, Always-On
+/// Processor, Apple Neural Engine, display / video coprocessors, NAND
+/// controller, SMC, etc.). The Developer-details disclosure below carries
+/// the raw IORegistry properties for the block — clock / power gates,
+/// MMIO regions, IOMMU parent, and so on.
+private struct SoCCoprocessorView: View {
+    let node: TBNode
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(description)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let mmio = mmio {
+                LabeledContent("MMIO base", value: mmio)
+            }
+            if let provider = node.properties["IOProviderClass"]?.asString {
+                LabeledContent("Provider", value: provider)
+            }
+            if let compat = compatibleString {
+                LabeledContent("Compatible", value: compat)
+            }
+        }
+        .font(.callout)
+    }
+
+    private var description: String {
+        // Keep the prose short. The aim is to remind a curious user what
+        // each block actually does on Apple Silicon, not to fully document
+        // them — anyone who wants deep info can read Asahi Linux's notes.
+        let name = stringValue(node.properties["name"]) ?? node.title
+        switch name {
+        case "sep":        return "Secure Enclave processor — handles biometrics, key wrapping, sealed storage."
+        case "aop":        return "Always-On Processor — runs sensor fusion and audio while the main cores sleep."
+        case "pmp":        return "Power Management Processor — runs the SoC's PMU firmware."
+        case "smc":        return "System Management Controller — battery, charging, thermals, fans, hardware buttons."
+        case "ans":        return "NAND storage controller for the internal SSD."
+        case "wlan":       return "Wi-Fi subsystem (Broadcom/Apple-designed radio)."
+        case "bluetooth":  return "Bluetooth subsystem."
+        case "ane0":       return "Apple Neural Engine — runs Core ML / vision workloads."
+        case "isp0":       return "Image Signal Processor — drives the FaceTime camera pipeline."
+        case "dcp":        return "Display Coprocessor — built-in display pipeline (Apple-designed firmware)."
+        case "gfx-asc":    return "GPU coprocessor that fronts the Apple GPU command stream."
+        case "mcc":        return "Memory cache controller for the unified-memory fabric."
+        case "avd0":       return "Hardware video decoder (H.264 / H.265 / ProRes)."
+        case "pmgr":       return "SoC clock + power-gate manager."
+        case "aic":        return "Apple Interrupt Controller — fans out hardware IRQs to the CPU complex."
+        default:
+            if name.hasPrefix("dcpext") {
+                return "External-display coprocessor pipeline (one per external display engine)."
+            }
+            if name.hasPrefix("ave") { return "Hardware video encoder." }
+            if name.hasPrefix("jpeg") { return "Hardware JPEG encoder/decoder." }
+            if name.hasPrefix("scaler") { return "Image scaler / colour-space converter." }
+            if name.hasPrefix("disp") || name.hasPrefix("dispext") {
+                return "Display engine — pixel pump feeding the DCP / external display."
+            }
+            return "SoC coprocessor block. Open Developer details below for the raw IORegistry entry."
+        }
+    }
+
+    private var mmio: String? {
+        guard case let .array(arr) = node.properties["IODeviceMemory"], let first = arr.first else { return nil }
+        if case let .array(inner) = first, let dict = inner.first, case let .dictionary(kv) = dict {
+            for (k, v) in kv where k == "address" {
+                if let addr = v.asUInt { return String(format: "0x%llX", addr) }
+            }
+        }
+        if case let .dictionary(kv) = first {
+            for (k, v) in kv where k == "address" {
+                if let addr = v.asUInt { return String(format: "0x%llX", addr) }
+            }
+        }
+        return nil
+    }
+
+    private var compatibleString: String? {
+        // `compatible` is normally an array of device-tree strings; format the
+        // first one so the user can grep upstream device-tree sources.
+        let val = node.properties["compatible"]
+        if case let .array(arr) = val {
+            for v in arr {
+                if case let .string(s) = v, !s.isEmpty { return s }
+            }
+        }
+        return stringValue(val)
+    }
+
+    private func stringValue(_ value: IORegValue?) -> String? {
+        guard let value else { return nil }
+        if case let .string(s) = value { return s }
+        if case let .data(d) = value {
+            if let s = String(data: d, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters), !s.isEmpty {
+                return s
+            }
+        }
+        return nil
     }
 }
 

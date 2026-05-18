@@ -81,6 +81,7 @@ final class PortScopeViewModel: ObservableObject {
             + snapshot.tb.usbDevicesOverTB
             + snapshot.internalHardware.i2cBuses
             + snapshot.internalHardware.spiBuses
+            + snapshot.internalHardware.socCoprocessors
         if let bm = snapshot.internalHardware.batteryManager {
             roots.append(bm)
         }

@@ -52,6 +52,7 @@ enum NodeFormatter {
         if cls == "AppleARMIODevice" {
             if name.hasPrefix("i2c") { return .i2cBus }
             if name.hasPrefix("spi") || name.hasPrefix("qspi") { return .spiBus }
+            if socCoprocessorTitle(for: name) != nil { return .socCoprocessor }
             return .other
         }
         if cls == "AppleARMIICDevice" || cls == "AppleARMSPIDevice" { return .busDevice }
@@ -191,6 +192,10 @@ enum NodeFormatter {
         case .busDevice:
             return busDeviceLabels(name: name, props: props)
 
+        case .socCoprocessor:
+            return (socCoprocessorTitle(for: name) ?? name,
+                    socCoprocessorSubtitle(name: name, props: props))
+
         case .batteryManager:
             return ("Battery Manager", "AppleSmartBatteryManager")
 
@@ -266,6 +271,78 @@ enum NodeFormatter {
         if let a = address { sub.append("0x\(a.uppercased())") }
         if title != function { sub.append(function) }
         return (title, sub.isEmpty ? nil : sub.joined(separator: " · "))
+    }
+
+    // MARK: - SoC coprocessor identification
+
+    /// Pretty name for the named blocks Apple exposes as `AppleARMIODevice`
+    /// children of the SoC fabric. Returns nil for anything we don't have a
+    /// friendly label for; callers use the nil return as the "not a
+    /// coprocessor" signal so DARTs / GPIO blocks / DMA controllers / dispXX
+    /// stay in the bulk-of-the-tree noise bin instead of cluttering the
+    /// Internal Hardware section.
+    ///
+    /// The names listed here have been stable across every Apple Silicon
+    /// generation observed in the wild (M1 → M5). When a device-tree entry
+    /// has an index suffix (e.g. `dcpext3`, `ane0`, `jpeg1`) the prefix
+    /// match strips it so all instances surface with the same label.
+    static func socCoprocessorTitle(for name: String) -> String? {
+        if let exact = exactCoprocessor[name] { return exact }
+        for (prefix, label) in coprocessorPrefixes where name.hasPrefix(prefix) {
+            let suffix = name.dropFirst(prefix.count)
+            if suffix.isEmpty || suffix.allSatisfy(\.isNumber) {
+                if suffix.isEmpty { return label }
+                return "\(label) \(suffix)"
+            }
+        }
+        return nil
+    }
+
+    private static let exactCoprocessor: [String: String] = [
+        "sep": "Secure Enclave Processor",
+        "aop": "Always-On Processor",
+        "pmp": "Power Management Processor",
+        "smc": "System Management Controller",
+        "ans": "NAND Storage Controller",
+        "wlan": "Wi-Fi Subsystem",
+        "bluetooth": "Bluetooth Subsystem",
+        "dcp": "Display Coprocessor",
+        "gfx-asc": "GPU Coprocessor",
+        "isp0": "Image Signal Processor",
+        "ane0": "Apple Neural Engine",
+        "avd0": "Video Decoder",
+        "mcc": "Memory Cache Controller",
+        "sgx": "Graphics (SGX)",
+        "pmgr": "Power Manager",
+        "aic": "Interrupt Controller"
+    ]
+
+    /// Name-prefix table. The numeric tail (when present) becomes part of the
+    /// label — e.g. `dcpext0` → "Display Coprocessor 0".
+    private static let coprocessorPrefixes: [(String, String)] = [
+        ("dcpext", "Display Coprocessor"),
+        ("ave",    "Video Encoder"),
+        ("jpeg",   "JPEG Codec"),
+        ("scaler", "Image Scaler"),
+        ("dispext","Display Engine"),
+        ("disp",   "Display Engine"),
+        ("ane",    "Apple Neural Engine"),
+        ("isp",    "Image Signal Processor"),
+        ("avd",    "Video Decoder")
+    ]
+
+    private static func socCoprocessorSubtitle(name: String,
+                                               props: [String: IORegValue]) -> String? {
+        // The device-tree name is the canonical identifier the Apple
+        // platform team uses for the block; surface it verbatim so a curious
+        // user can grep the public Asahi / device-tree docs for the same
+        // token. Append the MMIO base address when we can dig it out, so
+        // the row tells the user where the block lives physically.
+        var bits: [String] = [name]
+        if let mmio = mmioAddress(props: props) {
+            bits.append("MMIO 0x\(mmio)")
+        }
+        return bits.joined(separator: " · ")
     }
 
     private static func busDeviceFriendlyName(_ function: String) -> String {
@@ -359,16 +436,37 @@ enum NodeFormatter {
 
     /// Subtitle for a Thunderbolt host controller. The `Generation` IORegistry
     /// field is an internal kernel revision number (1, 45, …) and isn't a
-    /// human-meaningful spec, so we elide it. Surface the highest TB spec
-    /// generation we can observe from the controller's child router instead.
+    /// human-meaningful spec, so we elide it. The class name carries the
+    /// internal "Type" suffix that Apple uses to differentiate chip families
+    /// (`IOThunderboltControllerType5` = M1/M2 family / T6000-class TB4
+    /// hosts; `IOThunderboltControllerType7` = M3+/TB5 hosts; future
+    /// silicon will likely bump it again). Surface it as a short hint
+    /// alongside the user-client API revision so two different chassis
+    /// distinguish themselves in the sidebar.
     private static func controllerSubtitle(class cls: String,
                                            props: [String: IORegValue]) -> String? {
-        // For now we don't have child props at label-time. Hint at the family
-        // ("Apple-designed") and the user client API revision when present,
-        // which at least changes meaningfully across chip generations.
-        let uc = props["User Client Version"]?.asUInt
-        if let uc { return "Apple-designed · API v\(uc)" }
-        return "Apple-designed Thunderbolt host"
+        var parts: [String] = []
+        if let typeLabel = thunderboltControllerTypeLabel(class: cls) {
+            parts.append(typeLabel)
+        } else {
+            parts.append("Apple-designed")
+        }
+        if let uc = props["User Client Version"]?.asUInt {
+            parts.append("API v\(uc)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Map the `IOThunderboltControllerType<N>` suffix to a short hint.
+    /// We don't claim a spec generation (the mapping isn't 1:1) — we just
+    /// surface the family number so M1 / M3 / M5 controllers don't all
+    /// read identically in the sidebar.
+    private static func thunderboltControllerTypeLabel(class cls: String) -> String? {
+        let prefix = "IOThunderboltControllerType"
+        guard cls.hasPrefix(prefix) else { return nil }
+        let suffix = cls.dropFirst(prefix.count)
+        if suffix.isEmpty { return nil }
+        return "Apple TB Controller (Type \(suffix))"
     }
 
     static func usbProductName(_ props: [String: IORegValue]) -> String? {
@@ -446,6 +544,15 @@ enum NodeFormatter {
                 "bInterfaceNumber", "bAlternateSetting",
                 "bInterfaceClass", "bInterfaceSubClass", "bInterfaceProtocol",
                 "kUSBInterfaceString", "bNumEndpoints"
+            ]
+        case .socCoprocessor:
+            priorities = [
+                "name", "device_type", "compatible",
+                "IONameMatch", "IONameMatched", "IOClass", "IOProviderClass",
+                "AAPL,phandle", "reg", "IODeviceMemory",
+                "interrupts", "interrupt-parent", "interrupt-controller",
+                "clock-gates", "power-gates", "iommu-parent",
+                "function-parent", "phandle"
             ]
         default:
             priorities = []

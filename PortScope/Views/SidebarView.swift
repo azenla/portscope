@@ -143,6 +143,7 @@ struct SidebarView: View {
         let hasAny = hw.batteryManager != nil
             || !hw.i2cBuses.isEmpty
             || !hw.spiBuses.isEmpty
+            || !hw.socCoprocessors.isEmpty
         if hasAny {
             collapsibleSection("Internal Hardware", icon: "cpu") {
                 if let bm = hw.batteryManager {
@@ -161,6 +162,9 @@ struct SidebarView: View {
                 }
                 ForEach(hw.spiBuses, id: \.id) { bus in
                     FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
+                }
+                ForEach(hw.socCoprocessors, id: \.id) { block in
+                    FullTopologyRow(node: block, depth: 0, expanded: $expanded)
                 }
             }
         }

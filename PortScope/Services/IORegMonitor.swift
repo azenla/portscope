@@ -30,15 +30,25 @@ final class IORegMonitor {
             "IOThunderboltSwitch",
             "IOThunderboltPort",
             "IOThunderboltLocalNode",
+            // TB USB tunnel down adapter. The kernel-class name differs by
+            // controller generation: `…Type2DownAdapter` on M3+/Type7 hosts
+            // and `…USBDownAdapter` (no Type suffix) on M1/M2 family Type5
+            // hosts. Watch both so a tunneled USB device fires a rescan on
+            // every architecture.
             "AppleThunderboltUSBType2DownAdapter",
+            "AppleThunderboltUSBDownAdapter",
             "IOUSBHostController",
             "IOUSBHostDevice",
-            // Per-physical-port HPM interface — fires on cable insertion /
-            // removal, USB-PD renegotiation, alt-mode entry, etc.
-            "AppleHPMInterfaceType10",
+            // Per-physical-port USB-C receptacle interface — fires on cable
+            // insertion / removal, USB-PD renegotiation, alt-mode entry, etc.
+            // Different class hierarchies expose the same property schema
+            // depending on the host generation, so we have to watch both.
+            "AppleHPMInterfaceType10",  // M3+ / TB5 hosts
+            "AppleTCControllerType10",  // M1 / M2 family
             // MagSafe 3 receptacle. Fires on MagSafe insertion/removal and on
-            // charger renegotiation.
+            // charger renegotiation. Same dual-class story as Type10.
             "AppleHPMInterfaceType11",
+            "AppleTCControllerType11",
             // Battery / charging state changes (AC attach, charge transitions).
             "AppleSmartBatteryManager"
         ]

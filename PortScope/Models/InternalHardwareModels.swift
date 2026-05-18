@@ -27,8 +27,16 @@ struct InternalHardwareSnapshot {
     /// Nil on chassis without a MagSafe port. The `PortAccessoryInfo` carries
     /// the live charging / cable info when plugged in.
     let magsafe: PortAccessoryInfo?
+    /// Named SoC blocks pulled out of the `AppleARMIODevice` haystack —
+    /// Secure Enclave, Always-On Processor, Apple Neural Engine, display /
+    /// video / image-signal coprocessors, NAND controller, SMC, etc. These
+    /// are read-only from userland but help the user reason about what
+    /// silicon is involved in their machine. Empty on Intel hosts where
+    /// no `AppleARMIODevice` entries exist.
+    let socCoprocessors: [TBNode]
 
     static let empty = InternalHardwareSnapshot(
-        i2cBuses: [], spiBuses: [], batteryManager: nil, magsafe: nil
+        i2cBuses: [], spiBuses: [], batteryManager: nil, magsafe: nil,
+        socCoprocessors: []
     )
 }

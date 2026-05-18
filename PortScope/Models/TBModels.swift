@@ -36,6 +36,7 @@ enum TBNodeKind: String {
     case busDevice     // AppleARMIICDevice / AppleARMSPIDevice — an on-bus slave
     case batteryManager // AppleSmartBatteryManager
     case battery       // AppleSmartBattery
+    case socCoprocessor // AppleARMIODevice for a named SoC block (sep / aop / ane / isp / dcp / ans / smc / wlan / bluetooth / …)
     case other
 
     var sfSymbol: String {
@@ -59,6 +60,7 @@ enum TBNodeKind: String {
         case .busDevice: return "circuit.cubic"
         case .batteryManager: return "battery.100.bolt"
         case .battery: return "battery.100"
+        case .socCoprocessor: return "cpu.fill"
         case .other: return "questionmark.circle"
         }
     }
@@ -83,40 +85,39 @@ enum TBNodeKind: String {
         case .busDevice: return .gray
         case .batteryManager: return .green
         case .battery: return .green
+        case .socCoprocessor: return .indigo
         case .other: return .gray
         }
     }
 }
 
 /// Adapter types observed on `IOThunderboltPort.Adapter Type`.
-/// Encoded as `(category << 16) | (direction)` historically.
+///
+/// The low values (0, 1, 2) are stable across every TB controller family we
+/// support: 0 = inactive, 1 = lane adapter, 2 = native host interface. The
+/// higher "function adapter" codes (0xE0001, 0x100001, 0x200001, etc.) are
+/// **NOT** portable — different controller generations / vendors permute
+/// them. For example, Apple's Type7 controllers use `0x100001 = DP/HDMI`,
+/// but Type5 controllers (M1 / M2 family, T6000) use `0x100001 = PCIe`.
+/// Intel's `IOThunderboltSwitchIntelJHL95xx` adds its own permutation.
+///
+/// Surfacing those swapped codes as fixed labels was actively misleading on
+/// every host except the one the labels were authored for, so we no longer
+/// try. The authoritative identity of a function adapter is the kernel's
+/// `Description` string (`"PCIe Adapter"`, `"USB Adapter"`, `"DP or HDMI
+/// Adapter"`, etc.) — read that, not the raw `Adapter Type` integer. Lane
+/// detection (raw == 1) is still safe because every encoding agrees on it.
 enum TBAdapterType: Hashable {
     case inactive
-    case lane(index: Int)              // 0 / 1
+    case lane(index: Int)              // 1 = lane adapter (both lanes)
     case nhi                           // 2 = native host interface
-    case dpHdmiIn
-    case dpHdmiOut
-    case usb3Up
-    case usb3Down
-    case usbGenTUp
-    case usbGenTDown
-    case pcieUp
-    case pcieDown
-    case unknown(UInt64)
+    case unknown(UInt64)               // function adapter — see `Description`
 
     init(rawValue: UInt64) {
         switch rawValue {
         case 0: self = .inactive
         case 1: self = .lane(index: 1)
         case 2: self = .nhi
-        case 0x0E0001: self = .pcieUp
-        case 0x0E0002: self = .pcieDown
-        case 0x100001: self = .dpHdmiIn
-        case 0x100002: self = .dpHdmiOut
-        case 0x200001: self = .usb3Up
-        case 0x200002: self = .usb3Down
-        case 0x210001: self = .usbGenTUp
-        case 0x210002: self = .usbGenTDown
         default: self = .unknown(rawValue)
         }
     }
@@ -126,15 +127,7 @@ enum TBAdapterType: Hashable {
         case .inactive: return "Inactive"
         case .lane(let i): return "Lane Adapter \(i)"
         case .nhi: return "Native Host Interface"
-        case .dpHdmiIn: return "DisplayPort/HDMI In"
-        case .dpHdmiOut: return "DisplayPort/HDMI Out"
-        case .usb3Up: return "USB 3 Upstream"
-        case .usb3Down: return "USB 3 Downstream"
-        case .usbGenTUp: return "USB Gen-T Upstream"
-        case .usbGenTDown: return "USB Gen-T Downstream"
-        case .pcieUp: return "PCIe Upstream"
-        case .pcieDown: return "PCIe Downstream"
-        case .unknown(let v): return String(format: "Unknown (0x%X)", v)
+        case .unknown(let v): return String(format: "Function Adapter (0x%X)", v)
         }
     }
 
@@ -143,10 +136,7 @@ enum TBAdapterType: Hashable {
         case .inactive: return "circle.dashed"
         case .lane: return "bolt.horizontal"
         case .nhi: return "cpu"
-        case .dpHdmiIn, .dpHdmiOut: return "display"
-        case .usb3Up, .usb3Down, .usbGenTUp, .usbGenTDown: return "cable.connector"
-        case .pcieUp, .pcieDown: return "square.stack.3d.up"
-        case .unknown: return "questionmark.circle"
+        case .unknown: return "rectangle.connected.to.line.below"
         }
     }
 }
