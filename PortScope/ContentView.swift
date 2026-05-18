@@ -1,12 +1,12 @@
 //
 //  ContentView.swift
-//  Boltprobe
+//  PortScope
 //
 
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var vm = BoltprobeViewModel()
+    @StateObject private var vm = PortScopeViewModel()
 
     var body: some View {
         NavigationSplitView {

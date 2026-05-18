@@ -1,6 +1,6 @@
 //
 //  TBModels.swift
-//  Boltprobe
+//  PortScope
 //
 //  Domain model for Thunderbolt controllers, routers, ports, and downstream
 //  PCIe / USB devices. Everything that lives in the navigation tree is a

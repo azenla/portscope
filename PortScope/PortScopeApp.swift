@@ -1,12 +1,12 @@
 //
-//  BoltprobeApp.swift
-//  Boltprobe
+//  PortScopeApp.swift
+//  PortScope
 //
 
 import SwiftUI
 
 @main
-struct BoltprobeApp: App {
+struct PortScopeApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -16,7 +16,7 @@ struct BoltprobeApp: App {
         .commands {
             CommandGroup(after: .toolbar) {
                 Button("Refresh") {
-                    NotificationCenter.default.post(name: .boltprobeRefresh, object: nil)
+                    NotificationCenter.default.post(name: .portScopeRefresh, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }
@@ -25,5 +25,5 @@ struct BoltprobeApp: App {
 }
 
 extension Notification.Name {
-    static let boltprobeRefresh = Notification.Name("io.zenla.boltprobe.refresh")
+    static let portScopeRefresh = Notification.Name("io.zenla.portscope.refresh")
 }

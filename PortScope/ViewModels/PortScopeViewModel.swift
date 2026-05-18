@@ -1,6 +1,6 @@
 //
-//  BoltprobeViewModel.swift
-//  Boltprobe
+//  PortScopeViewModel.swift
+//  PortScope
 //
 
 import Foundation
@@ -8,7 +8,7 @@ import Combine
 import SwiftUI
 
 @MainActor
-final class BoltprobeViewModel: ObservableObject {
+final class PortScopeViewModel: ObservableObject {
     @Published private(set) var snapshot: SystemSnapshot = .empty
     @Published private(set) var isScanning = false
     @Published var selection: TBNodeID?
@@ -25,7 +25,7 @@ final class BoltprobeViewModel: ObservableObject {
         NotificationCenter.default.publisher(for: IORegMonitor.didChange)
             .sink { [weak self] _ in self?.debouncedRescan() }
             .store(in: &cancellables)
-        NotificationCenter.default.publisher(for: .boltprobeRefresh)
+        NotificationCenter.default.publisher(for: .portScopeRefresh)
             .sink { [weak self] _ in self?.rescan() }
             .store(in: &cancellables)
         monitor.start()

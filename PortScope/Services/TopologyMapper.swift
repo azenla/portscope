@@ -1,6 +1,6 @@
 //
 //  TopologyMapper.swift
-//  Boltprobe
+//  PortScope
 //
 //  Translates the raw IOKit trees (Thunderbolt + USB) into the simplified
 //  user-facing topology: physical USB-C / Thunderbolt ports → connected

@@ -1,6 +1,6 @@
 //
 //  IORegBridge.swift
-//  Boltprobe
+//  PortScope
 //
 //  Generic bridge for reading the IORegistry as Swift values.
 //

@@ -1,6 +1,6 @@
 //
 //  USBModels.swift
-//  Boltprobe
+//  PortScope
 //
 //  USB-specific formatters, enums, and snapshot type.
 //

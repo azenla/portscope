@@ -1,6 +1,6 @@
 //
 //  USBViews.swift
-//  Boltprobe
+//  PortScope
 //
 //  Kind-specific summary cards for USB host controllers, hubs, devices, and
 //  interfaces. Cross-links into the Thunderbolt tree when a controller is

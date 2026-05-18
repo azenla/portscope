@@ -4,21 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Boltprobe is a macOS-only SwiftUI app (target `macOS 26.5`, Swift 5, default actor isolation = `MainActor`) that introspects the host's hardware buses via IOKit. The original focus was Thunderbolt — controllers, routers (switches), ports, adapters, downstream PCIe/USB devices, hop tables / tunnels, and bandwidth allocations — and it has since expanded to a full USB explorer (host controllers, hubs, devices, interfaces with bandwidth / speed / class info), a unified **Physical Ports** view that reports each USB-C port's live operating mode, and **per-receptacle accessory state** pulled from `IOAccessoryManager` (active transports CC / USB 2 / USB 3 / CIO / DisplayPort, USB-PD voltage and current, plug orientation, displayport HPD, cable e-marker VID/PID/manufacturer).
+PortScope is a macOS-only SwiftUI app (target `macOS 26.5`, Swift 5, default actor isolation = `MainActor`) that introspects the host's hardware buses via IOKit. The original focus was Thunderbolt — controllers, routers (switches), ports, adapters, downstream PCIe/USB devices, hop tables / tunnels, and bandwidth allocations — and it has since expanded to a full USB explorer (host controllers, hubs, devices, interfaces with bandwidth / speed / class info), a unified **Physical Ports** view that reports each USB-C port's live operating mode, and **per-receptacle accessory state** pulled from `IOAccessoryManager` (active transports CC / USB 2 / USB 3 / CIO / DisplayPort, USB-PD voltage and current, plug orientation, displayport HPD, cable e-marker VID/PID/manufacturer).
 
 ## Build / run
 
-The Xcode project uses `PBXFileSystemSynchronizedRootGroup` — **just drop new `.swift` files anywhere under `Boltprobe/` and they're picked up automatically**, no `project.pbxproj` editing needed.
+The Xcode project uses `PBXFileSystemSynchronizedRootGroup` — **just drop new `.swift` files anywhere under `PortScope/` and they're picked up automatically**, no `project.pbxproj` editing needed.
 
 ```sh
-xcodebuild -project Boltprobe.xcodeproj -scheme Boltprobe -configuration Debug -destination 'platform=macOS' build
+xcodebuild -project PortScope.xcodeproj -scheme PortScope -configuration Debug -destination 'platform=macOS' build
 ```
 
-Built bundle lives under `~/Library/Developer/Xcode/DerivedData/Boltprobe-*/Build/Products/Debug/Boltprobe.app`. Launch with `open path/to/Boltprobe.app`. There are no tests.
+Built bundle lives under `~/Library/Developer/Xcode/DerivedData/PortScope-*/Build/Products/Debug/PortScope.app`. Launch with `open path/to/PortScope.app`. There are no tests.
 
 ## Entitlements
 
-`Boltprobe/Boltprobe.entitlements` sets `com.apple.security.app-sandbox = false`. The sandbox is intentionally **off** so `IOServiceAddMatchingNotification` and full IOKit registry reads work. Don't re-enable `ENABLE_APP_SANDBOX` in `project.pbxproj` without also moving everything that touches IOKit into a helper or exception list — TB hot-plug notifications break under the sandbox.
+`PortScope/PortScope.entitlements` sets `com.apple.security.app-sandbox = false`. The sandbox is intentionally **off** so `IOServiceAddMatchingNotification` and full IOKit registry reads work. Don't re-enable `ENABLE_APP_SANDBOX` in `project.pbxproj` without also moving everything that touches IOKit into a helper or exception list — TB hot-plug notifications break under the sandbox.
 
 ## Architecture
 
@@ -38,7 +38,7 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 - `Services/AccessoryScanner.swift` — matches `AppleHPMInterfaceType10` (one instance per physical USB-C / MagSafe receptacle), reads per-port runtime state from `IOAccessoryManager`, and walks the port's `Power In → USB-PD` children to capture USB-PD `WinningPowerSourceOption` + offered PDOs and the Apple "Brick ID" PDO when a charger is identifying itself. Returns `[PortAccessoryInfo]` sorted by `PortNumber`. **This is the only place the app touches IOAccessory plane data**; it surfaces signal information (active transports, plug orientation, displayport HPD, cable e-marker VID/PID/manufacturer string) that is invisible to the Thunderbolt and USB IOKit families.
 
-- `Services/IORegMonitor.swift` — hot-plug notifications. Registers `IOServiceAddMatchingNotification` for both `kIOMatchedNotification` and `kIOTerminatedNotification` against TB controller/switch/port/local-node/USB-Type-2-adapter classes, `IOUSBHostController` / `IOUSBHostDevice`, **and `AppleHPMInterfaceType10`** (so cable insertions, USB-PD renegotiation, and alt-mode entry all fire a rescan). Then posts a debounced `Notification.Name` that triggers `BoltprobeViewModel.rescan()`.
+- `Services/IORegMonitor.swift` — hot-plug notifications. Registers `IOServiceAddMatchingNotification` for both `kIOMatchedNotification` and `kIOTerminatedNotification` against TB controller/switch/port/local-node/USB-Type-2-adapter classes, `IOUSBHostController` / `IOUSBHostDevice`, **and `AppleHPMInterfaceType10`** (so cable insertions, USB-PD renegotiation, and alt-mode entry all fire a rescan). Then posts a debounced `Notification.Name` that triggers `PortScopeViewModel.rescan()`.
 
 - `Services/TopologyMapper.swift` — derives the **simplified user-facing topology** (`PhysicalPort` → optional `ConnectedDevice` → daisy-chained devices) from a snapshot. Each `PhysicalPort` carries an inferred `mode: PhysicalPortMode` (`.thunderbolt(speed)` / `.usbOnly(speed?)` / `.displayOnly` / `.empty` / `.unknown`), the flat `attachedUSBDevices` (used for stats / overview cards), the hierarchical `usbDeviceRoots` (top-level hubs/devices with their full subtrees intact, used by the sidebar to render the real USB bus tree), `tunnels: [PortTunnel]` summarising DP/USB/PCIe reserved+max bandwidth, and an optional `accessory: PortAccessoryInfo` for the receptacle's HPM state.
 
@@ -58,7 +58,7 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 ### ViewModel
 
-- `ViewModels/BoltprobeViewModel.swift` — `@MainActor ObservableObject`. Owns the `SystemSnapshot`, runs both scanners off-main via `Task.detached`, debounces hot-plug rescans, and exposes selection plus `node(for:)` / `parent(of:)` lookups. `selectionRoots` walks **TB controllers + USB controllers + TB-tunneled PCIe/USB flat lists**, so both sidebar trees resolve.
+- `ViewModels/PortScopeViewModel.swift` — `@MainActor ObservableObject`. Owns the `SystemSnapshot`, runs both scanners off-main via `Task.detached`, debounces hot-plug rescans, and exposes selection plus `node(for:)` / `parent(of:)` lookups. `selectionRoots` walks **TB controllers + USB controllers + TB-tunneled PCIe/USB flat lists**, so both sidebar trees resolve.
 
   **`PhysicalPortSelector`** (also in this file) mints synthetic `TBNodeID`s (high bits `0xC0DE_C0DE_…`) for "Physical Port N" sidebar rows so they don't collide with real registry entry IDs. `ContentView` checks `PhysicalPortSelector.portNumber(id)` first when dispatching the detail view.
 

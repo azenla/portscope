@@ -1,6 +1,6 @@
 //
 //  DiagramView.swift
-//  Boltprobe
+//  PortScope
 //
 //  Visual topology diagram. Shows Mac → physical TB ports → connected
 //  routers and their internal adapters, with active tunnels overlaid as

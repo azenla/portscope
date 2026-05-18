@@ -1,6 +1,6 @@
 //
 //  PhysicalPortDetailView.swift
-//  Boltprobe
+//  PortScope
 //
 //  Unified per-port view shown when the user selects a Physical Port row.
 //  Pulls together TB mode + link state, IOAccessoryManager runtime state

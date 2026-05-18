@@ -1,6 +1,6 @@
 //
 //  AccessoryModels.swift
-//  Boltprobe
+//  PortScope
 //
 //  Domain types for the per-physical-port state Apple's IOAccessoryManager
 //  exposes through `AppleHPMInterfaceType10`. One instance exists for every

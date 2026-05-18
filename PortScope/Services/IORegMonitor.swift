@@ -1,6 +1,6 @@
 //
 //  IORegMonitor.swift
-//  Boltprobe
+//  PortScope
 //
 //  Posts a notification when any Thunderbolt-related service appears
 //  or disappears so the view model can re-scan.
@@ -11,7 +11,7 @@ import IOKit
 
 @MainActor
 final class IORegMonitor {
-    static let didChange = Notification.Name("io.zenla.boltprobe.IOReg.didChange")
+    static let didChange = Notification.Name("io.zenla.portscope.IOReg.didChange")
 
     private var notifyPort: IONotificationPortRef?
     private var iterators: [io_iterator_t] = []

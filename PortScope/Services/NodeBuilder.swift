@@ -1,6 +1,6 @@
 //
 //  NodeBuilder.swift
-//  Boltprobe
+//  PortScope
 //
 //  Generic IORegistry → TBNode tree builder. Used by both ThunderboltScanner
 //  and USBScanner so they share classification, label, and ordering logic.

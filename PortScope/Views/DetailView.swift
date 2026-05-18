@@ -1,6 +1,6 @@
 //
 //  DetailView.swift
-//  Boltprobe
+//  PortScope
 //
 //  Curated, human-readable presentation of a TB entity. Internals are tucked
 //  away behind a single "Developer details" disclosure at the bottom.

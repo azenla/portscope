@@ -1,6 +1,6 @@
 //
 //  USBScanner.swift
-//  Boltprobe
+//  PortScope
 //
 //  Walks the IOService plane for USB host controllers and produces a USBSnapshot.
 //  Also records whether each controller is reached over a Thunderbolt switch,

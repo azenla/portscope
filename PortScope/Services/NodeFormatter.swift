@@ -1,6 +1,6 @@
 //
 //  NodeFormatter.swift
-//  Boltprobe
+//  PortScope
 //
 //  Centralised classification, label, and property-ordering logic. Both
 //  ThunderboltScanner and USBScanner use this to turn raw IORegistry entries

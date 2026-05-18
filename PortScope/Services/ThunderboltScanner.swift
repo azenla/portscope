@@ -1,6 +1,6 @@
 //
 //  ThunderboltScanner.swift
-//  Boltprobe
+//  PortScope
 //
 //  Walks the IOService plane and produces a TBSnapshot.
 //

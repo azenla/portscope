@@ -1,6 +1,6 @@
 //
 //  AccessoryScanner.swift
-//  Boltprobe
+//  PortScope
 //
 //  Walks `AppleHPMInterfaceType10` entries under `IOAccessoryManager` to
 //  capture per-physical-port runtime state. This data is invisible to the

@@ -1,6 +1,6 @@
 //
 //  PropertyTableView.swift
-//  Boltprobe
+//  PortScope
 //
 
 import SwiftUI

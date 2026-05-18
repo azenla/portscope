@@ -1,6 +1,6 @@
 //
 //  SidebarView.swift
-//  Boltprobe
+//  PortScope
 //
 //  Three-tier navigation:
 //    1. Physical Ports — unified user view (TB / USB / Empty mode per port).
@@ -13,7 +13,7 @@
 import SwiftUI
 
 struct SidebarView: View {
-    @ObservedObject var vm: BoltprobeViewModel
+    @ObservedObject var vm: PortScopeViewModel
     @State private var expanded: Set<TBNodeID> = []
     /// IDs we've already seeded into `expanded` for first-render auto-open.
     /// Tracking this separately means a user collapse sticks — we never
@@ -62,7 +62,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("Boltprobe")
+        .navigationTitle("PortScope")
         .frame(minWidth: 280)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
