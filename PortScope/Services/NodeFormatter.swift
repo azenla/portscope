@@ -10,10 +10,15 @@
 import Foundation
 
 enum NodeFormatter {
-    /// Map an IORegistry class name to a TBNodeKind. Wrapper kext classes
-    /// (DPConnectionManager, IPService, IPPort, DPInAdapter*, etc.) fall to
-    /// `.other` so the topology views can hide them and promote descendants.
-    static func classify(_ cls: String) -> TBNodeKind {
+    /// Map an IORegistry class name (plus optional node name) to a TBNodeKind.
+    /// Wrapper kext classes (DPConnectionManager, IPService, IPPort, etc.) fall
+    /// to `.other` so the topology views can hide them and promote descendants.
+    ///
+    /// The `name` is consulted for `AppleARMIODevice` instances, where the
+    /// class alone doesn't tell us whether the device is an i2c controller, an
+    /// SPI controller, GPIO, DART, etc. The `device_type` IORegistry property
+    /// would be more authoritative but isn't available at classify time.
+    static func classify(_ cls: String, name: String = "") -> TBNodeKind {
         if cls == "IOThunderboltLocalNode" { return .localNode }
         if cls.contains("ThunderboltControllerType")
             || (cls.contains("ThunderboltController") && !cls.contains("Apple")) {
@@ -44,6 +49,14 @@ enum NodeFormatter {
         if cls.contains("AppleFabricController") || cls.contains("AppleFabricEndpoint") {
             return .appleFabric
         }
+        if cls == "AppleARMIODevice" {
+            if name.hasPrefix("i2c") { return .i2cBus }
+            if name.hasPrefix("spi") || name.hasPrefix("qspi") { return .spiBus }
+            return .other
+        }
+        if cls == "AppleARMIICDevice" || cls == "AppleARMSPIDevice" { return .busDevice }
+        if cls == "AppleSmartBatteryManager" { return .batteryManager }
+        if cls == "AppleSmartBattery" { return .battery }
         return .other
     }
 
@@ -169,10 +182,119 @@ enum NodeFormatter {
         case .appleFabric:
             return (name, cls)
 
+        case .i2cBus:
+            return (i2cBusTitle(name: name), i2cBusSubtitle(name: name, props: props))
+
+        case .spiBus:
+            return (spiBusTitle(name: name), spiBusSubtitle(name: name, props: props))
+
+        case .busDevice:
+            return busDeviceLabels(name: name, props: props)
+
+        case .batteryManager:
+            return ("Battery Manager", "AppleSmartBatteryManager")
+
+        case .battery:
+            let serial = props["Serial"]?.asString
+            let device = props["DeviceName"]?.asString
+            var sub: [String] = []
+            if let d = device, !d.isEmpty { sub.append(d) }
+            if let s = serial, !s.isEmpty { sub.append("S/N \(s)") }
+            return ("Internal Battery", sub.isEmpty ? nil : sub.joined(separator: " · "))
+
         case .domain:
             return ("Thunderbolt Domain", nil)
         case .other:
             return (name, nil)
+        }
+    }
+
+    // MARK: - Internal bus labels
+
+    private static func i2cBusTitle(name: String) -> String {
+        // "i2c1" → "I²C Bus 1"
+        if let n = name.dropFirst(3).first, n.isNumber {
+            return "I²C Bus \(String(name.dropFirst(3)))"
+        }
+        return name.uppercased()
+    }
+
+    private static func i2cBusSubtitle(name: String, props: [String: IORegValue]) -> String? {
+        // Pull the address from the entry name suffix `@91014000` when present.
+        return mmioAddress(props: props).map { "MMIO 0x\($0)" }
+    }
+
+    private static func spiBusTitle(name: String) -> String {
+        // "spi2" → "SPI Bus 2", "qspi" → "Quad SPI"
+        if name == "qspi" { return "Quad SPI" }
+        if name.hasPrefix("spi"), let n = name.dropFirst(3).first, n.isNumber {
+            return "SPI Bus \(String(name.dropFirst(3)))"
+        }
+        return name.uppercased()
+    }
+
+    private static func spiBusSubtitle(name: String, props: [String: IORegValue]) -> String? {
+        return mmioAddress(props: props).map { "MMIO 0x\($0)" }
+    }
+
+    private static func mmioAddress(props: [String: IORegValue]) -> String? {
+        guard case let .array(arr) = props["IODeviceMemory"], let first = arr.first else { return nil }
+        // IODeviceMemory[0] is an array containing a single dict: {address, length}.
+        if case let .array(inner) = first, let dict = inner.first, case let .dictionary(kv) = dict {
+            for (k, v) in kv where k == "address" {
+                if let addr = v.asUInt { return String(format: "%X", addr) }
+            }
+        }
+        if case let .dictionary(kv) = first {
+            for (k, v) in kv where k == "address" {
+                if let addr = v.asUInt { return String(format: "%X", addr) }
+            }
+        }
+        return nil
+    }
+
+    /// Best-effort human label for a single i2c/SPI slave. The entry name is
+    /// usually `<function>@<address>` (e.g. `audio-speaker@38`, `atcrt0@18`).
+    /// We split on `@` and translate the function prefix into something readable.
+    private static func busDeviceLabels(name: String, props: [String: IORegValue]) -> (String, String?) {
+        let parts = name.split(separator: "@", maxSplits: 1).map(String.init)
+        let function = parts.first ?? name
+        let address = parts.count > 1 ? parts[1] : nil
+
+        let title = busDeviceFriendlyName(function)
+        var sub: [String] = []
+        if let a = address { sub.append("0x\(a.uppercased())") }
+        if title != function { sub.append(function) }
+        return (title, sub.isEmpty ? nil : sub.joined(separator: " · "))
+    }
+
+    private static func busDeviceFriendlyName(_ function: String) -> String {
+        // Pretty names for the function strings Apple uses in the device tree.
+        // Keep the original token as a fallback so unknown slaves still render.
+        switch function {
+        case "audio-speaker": return "Audio Speaker"
+        case "audio-speaker-left-woofer-1": return "Audio · Left Woofer 1"
+        case "audio-speaker-left-woofer-2": return "Audio · Left Woofer 2"
+        case "audio-speaker-left-tweeter": return "Audio · Left Tweeter"
+        case "audio-speaker-right-woofer-1": return "Audio · Right Woofer 1"
+        case "audio-speaker-right-woofer-2": return "Audio · Right Woofer 2"
+        case "audio-speaker-right-tweeter": return "Audio · Right Tweeter"
+        case "audio-codec-output": return "Audio Codec (headphone)"
+        case "audio-codec-input": return "Audio Codec (mic)"
+        case "atcrt0": return "USB-C Retimer 0"
+        case "atcrt1": return "USB-C Retimer 1"
+        case "atcrt2": return "USB-C Retimer 2"
+        case "pcon0": return "Power Controller 0"
+        case "pcon1": return "Power Controller 1"
+        case "sd-card": return "SD Card Controller"
+        case "mesa": return "Touch ID Sensor"
+        case "dp855", "dp825": return "Display Panel TCON"
+        case "tcon": return "Display Panel TCON"
+        case "als": return "Ambient Light Sensor"
+        case "accel": return "Accelerometer"
+        case "magsafe": return "MagSafe Controller"
+        case "smc": return "System Management Controller"
+        default: return function
         }
     }
 

@@ -42,7 +42,11 @@ final class PortScopeViewModel: ObservableObject {
             let tb = ThunderboltScanner.scan()
             let usb = USBScanner.scan()
             let accessories = AccessoryScanner.scan()
-            let snap = SystemSnapshot(tb: tb, usb: usb, accessories: accessories, capturedAt: Date())
+            let internalHardware = InternalHardwareScanner.scan(accessories: accessories)
+            let snap = SystemSnapshot(
+                tb: tb, usb: usb, accessories: accessories,
+                internalHardware: internalHardware, capturedAt: Date()
+            )
             await MainActor.run {
                 self.snapshot = snap
                 self.isScanning = false
@@ -67,12 +71,20 @@ final class PortScopeViewModel: ObservableObject {
     // MARK: - Selection helpers
 
     /// Roots that the selection lookup walks. Includes TB controllers,
-    /// USB controllers, and the flattened TB-tunneled device lists.
+    /// USB controllers, the flattened TB-tunneled device lists, and the
+    /// internal-hardware buses + battery (so I²C / SPI children and the
+    /// battery node resolve from the sidebar).
     private var selectionRoots: [TBNode] {
-        snapshot.tb.controllers
+        var roots = snapshot.tb.controllers
             + snapshot.usb.controllers
             + snapshot.tb.pcieDevicesOverTB
             + snapshot.tb.usbDevicesOverTB
+            + snapshot.internalHardware.i2cBuses
+            + snapshot.internalHardware.spiBuses
+        if let bm = snapshot.internalHardware.batteryManager {
+            roots.append(bm)
+        }
+        return roots
     }
 
     func node(for id: TBNodeID) -> TBNode? {
@@ -108,6 +120,7 @@ final class PortScopeViewModel: ObservableObject {
 
     private func exists(id: TBNodeID) -> Bool {
         if PhysicalPortSelector.isPortID(id) { return true }
+        if MagSafeSelector.isMagSafeID(id) { return snapshot.internalHardware.magsafe != nil }
         return node(for: id) != nil
     }
 

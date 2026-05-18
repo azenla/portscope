@@ -14,22 +14,43 @@ import Foundation
 import IOKit
 
 enum AccessoryScanner {
-    /// Find every `AppleHPMInterfaceType10` service and turn it into a
-    /// `PortAccessoryInfo`. Sorted by physical port number ascending.
+    /// IORegistry classes the HPM driver matches against. Type10 is the
+    /// per-USB-C receptacle interface; Type11 is the MagSafe 3 receptacle.
+    /// They expose the same property schema (port number, transports, USB-PD
+    /// children) so we can handle both with the same code path.
+    private static let hpmClasses = ["AppleHPMInterfaceType10", "AppleHPMInterfaceType11"]
+
+    /// Find every HPM interface (USB-C + MagSafe) and turn it into a
+    /// `PortAccessoryInfo`. The `connector` field on each entry distinguishes
+    /// them — callers that only care about USB-C ports should filter on
+    /// `connector == .usbC`. Sorted by `PortNumber` ascending.
     static func scan() -> [PortAccessoryInfo] {
         var seen: Set<UInt64> = []
         var out: [PortAccessoryInfo] = []
 
-        for svc in IORegBridge.services(matchingClass: "AppleHPMInterfaceType10") {
-            defer { IOObjectRelease(svc) }
-            guard let id = IORegBridge.entryID(of: svc), !seen.contains(id) else { continue }
-            seen.insert(id)
+        for cls in hpmClasses {
+            for svc in IORegBridge.services(matchingClass: cls) {
+                defer { IOObjectRelease(svc) }
+                guard let id = IORegBridge.entryID(of: svc), !seen.contains(id) else { continue }
+                seen.insert(id)
 
-            let props = IORegBridge.properties(of: svc)
-            guard let port = makePort(entry: svc, id: id, props: props) else { continue }
-            out.append(port)
+                let props = IORegBridge.properties(of: svc)
+                guard let port = makePort(entry: svc, id: id, props: props) else { continue }
+                out.append(port)
+            }
         }
-        out.sort { $0.portNumber < $1.portNumber }
+        out.sort {
+            // Within a connector type, sort by physical port number. USB-C
+            // receptacles come first since they're the more common case.
+            if $0.connector != $1.connector {
+                switch ($0.connector, $1.connector) {
+                case (.usbC, _): return true
+                case (_, .usbC): return false
+                default: break
+                }
+            }
+            return $0.portNumber < $1.portNumber
+        }
         return out
     }
 

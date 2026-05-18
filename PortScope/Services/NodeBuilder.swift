@@ -19,7 +19,7 @@ enum NodeBuilder {
         let name = IORegBridge.name(of: entry) ?? cls
         let location = IORegBridge.location(of: entry)
         let props = IORegBridge.properties(of: entry)
-        let rawKind = NodeFormatter.classify(cls)
+        let rawKind = NodeFormatter.classify(cls, name: name)
         let kind = NodeFormatter.refineKind(rawKind, props: props)
         let path = IORegBridge.path(of: entry)
 

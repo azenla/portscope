@@ -31,6 +31,11 @@ enum TBNodeKind: String {
     case usbDevice     // IOUSBHostDevice
     case networkIf     // IOEthernetInterface (TBnet, USB-Ethernet)
     case appleFabric   // AppleFabricController / AppleFabricEndpoint
+    case i2cBus        // AppleARMIODevice with `device_type = i2c` (i2c1..i2c8)
+    case spiBus        // AppleARMIODevice with `device_type = spi/qspi`
+    case busDevice     // AppleARMIICDevice / AppleARMSPIDevice — an on-bus slave
+    case batteryManager // AppleSmartBatteryManager
+    case battery       // AppleSmartBattery
     case other
 
     var sfSymbol: String {
@@ -49,6 +54,11 @@ enum TBNodeKind: String {
         case .usbDevice: return "cable.connector"
         case .networkIf: return "network"
         case .appleFabric: return "fibrechannel"
+        case .i2cBus: return "point.3.connected.trianglepath.dotted"
+        case .spiBus: return "waveform.path.ecg"
+        case .busDevice: return "circuit.cubic"
+        case .batteryManager: return "battery.100.bolt"
+        case .battery: return "battery.100"
         case .other: return "questionmark.circle"
         }
     }
@@ -68,6 +78,11 @@ enum TBNodeKind: String {
         case .usbDevice: return .teal
         case .networkIf: return .mint
         case .appleFabric: return .brown
+        case .i2cBus: return .orange
+        case .spiBus: return .pink
+        case .busDevice: return .gray
+        case .batteryManager: return .green
+        case .battery: return .green
         case .other: return .gray
         }
     }

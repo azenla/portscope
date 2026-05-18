@@ -52,6 +52,20 @@ struct DetailView: View {
             USBInterfaceView(node: node)
         case .pcieDevice, .pcieBridge, .networkIf, .usbBus:
             GenericDeviceView(node: node)
+        case .battery:
+            BatteryView(node: node)
+        case .batteryManager:
+            // The manager is just a thin wrapper around the battery; surface
+            // the battery directly when we can.
+            if let battery = node.children.first(where: { $0.kind == .battery }) {
+                BatteryView(node: battery)
+            } else {
+                GenericDeviceView(node: node)
+            }
+        case .i2cBus, .spiBus:
+            BusView(node: node, onNavigate: onNavigate)
+        case .busDevice:
+            BusSlaveView(node: node)
         default:
             EmptyView()
         }

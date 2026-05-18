@@ -60,6 +60,8 @@ struct SidebarView: View {
                     }
                 }
             }
+
+            internalHardwareSection
         }
         .listStyle(.sidebar)
         .navigationTitle("PortScope")
@@ -119,6 +121,40 @@ struct SidebarView: View {
         for id in toOpen where !seeded.contains(id) {
             expanded.insert(id)
             seeded.insert(id)
+        }
+    }
+
+    @ViewBuilder
+    private var internalHardwareSection: some View {
+        let hw = vm.snapshot.internalHardware
+        let hasAny = hw.magsafe != nil
+            || hw.batteryManager != nil
+            || !hw.i2cBuses.isEmpty
+            || !hw.spiBuses.isEmpty
+        if hasAny {
+            Section("Internal Hardware") {
+                if let magsafe = hw.magsafe {
+                    MagSafeRow(accessory: magsafe)
+                        .tag(MagSafeSelector.id)
+                }
+                if let bm = hw.batteryManager {
+                    // The manager wraps the battery — surface the battery
+                    // directly as the row, since the manager itself is
+                    // uninteresting.
+                    if let battery = bm.children.first(where: { $0.kind == .battery }) {
+                        BatteryRow(node: battery)
+                            .tag(battery.id)
+                    } else {
+                        BatteryRow(node: bm).tag(bm.id)
+                    }
+                }
+                ForEach(hw.i2cBuses, id: \.id) { bus in
+                    FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
+                }
+                ForEach(hw.spiBuses, id: \.id) { bus in
+                    FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
+                }
+            }
         }
     }
 
@@ -444,4 +480,90 @@ private struct FullTopologyRow: View {
             }
         }
     }
+}
+
+// MARK: - Internal Hardware rows
+
+private struct MagSafeRow: View {
+    let accessory: PortAccessoryInfo
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "powerplug.fill")
+                .foregroundStyle(accessory.connectionActive ? .green : .secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("MagSafe 3 Port")
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var subtitle: String {
+        // When unplugged, lead with "Disconnected" plus the lifetime plug
+        // count; when live, surface the negotiated wattage.
+        if accessory.connectionActive {
+            if let win = accessory.usbPD?.winning {
+                return "Charging · \(win.powerLabel)"
+            }
+            return "Connected"
+        }
+        let plugs = accessory.plugEventCount
+        return plugs == 0 ? "Idle" : "Idle · \(plugs) plug events"
+    }
+}
+
+private struct BatteryRow: View {
+    let node: TBNode
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(node.kind.accentColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(node.title)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var symbol: String {
+        let pct = node.properties["CurrentCapacity"]?.asUInt ?? 0
+        let charging = node.properties["IsCharging"]?.asBool ?? false
+        if charging { return "battery.100.bolt" }
+        if pct >= 75 { return "battery.100" }
+        if pct >= 50 { return "battery.75percent" }
+        if pct >= 25 { return "battery.50percent" }
+        if pct > 0 { return "battery.25percent" }
+        return "battery.0percent"
+    }
+
+    private var subtitle: String {
+        let pct = node.properties["CurrentCapacity"]?.asUInt ?? 0
+        let charging = node.properties["IsCharging"]?.asBool ?? false
+        let external = node.properties["ExternalConnected"]?.asBool ?? false
+        var parts: [String] = ["\(pct)%"]
+        if charging { parts.append("Charging") }
+        else if external { parts.append("On AC") }
+        else { parts.append("On battery") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// Synthetic IDs for the MagSafe row in the Internal Hardware section. The
+/// underlying `AppleHPMInterfaceType11` entry has its own real registry ID,
+/// but routing the row through a synthetic ID lets `ContentView` dispatch to
+/// the dedicated MagSafe detail view instead of the generic property table.
+enum MagSafeSelector {
+    private static let mask: UInt64 = 0xCAFE_F00D_0000_0001
+    static let id = TBNodeID(raw: mask)
+
+    static func isMagSafeID(_ id: TBNodeID) -> Bool { id.raw == mask }
 }

@@ -35,7 +35,12 @@ final class IORegMonitor {
             "IOUSBHostDevice",
             // Per-physical-port HPM interface — fires on cable insertion /
             // removal, USB-PD renegotiation, alt-mode entry, etc.
-            "AppleHPMInterfaceType10"
+            "AppleHPMInterfaceType10",
+            // MagSafe 3 receptacle. Fires on MagSafe insertion/removal and on
+            // charger renegotiation.
+            "AppleHPMInterfaceType11",
+            // Battery / charging state changes (AC attach, charge transitions).
+            "AppleSmartBatteryManager"
         ]
 
         for cls in classes {

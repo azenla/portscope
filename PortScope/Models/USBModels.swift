@@ -236,13 +236,18 @@ enum PhysicalPortMode: Hashable {
 struct SystemSnapshot {
     let tb: TBSnapshot
     let usb: USBSnapshot
-    /// Per-physical-port runtime state from `IOAccessoryManager`.
-    /// Empty on Macs that don't expose `AppleHPMInterfaceType10` (e.g. Intel hosts).
+    /// Per-physical-port runtime state from `IOAccessoryManager`. Includes
+    /// both USB-C (HPM Type10) and MagSafe (HPM Type11) receptacles — the
+    /// `connector` field distinguishes them. Empty on Macs that don't expose
+    /// HPM interfaces (e.g. Intel hosts).
     let accessories: [PortAccessoryInfo]
+    /// Internal-fabric buses and devices: I²C, SPI, smart battery, MagSafe.
+    let internalHardware: InternalHardwareSnapshot
     let capturedAt: Date
 
     static let empty = SystemSnapshot(tb: .empty,
                                       usb: .empty,
                                       accessories: [],
+                                      internalHardware: .empty,
                                       capturedAt: .distantPast)
 }

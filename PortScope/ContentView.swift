@@ -25,6 +25,15 @@ struct ContentView: View {
                 PhysicalPortDetailView(port: port,
                                        onNavigate: { vm.select($0) })
                 .id(sel)
+            } else if MagSafeSelector.isMagSafeID(sel),
+                      let magsafe = vm.snapshot.internalHardware.magsafe {
+                ScrollView {
+                    MagSafeView(accessory: magsafe)
+                        .padding(24)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minWidth: 620)
+                .id(sel)
             } else if let node = vm.node(for: sel) {
                 DetailView(
                     node: node,
