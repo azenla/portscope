@@ -23,6 +23,11 @@ struct SidebarView: View {
     /// Top-level sidebar sections that the user has collapsed. Each entry
     /// keys a section by its stable name; missing = expanded (the default).
     @State private var collapsedSections: Set<String> = []
+    /// Persistent preference (Settings → Show All Devices). When false the
+    /// sidebar shows only pluggable subsystems (USB-C ports, Thunderbolt,
+    /// USB, PCIe). When true, Displays / Bluetooth / Internal Hardware are
+    /// surfaced too.
+    @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
 
     var body: some View {
         let ports = TopologyMapper.physicalPorts(from: vm.snapshot)
@@ -72,10 +77,14 @@ struct SidebarView: View {
                 }
             }
 
-            displaysSection
-            bluetoothSection
+            if showAllDevices {
+                displaysSection
+                bluetoothSection
+            }
             pcieSection
-            internalHardwareSection
+            if showAllDevices {
+                internalHardwareSection
+            }
         }
         .listStyle(.sidebar)
         .navigationTitle("PortScope")

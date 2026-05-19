@@ -16,18 +16,15 @@ import Darwin
 @main
 enum PortScopeMain {
     static func main() {
-        if let mode = CLIMode.from(CommandLine.arguments) {
-            runCLI(mode: mode)
+        if let request = CLIRequest.from(CommandLine.arguments) {
+            runCLI(request: request)
             return
         }
         PortScopeApp.main()
     }
 
-    private static func runCLI(mode: CLIMode) {
-        // Scanners are MainActor-isolated. We're already on the main
-        // thread of a freshly-launched process (`@main` runs there), so
-        // it's safe to call them directly via `MainActor.assumeIsolated`.
-        let snapshot: SystemSnapshot = MainActor.assumeIsolated {
+    private static func runCLI(request: CLIRequest) {
+        let snapshot: SystemSnapshot = {
             let tb = ThunderboltScanner.scan()
             let usb = USBScanner.scan()
             let accessories = AccessoryScanner.scan()
@@ -41,14 +38,16 @@ enum PortScopeMain {
                 bluetooth: bluetooth, displays: displays, pcie: pcie,
                 capturedAt: Date()
             )
-        }
+        }()
         let output: String
-        switch mode {
+        switch request.format {
         case .json:
-            output = SnapshotDumper.json(snapshot)
+            output = SnapshotDumper.json(snapshot, showAll: request.showAll)
         case .pretty(let forceColor):
             let isTTY = isatty(fileno(stdout)) != 0
-            output = SnapshotDumper.pretty(snapshot, useColor: forceColor ?? isTTY)
+            output = SnapshotDumper.pretty(snapshot,
+                                           useColor: forceColor ?? isTTY,
+                                           showAll: request.showAll)
         }
         FileHandle.standardOutput.write(Data(output.utf8))
         if !output.hasSuffix("\n") { FileHandle.standardOutput.write(Data("\n".utf8)) }
@@ -56,19 +55,29 @@ enum PortScopeMain {
     }
 }
 
-/// CLI modes the entry point recognises.
-private enum CLIMode {
-    case pretty(forceColor: Bool?)
-    case json
+/// One invocation's worth of CLI options. The format selects the output
+/// renderer; `showAll` controls whether non-pluggable subsystems (Bluetooth,
+/// Displays, Internal Hardware) are included in the dump. Without `--all`
+/// the dump matches the GUI's default view: USB-C ports, USB, Thunderbolt,
+/// and PCIe only.
+private struct CLIRequest {
+    enum Format {
+        case pretty(forceColor: Bool?)
+        case json
+    }
+    let format: Format
+    let showAll: Bool
 
-    static func from(_ argv: [String]) -> CLIMode? {
+    static func from(_ argv: [String]) -> CLIRequest? {
         var pretty = false
         var json = false
+        var showAll = false
         var forceColor: Bool? = nil
         for arg in argv.dropFirst() {
             switch arg {
             case "--pretty", "--dump", "-p": pretty = true
             case "--json", "-j": json = true
+            case "--all", "-a": showAll = true
             case "--color", "--colour": forceColor = true
             case "--no-color", "--no-colour": forceColor = false
             case "--help", "-h":
@@ -82,6 +91,9 @@ private enum CLIMode {
                   --json   | -j     Stable JSON dump (jq-friendly).
 
                 Modifiers:
+                  --all    | -a     Include Bluetooth, Displays, and Internal
+                                    Hardware sections. Default: pluggable
+                                    devices only (USB-C, USB, Thunderbolt, PCIe).
                   --color / --no-color
                                     Force ANSI colour on/off (default: auto-detect TTY).
                   -h, --help        Show this help.
@@ -94,8 +106,8 @@ private enum CLIMode {
                 continue
             }
         }
-        if json { return .json }
-        if pretty { return .pretty(forceColor: forceColor) }
+        if json { return CLIRequest(format: .json, showAll: showAll) }
+        if pretty { return CLIRequest(format: .pretty(forceColor: forceColor), showAll: showAll) }
         return nil
     }
 }
@@ -117,7 +129,36 @@ struct PortScopeApp: App {
                 .keyboardShortcut("r", modifiers: .command)
             }
         }
+
+        Settings {
+            SettingsView()
+        }
     }
+}
+
+/// The Preferences window. Currently houses a single persistent toggle
+/// controlling whether non-pluggable subsystems show in the sidebar.
+private struct SettingsView: View {
+    @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
+
+    var body: some View {
+        Form {
+            Toggle("Show All Devices", isOn: $showAllDevices)
+            Text("Show Bluetooth, Displays, and Internal Hardware in the sidebar alongside the pluggable USB-C, USB, Thunderbolt, and PCIe devices.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+}
+
+/// Stable key + helper for the persistent "show everything" preference.
+/// The sidebar reads it via `@AppStorage` so the UI updates live when the
+/// Settings window toggles it.
+enum SidebarVisibility {
+    static let showAllDevicesKey = "showAllDevices"
 }
 
 extension Notification.Name {
