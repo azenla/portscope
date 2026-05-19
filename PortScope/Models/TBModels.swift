@@ -205,6 +205,14 @@ nonisolated extension TBNode {
             }
         case "idVendor", "idProduct":
             if let v = value.asUInt { return String(format: "0x%04X (%d)", v, v) }
+        case "UsbPowerSinkAllocation", "UsbPowerSinkCapability",
+             "kUSBConfigurationCurrentOverride",
+             "kUSBWakePortCurrentLimit", "kUSBSleepPortCurrentLimit",
+             "Bus Current", "Operating Bus Current (mA)":
+            if let v = value.asUInt {
+                let watts = Double(v) / 1000.0 * 5.0
+                return String(format: "%llu mA  (~%.1f W @ 5 V)", v, watts)
+            }
         case "compatible", "IONameMatch", "IONameMatched":
             // These come back as arrays of device-tree match strings. The
             // first entry is the primary match (`jpeg,t8110jpeg`), the

@@ -44,6 +44,10 @@ struct PhysicalPort {
     /// HPD, cable e-marker info — the data that doesn't show up in the
     /// Thunderbolt or USB IOKit families.
     let accessory: PortAccessoryInfo?
+    /// What the Mac is sourcing on this receptacle right now: per-device
+    /// allocations + port-level current ceilings. Nil when we can't see a
+    /// matching xHCI port wrapper for the receptacle.
+    let sourcePower: PortSourcePower?
 
     /// The lane node to query for bandwidth allocations. Prefers `linkLane`
     /// (sees all tunnels through the link) and falls back to `laneAdapter`
@@ -155,7 +159,8 @@ nonisolated enum TopologyMapper {
                     attachedUSBDevices: usb?.flat ?? p.attachedUSBDevices,
                     usbDeviceRoots: usb?.roots ?? p.usbDeviceRoots,
                     tunnels: p.tunnels,
-                    accessory: nil
+                    accessory: nil,
+                    sourcePower: usb?.power
                 )
             }
         }
@@ -190,7 +195,7 @@ nonisolated enum TopologyMapper {
 
         var out: [PhysicalPort] = []
         for (acc, tb) in paired {
-            let usb = usbByPort[acc.portNumber] ?? (flat: [], roots: [])
+            let usb = usbByPort[acc.portNumber] ?? (flat: [], roots: [], power: nil)
             if let tb {
                 let refinedMode = refineMode(tb.mode, with: acc, usbDevices: usb.flat)
                 out.append(PhysicalPort(
@@ -201,7 +206,8 @@ nonisolated enum TopologyMapper {
                     attachedUSBDevices: usb.flat.isEmpty ? tb.attachedUSBDevices : usb.flat,
                     usbDeviceRoots: usb.roots.isEmpty ? tb.usbDeviceRoots : usb.roots,
                     tunnels: tb.tunnels,
-                    accessory: acc
+                    accessory: acc,
+                    sourcePower: usbByPort[acc.portNumber]?.power
                 ))
             } else {
                 // HPM port with no matching TB controller (rare; fall back to a
@@ -215,7 +221,8 @@ nonisolated enum TopologyMapper {
                     attachedUSBDevices: usb.flat,
                     usbDeviceRoots: usb.roots,
                     tunnels: [],
-                    accessory: acc
+                    accessory: acc,
+                    sourcePower: usbByPort[acc.portNumber]?.power
                 ))
             }
         }
@@ -231,7 +238,8 @@ nonisolated enum TopologyMapper {
                 attachedUSBDevices: usb?.flat ?? tb.attachedUSBDevices,
                 usbDeviceRoots: usb?.roots ?? tb.usbDeviceRoots,
                 tunnels: tb.tunnels,
-                accessory: nil
+                accessory: nil,
+                sourcePower: usb?.power
             ))
         }
         return out
@@ -243,18 +251,91 @@ nonisolated enum TopologyMapper {
     /// `IONameMatch = "usb-drd,…"` is the host-side controller for one USB-C
     /// receptacle, and its `locationID` high byte is the receptacle index —
     /// `drd0 → Port 1`, `drd1 → Port 2`, etc.
-    private static func usbDevicesByPort(in snapshot: USBSnapshot) -> [Int: (flat: [TBNode], roots: [TBNode])] {
-        var out: [Int: (flat: [TBNode], roots: [TBNode])] = [:]
+    private static func usbDevicesByPort(in snapshot: USBSnapshot) -> [Int: (flat: [TBNode], roots: [TBNode], power: PortSourcePower?)] {
+        var flatByPort: [Int: [TBNode]] = [:]
+        var rootsByPort: [Int: [TBNode]] = [:]
+        var wakeLimitByPort: [Int: UInt64] = [:]
+        var sleepLimitByPort: [Int: UInt64] = [:]
         for controller in snapshot.controllers {
             guard let portNumber = physicalPortNumber(forUSBController: controller) else {
                 continue
             }
-            var bucket = out[portNumber] ?? (flat: [], roots: [])
-            bucket.flat += allUSBDevices(under: controller)
-            bucket.roots += topLevelUSBDevices(under: controller)
-            out[portNumber] = bucket
+            flatByPort[portNumber, default: []] += allUSBDevices(under: controller)
+            rootsByPort[portNumber, default: []] += topLevelUSBDevices(under: controller)
+            // Highest-cap port wrapper wins — usually the SS one reports the
+            // same number as the HS companion, but if they differ we want
+            // the headroom figure, not the conservative one.
+            for (w, s) in portCurrentLimits(under: controller) {
+                if let w { wakeLimitByPort[portNumber] = max(wakeLimitByPort[portNumber] ?? 0, w) }
+                if let s { sleepLimitByPort[portNumber] = max(sleepLimitByPort[portNumber] ?? 0, s) }
+            }
+        }
+
+        var out: [Int: (flat: [TBNode], roots: [TBNode], power: PortSourcePower?)] = [:]
+        let allPorts = Set(flatByPort.keys)
+            .union(rootsByPort.keys)
+            .union(wakeLimitByPort.keys)
+            .union(sleepLimitByPort.keys)
+        for portNumber in allPorts {
+            let flat = flatByPort[portNumber] ?? []
+            let roots = rootsByPort[portNumber] ?? []
+            let sinks = flat.compactMap(sinkConsumer(from:))
+            let wake = wakeLimitByPort[portNumber]
+            let sleep = sleepLimitByPort[portNumber]
+            let power: PortSourcePower? = (wake == nil && sleep == nil && sinks.isEmpty)
+                ? nil
+                : PortSourcePower(wakeLimitMA: wake,
+                                  sleepLimitMA: sleep,
+                                  sinks: sinks,
+                                  outputProfile: nil)
+            out[portNumber] = (flat: flat, roots: roots, power: power)
         }
         return out
+    }
+
+    /// Pull `kUSBWakePortCurrentLimit` / `kUSBSleepPortCurrentLimit` from every
+    /// `AppleUSB[23]0XHCIARMPort` wrapper under a USB controller. These port
+    /// wrappers live one level below the xHCI controller and appear as
+    /// `.other` kind in the tree (`AppleUSB30XHCIARMPort`,
+    /// `AppleUSB20XHCIARMPort`).
+    private static func portCurrentLimits(under controller: TBNode) -> [(UInt64?, UInt64?)] {
+        var out: [(UInt64?, UInt64?)] = []
+        var stack = controller.children
+        while !stack.isEmpty {
+            let n = stack.removeFirst()
+            let wake = n.properties["kUSBWakePortCurrentLimit"]?.asUInt
+            let sleep = n.properties["kUSBSleepPortCurrentLimit"]?.asUInt
+            if wake != nil || sleep != nil {
+                out.append((wake, sleep))
+            }
+            // Don't dive into actual USB devices — the limits live on the
+            // port wrappers between the controller and the device.
+            if n.kind == .usbDevice || n.kind == .usbHub { continue }
+            stack.append(contentsOf: n.children)
+        }
+        return out
+    }
+
+    /// Build a `PortSinkConsumer` from a USB device node when the kernel
+    /// has published a sink-side allocation for it. Filters out nodes that
+    /// carry no allocation (every interface, plus root hubs, etc.) so the
+    /// view only sees "real" sinks.
+    private static func sinkConsumer(from node: TBNode) -> PortSinkConsumer? {
+        let alloc = node.properties["UsbPowerSinkAllocation"]?.asUInt
+        let cap = node.properties["UsbPowerSinkCapability"]?.asUInt
+        let cfg = node.properties["kUSBConfigurationCurrentOverride"]?.asUInt
+        let primary = alloc ?? cap ?? cfg ?? 0
+        guard primary > 0 else { return nil }
+        let name = node.properties["USB Product Name"]?.asString
+            ?? node.properties["kUSBProductString"]?.asString
+            ?? node.title
+        return PortSinkConsumer(
+            id: node.id,
+            name: name,
+            allocatedMA: alloc ?? cfg ?? cap ?? 0,
+            capabilityMA: cap,
+            configCurrentMA: cfg
+        )
     }
 
     /// Top-level USB hubs/devices directly attached to this controller —
@@ -384,7 +465,8 @@ nonisolated enum TopologyMapper {
             attachedUSBDevices: usbDevices,
             usbDeviceRoots: [],
             tunnels: tunnels,
-            accessory: accessory
+            accessory: accessory,
+            sourcePower: nil
         )
     }
 

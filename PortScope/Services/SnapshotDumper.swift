@@ -196,6 +196,38 @@ enum SnapshotDumper {
             out["connected_device"] = NSNull()
         }
         if let acc = p.accessory { out["accessory"] = accessoryToJSON(acc) }
+        if let sp = p.sourcePower, sp.isInteresting {
+            out["power_output"] = sourcePowerToJSON(sp)
+        } else {
+            out["power_output"] = NSNull()
+        }
+        return out
+    }
+
+    private static func sourcePowerToJSON(_ sp: PortSourcePower) -> [String: Any] {
+        var out: [String: Any] = [
+            "wake_current_limit_ma": sp.wakeLimitMA.map { NSNumber(value: $0) } ?? NSNull(),
+            "sleep_current_limit_ma": sp.sleepLimitMA.map { NSNumber(value: $0) } ?? NSNull(),
+            "total_allocated_ma": sp.totalAllocatedMA,
+            "estimated_power_w_at_5v": Double(sp.totalAllocatedMA) / 1000.0 * 5.0,
+            "sinks": sp.sinks.map { s -> [String: Any] in
+                [
+                    "id": String(format: "0x%llX", s.id.raw),
+                    "name": s.name,
+                    "allocated_ma": s.allocatedMA,
+                    "capability_ma": s.capabilityMA.map { NSNumber(value: $0) } ?? NSNull(),
+                    "config_current_ma": s.configCurrentMA.map { NSNumber(value: $0) } ?? NSNull(),
+                    "estimated_power_w_at_5v": Double(s.allocatedMA) / 1000.0 * 5.0
+                ]
+            }
+        ]
+        if let pdOut = sp.outputProfile {
+            let winning: Any = pdOut.winning.map(usbPDOptionToJSON(_:)) ?? NSNull()
+            out["output_profile"] = [
+                "winning": winning,
+                "offered": pdOut.offered.map(usbPDOptionToJSON(_:))
+            ]
+        }
         return out
     }
 
@@ -418,13 +450,25 @@ private final class PrettyPrinter {
                     line("      \(dim("orientation:")) \(acc.plugOrientation.label)")
                 }
                 if let pd = acc.usbPD, let win = pd.winning {
-                    line("      \(dim("USB-PD:")) \(win.voltageLabel) @ \(win.currentLabel) = \(bold(win.powerLabel))")
+                    line("      \(dim("USB-PD in:")) \(win.voltageLabel) @ \(win.currentLabel) = \(bold(win.powerLabel))")
                 }
                 if let cable = acc.cableLabel {
                     line("      \(dim("cable:")) \(cable)")
                 }
                 if acc.hpdAsserted {
                     line("      \(dim("DP HPD:")) asserted (pin \(displayPortPinAssignmentLabel(acc.displayPortPinAssignment)))")
+                }
+            }
+            if let sp = port.sourcePower, sp.isInteresting {
+                if sp.totalAllocatedMA > 0 {
+                    let totalW = Double(sp.totalAllocatedMA) / 1000.0 * 5.0
+                    let watt = String(format: "%.1f W", totalW)
+                    let amps = String(format: "%.2f A", Double(sp.totalAllocatedMA) / 1000.0)
+                    line("      \(dim("PD out:")) \(bold(watt)) (5 V · \(amps))")
+                }
+                if let w = sp.wakeLimitMA {
+                    let a = String(format: "%.1f A", Double(w) / 1000.0)
+                    line("      \(dim("port limit:")) \(a) awake\(sp.sleepLimitMA.map { " · " + String(format: "%.1f A", Double($0) / 1000.0) + " asleep" } ?? "")")
                 }
             }
             if let device = port.connectedDevice {

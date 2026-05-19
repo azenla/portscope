@@ -103,8 +103,7 @@ struct USBHubView: View {
         let portCount = node.properties["Number of Ports"]?.asUInt
         let speed = node.properties["Device Speed"]?.asUInt
             ?? node.properties["kUSBCurrentSpeed"]?.asUInt
-        let busCurrent = node.properties["Bus Current"]?.asUInt
-            ?? node.properties["Operating Bus Current (mA)"]?.asUInt
+        let power = USBDevicePower(properties: node.properties)
         let attached = countDevices(under: node)
 
         VStack(alignment: .leading, spacing: 16) {
@@ -127,8 +126,8 @@ struct USBHubView: View {
                 Stat(label: "Attached Devices",
                      value: "\(attached.devices)",
                      symbol: "cable.connector"),
-                Stat(label: "Bus Current",
-                     value: busCurrent.map { "\($0) mA" } ?? "—",
+                Stat(label: "Sink Allocation",
+                     value: power.allocationLabel,
                      symbol: "bolt"),
                 Stat(label: "Built-In",
                      value: (node.properties["Built-In"]?.asBool ?? false) ? "Yes" : "No",
@@ -137,6 +136,9 @@ struct USBHubView: View {
 
             if let speedVal = speed {
                 USBLinkRateCard(speed: speedVal)
+            }
+            if power.hasData {
+                USBSinkPowerCard(power: power)
             }
             if let tb = tbContext {
                 TBLinkCard(label: "Reached through a Thunderbolt-tunneled USB controller.",
@@ -159,8 +161,7 @@ struct USBDeviceView: View {
         let speed = node.properties["Device Speed"]?.asUInt
             ?? node.properties["kUSBCurrentSpeed"]?.asUInt
         let bcdUSB = node.properties["bcdUSB"]?.asUInt
-        let busCurrent = node.properties["Bus Current"]?.asUInt
-            ?? node.properties["Operating Bus Current (mA)"]?.asUInt
+        let power = USBDevicePower(properties: node.properties)
         let vid = node.properties["idVendor"]?.asUInt
         let pid = node.properties["idProduct"]?.asUInt
         let cls = node.properties["bDeviceClass"]?.asUInt
@@ -186,8 +187,8 @@ struct USBDeviceView: View {
                 Stat(label: "VID : PID",
                      value: formatVidPid(vid: vid, pid: pid),
                      symbol: "barcode"),
-                Stat(label: "Bus Current",
-                     value: busCurrent.map { "\($0) mA" } ?? "—",
+                Stat(label: "Sink Allocation",
+                     value: power.allocationLabel,
                      symbol: "bolt"),
                 Stat(label: "Serial Number",
                      value: serial?.isEmpty == false ? serial! : "—",
@@ -197,6 +198,9 @@ struct USBDeviceView: View {
 
             if let speedVal = speed {
                 USBLinkRateCard(speed: speedVal)
+            }
+            if power.hasData {
+                USBSinkPowerCard(power: power)
             }
             if let tb = tbContext {
                 TBLinkCard(label: "Reached through a Thunderbolt-tunneled USB bus.",
@@ -248,6 +252,114 @@ struct USBInterfaceView: View {
                      value: endpoints.map(String.init) ?? "—",
                      symbol: "arrow.left.arrow.right")
             ])
+        }
+    }
+}
+
+// MARK: - USB device power
+
+/// Power-sourcing summary for a USB device, derived from the Apple-specific
+/// IORegistry properties the kernel publishes on each `IOUSBHostDevice` when
+/// the Mac is the USB-PD source on a USB-C receptacle.
+///
+/// * `UsbPowerSinkAllocation` — current (mA) the Mac has *granted* the sink.
+/// * `UsbPowerSinkCapability` — peak (mA) the sink is willing to accept.
+/// * `kUSBConfigurationCurrentOverride` — per-active-config override that
+///   replaces the legacy `bMaxPower` field from the configuration descriptor.
+/// * `Bus Current` / `Operating Bus Current (mA)` — legacy bus-current fields
+///   present on USB-A / hub-attached devices (no PD negotiation).
+struct USBDevicePower {
+    let allocationMA: UInt64?
+    let capabilityMA: UInt64?
+    let configurationCurrentMA: UInt64?
+    let legacyBusCurrentMA: UInt64?
+
+    init(properties: [String: IORegValue]) {
+        self.allocationMA = properties["UsbPowerSinkAllocation"]?.asUInt
+        self.capabilityMA = properties["UsbPowerSinkCapability"]?.asUInt
+        self.configurationCurrentMA = properties["kUSBConfigurationCurrentOverride"]?.asUInt
+        self.legacyBusCurrentMA = properties["Bus Current"]?.asUInt
+            ?? properties["Operating Bus Current (mA)"]?.asUInt
+    }
+
+    /// Best single-number "current the device is set up to draw" — used in
+    /// the stat grid. Prefers the PD-negotiated allocation, falls back to
+    /// the config override, then the legacy bus-current field, then the
+    /// raw capability.
+    var primaryCurrentMA: UInt64? {
+        allocationMA ?? configurationCurrentMA ?? legacyBusCurrentMA ?? capabilityMA
+    }
+
+    /// Estimated wattage at the USB-C default voltage (5 V). When the Mac
+    /// negotiates a higher PD voltage with the device the actual figure is
+    /// higher, but that source-side info isn't exposed in IORegistry today,
+    /// so the card always says "@ 5 V" to keep the number honest.
+    var estimatedPowerW: Double? {
+        guard let mA = primaryCurrentMA, mA > 0 else { return nil }
+        return Double(mA) / 1000.0 * 5.0
+    }
+
+    var hasData: Bool {
+        primaryCurrentMA != nil || capabilityMA != nil
+    }
+
+    var allocationLabel: String {
+        guard let mA = primaryCurrentMA, mA > 0 else { return "—" }
+        return "\(mA) mA"
+    }
+}
+
+/// Power card on a USB device. Surfaces the Apple sink-allocation and
+/// capability fields that drive USB-C charging on Apple Silicon, along with
+/// an estimated wattage at 5 V.
+struct USBSinkPowerCard: View {
+    let power: USBDevicePower
+
+    var body: some View {
+        SectionCard(title: "USB-C Power Input", symbol: "bolt.fill") {
+            VStack(alignment: .leading, spacing: 10) {
+                if let mA = power.primaryCurrentMA, mA > 0, let watts = power.estimatedPowerW {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(String(format: "%.1f W", watts))
+                            .font(.system(size: 30, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(.yellow)
+                        Text("at 5 V · \(mA) mA")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                }
+                Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
+                    if let alloc = power.allocationMA {
+                        GridRow {
+                            Text("Negotiated allowance").foregroundStyle(.secondary)
+                            Text("\(alloc) mA").monospacedDigit()
+                        }
+                    }
+                    if let cap = power.capabilityMA {
+                        GridRow {
+                            Text("Sink peak capability").foregroundStyle(.secondary)
+                            Text("\(cap) mA").monospacedDigit()
+                        }
+                    }
+                    if let cfg = power.configurationCurrentMA, cfg != power.allocationMA {
+                        GridRow {
+                            Text("Active config override").foregroundStyle(.secondary)
+                            Text("\(cfg) mA").monospacedDigit()
+                        }
+                    }
+                    if let bus = power.legacyBusCurrentMA, bus != power.allocationMA {
+                        GridRow {
+                            Text("Bus current (legacy)").foregroundStyle(.secondary)
+                            Text("\(bus) mA").monospacedDigit()
+                        }
+                    }
+                }
+                .font(.callout)
+                Text("Power figures assume the USB-C default 5 V. Apple Silicon doesn't publish source-side PD profiles in IORegistry, so a device that negotiates a higher PD voltage may pull more than shown here.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 }

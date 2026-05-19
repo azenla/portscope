@@ -27,6 +27,9 @@ struct PhysicalPortDetailView: View {
                 if let pd = port.accessory?.usbPD {
                     powerDeliveryCard(pd: pd)
                 }
+                if let sp = port.sourcePower, !sp.sinks.isEmpty {
+                    powerOutputCard(sp)
+                }
                 if let acc = port.accessory, acc.carriesDisplay {
                     displayCard(acc: acc)
                 }
@@ -273,6 +276,118 @@ struct PhysicalPortDetailView: View {
                 }
             }
         }
+    }
+
+    // MARK: - USB-C Power Output (Mac is sourcing power to the attached device)
+
+    private func powerOutputCard(_ sp: PortSourcePower) -> some View {
+        // 5 V is the USB-C default. Source-side PDOs aren't published in
+        // IORegistry on Apple Silicon today, so we can't pretend to know a
+        // higher negotiated voltage. The card says so explicitly.
+        let totalMA = sp.totalAllocatedMA
+        let totalW = Double(totalMA) / 1000.0 * 5.0
+        let wakeA = sp.wakeLimitMA.map { Double($0) / 1000.0 }
+        let sleepA = sp.sleepLimitMA.map { Double($0) / 1000.0 }
+        let portLimitW = sp.wakeLimitMA.map { Double($0) / 1000.0 * 5.0 }
+
+        return SectionCard(title: "USB-C Power Output", symbol: "bolt.batteryblock") {
+            VStack(alignment: .leading, spacing: 12) {
+                if totalMA > 0 {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(String(format: "%.1f W", totalW))
+                            .font(.system(size: 30, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(.green)
+                        Text(String(format: "5 V · %.2f A", Double(totalMA) / 1000.0))
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if let cap = portLimitW {
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(String(format: "of %.0f W", cap))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                ProgressView(value: min(totalW / max(cap, 0.1), 1.0))
+                                    .progressViewStyle(.linear)
+                                    .frame(width: 120)
+                                    .tint(.green)
+                            }
+                        }
+                    }
+                } else {
+                    Text("No USB device is currently drawing power on this port.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !sp.sinks.isEmpty {
+                    Divider()
+                    Text("Per-device allocation")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                        GridRow {
+                            Text("Device").gridColumnAlignment(.leading)
+                            Text("Allocated").gridColumnAlignment(.trailing)
+                            Text("Capability").gridColumnAlignment(.trailing)
+                            Text("≈ Power").gridColumnAlignment(.trailing)
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
+                        Divider()
+                        ForEach(sp.sinks) { sink in
+                            let watts = Double(sink.allocatedMA) / 1000.0 * 5.0
+                            GridRow {
+                                Text(sink.name).lineLimit(1)
+                                Text("\(sink.allocatedMA) mA").gridColumnAlignment(.trailing).monospacedDigit()
+                                Text(sink.capabilityMA.map { "\($0) mA" } ?? "—")
+                                    .gridColumnAlignment(.trailing)
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                Text(String(format: "%.1f W", watts))
+                                    .gridColumnAlignment(.trailing)
+                                    .monospacedDigit()
+                            }
+                            .font(.callout)
+                        }
+                    }
+                }
+
+                if wakeA != nil || sleepA != nil {
+                    Divider()
+                    Text("Port source limit")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 18) {
+                        if let a = wakeA {
+                            limitChip(label: "Awake",
+                                      value: String(format: "%.1f A", a),
+                                      icon: "sun.max")
+                        }
+                        if let a = sleepA {
+                            limitChip(label: "Asleep",
+                                      value: String(format: "%.1f A", a),
+                                      icon: "moon.zzz")
+                        }
+                        Spacer()
+                    }
+                }
+
+                Text("Estimated wattage assumes the USB-C default 5 V. Apple Silicon doesn't expose source-side USB-PD profiles, so PD-fast-charge devices may pull more than this number.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func limitChip(label: String, value: String, icon: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).foregroundStyle(.secondary)
+            Text(label).foregroundStyle(.secondary)
+            Text(value).monospacedDigit()
+        }
+        .font(.callout)
+        .padding(.horizontal, 10).padding(.vertical, 4)
+        .background(Color.secondary.opacity(0.10))
+        .clipShape(Capsule())
     }
 
     // MARK: - DisplayPort

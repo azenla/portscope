@@ -116,6 +116,11 @@ nonisolated enum AccessoryScanner {
     /// a `USB-PD` and (when an Apple charger is plugged in) a `Brick ID`
     /// `IOPortFeaturePowerSource` child. Walk both to pull the offered + winning
     /// power profiles.
+    ///
+    /// Apple Silicon publishes only `IOPortFeaturePowerIn` (sink-side PDOs)
+    /// today; `IOPortFeaturePowerOut` is reserved for future hardware that
+    /// exposes source-side PDOs. We match both classes so if the latter
+    /// appears we surface it without further code changes.
     private static func readUSBPDProfile(under entry: io_registry_entry_t) -> USBPDProfile? {
         var winning: USBPDOption?
         var offered: [USBPDOption] = []
@@ -128,7 +133,7 @@ nonisolated enum AccessoryScanner {
         for child in IORegBridge.children(of: entry) {
             defer { IOObjectRelease(child) }
             guard let cls = IORegBridge.className(of: child),
-                  cls == "IOPortFeaturePowerIn" else { continue }
+                  cls == "IOPortFeaturePowerIn" || cls == "IOPortFeaturePowerOut" else { continue }
 
             for source in IORegBridge.children(of: child) {
                 defer { IOObjectRelease(source) }

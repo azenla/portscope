@@ -535,6 +535,8 @@ nonisolated enum NodeFormatter {
                 "bDeviceClass", "bDeviceSubClass", "bDeviceProtocol",
                 "Device Speed", "kUSBCurrentSpeed", "kUSBHubSpeed",
                 "PortNum", "USB Address", "locationID", "sessionID",
+                "UsbPowerSinkAllocation", "UsbPowerSinkCapability",
+                "kUSBConfigurationCurrentOverride",
                 "Bus Current", "Bus Power Available", "Operating Bus Current (mA)",
                 "Number of Ports", "Built-In",
                 "kUSBContainerID"

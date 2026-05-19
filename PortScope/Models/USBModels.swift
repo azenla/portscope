@@ -175,6 +175,50 @@ nonisolated func usbBcdVersion(_ raw: UInt64?) -> String {
     return "\(major).\(minor).\(sub)"
 }
 
+/// Per-physical-port summary of the power the Mac is sourcing on a USB-C
+/// receptacle. Pulled together from two IOKit sources:
+///
+/// * The xHCI port wrapper (`AppleUSB30XHCIARMPort` / `AppleUSB20XHCIARMPort`)
+///   carries the *port-level* current ceiling — `kUSBWakePortCurrentLimit` and
+///   `kUSBSleepPortCurrentLimit` — i.e. how much current the silicon is
+///   willing to push at 5 V regardless of which device is plugged in.
+/// * Each attached USB device exposes its *negotiated* allowance through
+///   `UsbPowerSinkAllocation` (granted to the sink) and
+///   `UsbPowerSinkCapability` (peak the sink could request).
+///
+/// USB-PD source PDOs (the per-voltage profiles the Mac advertises) aren't
+/// exposed in IORegistry on Apple Silicon today — `IOPortFeaturePowerOut`
+/// has no children — so the wattage shown here is computed at 5 V from the
+/// negotiated current. When Apple starts publishing source PDOs we can plug
+/// them in via `outputProfile`.
+nonisolated struct PortSourcePower: Hashable {
+    let wakeLimitMA: UInt64?
+    let sleepLimitMA: UInt64?
+    let sinks: [PortSinkConsumer]
+    /// Forward-looking. Currently always nil on Apple Silicon.
+    let outputProfile: USBPDProfile?
+
+    var isInteresting: Bool {
+        wakeLimitMA != nil || sleepLimitMA != nil || !sinks.isEmpty || outputProfile != nil
+    }
+
+    /// Total current the Mac is currently sourcing across all attached USB
+    /// devices on this port (sum of `allocatedMA`). Useful for the headline
+    /// wattage figure on the port view.
+    var totalAllocatedMA: UInt64 {
+        sinks.reduce(0) { $0 + $1.allocatedMA }
+    }
+}
+
+/// One USB device the Mac is sourcing power to on a given port.
+nonisolated struct PortSinkConsumer: Hashable, Identifiable {
+    let id: TBNodeID
+    let name: String
+    let allocatedMA: UInt64
+    let capabilityMA: UInt64?
+    let configCurrentMA: UInt64?
+}
+
 /// Snapshot of the USB subsystem at scan time.
 nonisolated struct USBSnapshot {
     let capturedAt: Date
