@@ -12,7 +12,7 @@
 import Foundation
 import IOKit
 
-enum DisplayScanner {
+nonisolated enum DisplayScanner {
     static func scan() -> DisplaySnapshot {
         var out: [DisplayInfo] = []
         out.append(contentsOf: scanClass("IOMobileFramebufferShim"))

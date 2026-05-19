@@ -14,7 +14,7 @@
 import Foundation
 import SwiftUI
 
-struct PCISnapshot {
+nonisolated struct PCISnapshot {
     /// Root host bridges + their downstream tree. Empty on Macs without
     /// PCIe (e.g. Intel-virtualized hosts).
     let roots: [PCINode]
@@ -34,7 +34,7 @@ struct PCISnapshot {
     }
 }
 
-struct PCINode: Hashable, Identifiable {
+nonisolated struct PCINode: Hashable, Identifiable {
     var id: TBNodeID { backingID }
 
     /// IORegistry entry ID — used to resolve back to the raw TBNode for the
@@ -80,7 +80,7 @@ struct PCINode: Hashable, Identifiable {
     let children: [PCINode]
 }
 
-enum PCIKind: String {
+nonisolated enum PCIKind: String {
     case rootBridge   // pci-bridge0 at depth 0
     case bridge       // pci-bridge / pcic*-bridge children
     case endpoint     // leaf device (wlan, sdreader, NVMe, …)
@@ -103,7 +103,7 @@ enum PCIKind: String {
 }
 
 /// Format a PCIe link speed code into a human-readable rate.
-func pciLinkSpeedLabel(_ speed: UInt64) -> String {
+nonisolated func pciLinkSpeedLabel(_ speed: UInt64) -> String {
     switch speed {
     case 1: return "PCIe 1.0 (2.5 GT/s)"
     case 2: return "PCIe 2.0 (5 GT/s)"
@@ -116,7 +116,7 @@ func pciLinkSpeedLabel(_ speed: UInt64) -> String {
 }
 
 /// Short label for tight spaces.
-func pciLinkSpeedShortLabel(_ speed: UInt64) -> String {
+nonisolated func pciLinkSpeedShortLabel(_ speed: UInt64) -> String {
     switch speed {
     case 1: return "Gen 1"
     case 2: return "Gen 2"

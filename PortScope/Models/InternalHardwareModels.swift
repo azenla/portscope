@@ -14,7 +14,7 @@ import Foundation
 
 /// Static snapshot of the internal-fabric hardware. Built once per rescan by
 /// `InternalHardwareScanner`. Anything the user can't unplug lives here.
-struct InternalHardwareSnapshot {
+nonisolated struct InternalHardwareSnapshot {
     /// I²C controllers (one per physical bus). Children are the slaves on the
     /// bus and their attached drivers.
     let i2cBuses: [TBNode]
@@ -49,13 +49,13 @@ struct InternalHardwareSnapshot {
 /// A thematic bucket of SoC coprocessors. The grouping mirrors how a user
 /// would naturally reason about the silicon: display engines together,
 /// media codecs together, security blocks together, etc.
-struct SoCCoprocessorGroup: Hashable, Identifiable {
+nonisolated struct SoCCoprocessorGroup: Hashable, Identifiable {
     var id: SoCCoprocessorCategory { category }
     let category: SoCCoprocessorCategory
     let coprocessors: [TBNode]
 }
 
-enum SoCCoprocessorCategory: String, CaseIterable, Hashable {
+nonisolated enum SoCCoprocessorCategory: String, CaseIterable, Hashable {
     case displayAndGraphics
     case mediaImage
     case mediaVideo

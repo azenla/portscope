@@ -10,7 +10,7 @@
 import Foundation
 import IOKit
 
-enum USBScanner {
+nonisolated enum USBScanner {
     static func scan() -> USBSnapshot {
         var controllers: [TBNode] = []
         var tbContext: [TBNodeID: TBNodeID] = [:]

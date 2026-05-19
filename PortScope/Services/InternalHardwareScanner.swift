@@ -11,7 +11,7 @@
 import Foundation
 import IOKit
 
-enum InternalHardwareScanner {
+nonisolated enum InternalHardwareScanner {
     static func scan(accessories: [PortAccessoryInfo]) -> InternalHardwareSnapshot {
         let arm = scanARMDevices()
         let battery = scanBatteryManager()

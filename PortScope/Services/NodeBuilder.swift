@@ -9,7 +9,7 @@
 import Foundation
 import IOKit
 
-enum NodeBuilder {
+nonisolated enum NodeBuilder {
     /// Recursively build a TBNode tree from an IORegistry entry.
     /// Children are sorted by Port Number (when present), then title.
     static func build(from entry: io_registry_entry_t) -> TBNode? {

@@ -8,7 +8,7 @@
 import Foundation
 import IOKit
 
-enum ThunderboltScanner {
+nonisolated enum ThunderboltScanner {
     /// Capture the entire TB subsystem.
     static func scan() -> TBSnapshot {
         var controllers: [TBNode] = []

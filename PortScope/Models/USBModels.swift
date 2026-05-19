@@ -10,7 +10,7 @@ import SwiftUI
 
 /// Negotiated USB device speed. Values come from `kUSBCurrentSpeed` /
 /// `Device Speed` properties in the IOKit registry.
-enum USBSpeed: Int {
+nonisolated enum USBSpeed: Int {
     case low = 0
     case full = 1
     case high = 2
@@ -73,7 +73,7 @@ enum USBSpeed: Int {
 }
 
 /// USB-IF base class codes from the device descriptor (`bDeviceClass`).
-enum USBDeviceClass: UInt64, Hashable {
+nonisolated enum USBDeviceClass: UInt64, Hashable {
     case perInterface = 0x00
     case audio = 0x01
     case cdcComm = 0x02
@@ -145,7 +145,7 @@ enum USBDeviceClass: UInt64, Hashable {
 }
 
 /// Lookup a USB device's class label using its `bDeviceClass` property.
-func usbDeviceClassLabel(_ raw: UInt64?) -> String {
+nonisolated func usbDeviceClassLabel(_ raw: UInt64?) -> String {
     guard let raw, let cls = USBDeviceClass(rawValue: raw) else {
         if let raw { return String(format: "Class 0x%02X", raw) }
         return "Unknown"
@@ -153,18 +153,18 @@ func usbDeviceClassLabel(_ raw: UInt64?) -> String {
     return cls.label
 }
 
-func usbSpeedLabel(_ raw: UInt64?) -> String {
+nonisolated func usbSpeedLabel(_ raw: UInt64?) -> String {
     guard let raw, let s = USBSpeed(rawValue: Int(raw)) else { return "—" }
     return s.label
 }
 
-func usbSpeedShortLabel(_ raw: UInt64?) -> String {
+nonisolated func usbSpeedShortLabel(_ raw: UInt64?) -> String {
     guard let raw, let s = USBSpeed(rawValue: Int(raw)) else { return "—" }
     return s.shortLabel
 }
 
 /// Format a `bcdUSB`-style version (e.g. 0x0320 → "3.2.0").
-func usbBcdVersion(_ raw: UInt64?) -> String {
+nonisolated func usbBcdVersion(_ raw: UInt64?) -> String {
     guard let raw else { return "—" }
     let major = (raw >> 8) & 0xFF
     let minor = (raw >> 4) & 0xF
@@ -176,7 +176,7 @@ func usbBcdVersion(_ raw: UInt64?) -> String {
 }
 
 /// Snapshot of the USB subsystem at scan time.
-struct USBSnapshot {
+nonisolated struct USBSnapshot {
     let capturedAt: Date
     /// Top-level USB host controllers (xHCI / eHCI / etc.) as TBNode trees.
     let controllers: [TBNode]
@@ -191,7 +191,7 @@ struct USBSnapshot {
 }
 
 /// What's a USB-C / USB-A port currently operating as.
-enum PhysicalPortMode: Hashable {
+nonisolated enum PhysicalPortMode: Hashable {
     case empty
     case thunderbolt(linkSpeed: UInt64)
     case usbOnly(speed: UInt64?)
@@ -233,7 +233,7 @@ enum PhysicalPortMode: Hashable {
 }
 
 /// Snapshot of the entire system across TB + USB + connector-level state.
-struct SystemSnapshot {
+nonisolated struct SystemSnapshot {
     let tb: TBSnapshot
     let usb: USBSnapshot
     /// Per-physical-port runtime state from `IOAccessoryManager`. Includes

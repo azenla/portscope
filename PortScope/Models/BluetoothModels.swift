@@ -12,7 +12,7 @@
 import Foundation
 import SwiftUI
 
-struct BluetoothSnapshot {
+nonisolated struct BluetoothSnapshot {
     /// Controller. Nil on hosts without a Bluetooth radio (rare; SP returns
     /// the dict on every Mac with the daemon enabled).
     let controller: BluetoothController?
@@ -28,7 +28,7 @@ struct BluetoothSnapshot {
 }
 
 /// Bluetooth host controller info. Built from `controller_properties`.
-struct BluetoothController: Hashable {
+nonisolated struct BluetoothController: Hashable {
     let address: String?
     let chipset: String?
     let firmwareVersion: String?
@@ -61,7 +61,7 @@ struct BluetoothController: Hashable {
 }
 
 /// A single Bluetooth device (connected or paired).
-struct BluetoothDevice: Hashable, Identifiable {
+nonisolated struct BluetoothDevice: Hashable, Identifiable {
     /// Stable id from the BD_ADDR (e.g. "70:F9:4A:93:C4:BE"). Falls back to
     /// `name` when address is missing, which shouldn't happen.
     var id: String { address ?? name }
@@ -115,7 +115,7 @@ struct BluetoothDevice: Hashable, Identifiable {
     }
 }
 
-enum BluetoothDeviceCategory: String {
+nonisolated enum BluetoothDeviceCategory: String {
     case audio, keyboard, pointer, gamepad, phone, tablet, computer, watch, display, other
 
     var symbol: String {

@@ -10,7 +10,7 @@
 import Foundation
 import IOKit
 
-enum PCIScanner {
+nonisolated enum PCIScanner {
     static func scan() -> PCISnapshot {
         var rawNodes: [io_registry_entry_t: TBNode] = [:]
         var parents: [TBNodeID: TBNodeID?] = [:]
@@ -265,7 +265,7 @@ enum PCIScanner {
 
 /// Hand-rolled subset of the PCI Vendor Database. Covers the IDs we expect
 /// to see on Macs without pulling in a multi-megabyte lookup table.
-func pciVendorName(_ vendor: UInt16) -> String? {
+nonisolated func pciVendorName(_ vendor: UInt16) -> String? {
     switch vendor {
     case 0x106B: return "Apple"
     case 0x14E4: return "Broadcom"
@@ -293,7 +293,7 @@ func pciVendorName(_ vendor: UInt16) -> String? {
 
 /// Decode a PCI base-class code to a user-readable label. Subset of the
 /// PCI-SIG class-code table — covers what shows up on Apple silicon.
-func pciClassLabel(_ cls: UInt8, _ sub: UInt8?, _ progIF: UInt8?) -> String {
+nonisolated func pciClassLabel(_ cls: UInt8, _ sub: UInt8?, _ progIF: UInt8?) -> String {
     switch cls {
     case 0x00: return "Unclassified"
     case 0x01:

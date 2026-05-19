@@ -11,12 +11,12 @@ import Foundation
 import SwiftUI
 
 /// Stable identifier across refreshes. Matches the IORegistry entry ID.
-struct TBNodeID: Hashable {
+nonisolated struct TBNodeID: Hashable {
     let raw: UInt64
 }
 
 /// Categories used for icon/colour assignment in the UI.
-enum TBNodeKind: String {
+nonisolated enum TBNodeKind: String {
     case domain        // Thunderbolt domain (machine root)
     case controller    // IOThunderboltController*
     case localNode     // IOThunderboltLocalNode
@@ -107,7 +107,7 @@ enum TBNodeKind: String {
 /// `Description` string (`"PCIe Adapter"`, `"USB Adapter"`, `"DP or HDMI
 /// Adapter"`, etc.) — read that, not the raw `Adapter Type` integer. Lane
 /// detection (raw == 1) is still safe because every encoding agrees on it.
-enum TBAdapterType: Hashable {
+nonisolated enum TBAdapterType: Hashable {
     case inactive
     case lane(index: Int)              // 1 = lane adapter (both lanes)
     case nhi                           // 2 = native host interface
@@ -142,7 +142,7 @@ enum TBAdapterType: Hashable {
 }
 
 /// Generic node used in the tree-shaped UI.
-struct TBNode: Identifiable, Hashable {
+nonisolated struct TBNode: Identifiable, Hashable {
     let id: TBNodeID
     let kind: TBNodeKind
     /// Short title shown in the sidebar list.
@@ -164,7 +164,7 @@ struct TBNode: Identifiable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id.raw) }
 }
 
-extension TBNode {
+nonisolated extension TBNode {
     /// Pretty-format a property value with TB-specific knowledge.
     static func formatValue(_ key: String, _ value: IORegValue) -> String {
         switch key {
@@ -223,7 +223,7 @@ extension TBNode {
 /// Handles three forms: a plain string, an array of strings, and a data
 /// blob (some device-tree entries serialise the value as a NUL-separated
 /// byte string instead of a CFArray).
-func prettyCompatibleString(_ value: IORegValue) -> String {
+nonisolated func prettyCompatibleString(_ value: IORegValue) -> String {
     switch value {
     case .string(let s):
         return s
@@ -250,7 +250,7 @@ func prettyCompatibleString(_ value: IORegValue) -> String {
 
 /// Map the `Current Link Speed` field to a TB generation label.
 /// Observed: 0 = inactive, 2 = TB3/USB4 Gen 2 (20 Gbit/lane), 8 = TB5 Gen 3 (40 Gbit/lane bidirectional), etc.
-func tbLinkSpeedLabel(_ raw: UInt64) -> String {
+nonisolated func tbLinkSpeedLabel(_ raw: UInt64) -> String {
     switch raw {
     case 0: return "Inactive"
     case 1: return "TB3/USB4 Gen 1 — 10 Gb/s per lane"
@@ -263,7 +263,7 @@ func tbLinkSpeedLabel(_ raw: UInt64) -> String {
 }
 
 /// Short link generation label used in sidebars and dense rows.
-func tbGenerationShortLabel(_ raw: UInt64) -> String {
+nonisolated func tbGenerationShortLabel(_ raw: UInt64) -> String {
     switch raw {
     case 0: return "Inactive"
     case 1: return "TB3 Gen 1"
@@ -278,7 +278,7 @@ func tbGenerationShortLabel(_ raw: UInt64) -> String {
 /// Format a "Link Bandwidth" raw value as a human bandwidth string. Field is
 /// in 100 Mb/s units. Anything below 1 Gb/s is rendered in Mb/s — "100 Mb/s"
 /// reads better than "0.1 Gb/s".
-func tbBandwidthLabel(_ raw: UInt64) -> String {
+nonisolated func tbBandwidthLabel(_ raw: UInt64) -> String {
     if raw == 0 { return "0 Gb/s" }
     if raw < 10 {
         return "\(raw * 100) Mb/s"
@@ -288,7 +288,7 @@ func tbBandwidthLabel(_ raw: UInt64) -> String {
 }
 
 /// Snapshot of the entire Thunderbolt subsystem captured at scan time.
-struct TBSnapshot {
+nonisolated struct TBSnapshot {
     let capturedAt: Date
     let controllers: [TBNode]
     let pcieDevicesOverTB: [TBNode]

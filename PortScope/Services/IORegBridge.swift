@@ -9,7 +9,7 @@ import Foundation
 import IOKit
 
 /// A type-erased IORegistry value. Mirrors what `ioreg` prints.
-indirect enum IORegValue: Hashable {
+nonisolated indirect enum IORegValue: Hashable {
     case string(String)
     case number(Int64)
     case unsigned(UInt64)
@@ -102,7 +102,7 @@ indirect enum IORegValue: Hashable {
 }
 
 /// Read a fixed C string buffer using a closure that fills it.
-private func readIOName(_ fill: (UnsafeMutablePointer<CChar>) -> kern_return_t) -> String? {
+private nonisolated func readIOName(_ fill: (UnsafeMutablePointer<CChar>) -> kern_return_t) -> String? {
     let size = 128 // io_name_t is char[128]
     let buf = UnsafeMutablePointer<CChar>.allocate(capacity: size)
     defer { buf.deallocate() }
@@ -112,7 +112,7 @@ private func readIOName(_ fill: (UnsafeMutablePointer<CChar>) -> kern_return_t) 
     return String(cString: buf)
 }
 
-enum IORegBridge {
+nonisolated enum IORegBridge {
     /// Convert any CFTypeRef value coming out of IOKit into an `IORegValue`.
     static func convert(_ raw: Any?) -> IORegValue? {
         guard let raw = raw else { return nil }

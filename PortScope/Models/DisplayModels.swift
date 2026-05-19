@@ -12,7 +12,7 @@
 import Foundation
 import SwiftUI
 
-struct DisplaySnapshot {
+nonisolated struct DisplaySnapshot {
     /// One entry per `IOMobileFramebufferShim` (Apple Silicon) or
     /// `IOFramebuffer` (Intel). Sorted with built-in first, then connected
     /// externals, then idle slots.
@@ -24,7 +24,7 @@ struct DisplaySnapshot {
     var totalCount: Int { displays.count }
 }
 
-struct DisplayInfo: Hashable, Identifiable {
+nonisolated struct DisplayInfo: Hashable, Identifiable {
     var id: TBNodeID { backingID }
 
     /// IORegistry entry ID of the IOMobileFramebufferShim node.

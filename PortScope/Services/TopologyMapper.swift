@@ -51,7 +51,7 @@ struct PhysicalPort {
     var bandwidthLane: TBNode { linkLane ?? laneAdapter }
 }
 
-struct PortTunnel: Hashable {
+nonisolated struct PortTunnel: Hashable {
     enum Kind: Hashable { case displayPort, usb, pcie }
     let kind: Kind
     let reservedBandwidth: UInt64
@@ -115,7 +115,7 @@ extension ConnectedDevice {
     }
 }
 
-enum TopologyMapper {
+nonisolated enum TopologyMapper {
     /// Build the simplified topology from a TB-only snapshot. Used as a fall
     /// back when no `IOAccessoryManager` data is available.
     static func physicalPorts(from snapshot: TBSnapshot) -> [PhysicalPort] {

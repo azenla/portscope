@@ -13,7 +13,7 @@ import Foundation
 import SwiftUI
 
 /// Receptacle type reported by `PortTypeDescription`.
-enum PortConnectorType: Hashable {
+nonisolated enum PortConnectorType: Hashable {
     case usbC
     case magsafe
     case other(String)
@@ -46,7 +46,7 @@ enum PortConnectorType: Hashable {
 
 /// What's plugged into the port, in plain language. Mapped from
 /// `IOAccessoryUSBConnectString`.
-enum AccessoryConnection: Hashable {
+nonisolated enum AccessoryConnection: Hashable {
     case none
     case device
     case host
@@ -85,7 +85,7 @@ enum AccessoryConnection: Hashable {
 /// Cable orientation, derived from `PlugOrientation`. Tells you whether the
 /// cable is inserted "right-side up" or flipped — useful for matching kernel
 /// state against the visible cable.
-enum PlugOrientation: Hashable {
+nonisolated enum PlugOrientation: Hashable {
     case unflipped     // 1
     case flipped       // 2
     case unattached    // 0
@@ -121,7 +121,7 @@ enum PlugOrientation: Hashable {
 
 /// One of the signals the kernel can route over a USB-C connector. Values
 /// observed in `TransportsSupported / Provisioned / Active` arrays.
-enum USBCTransport: Hashable, CaseIterable {
+nonisolated enum USBCTransport: Hashable, CaseIterable {
     case cc              // CC = USB-PD configuration channel
     case usb2            // USB 2.0 D+/D− pair
     case usb3            // USB 3 SuperSpeed pair
@@ -191,7 +191,7 @@ enum USBCTransport: Hashable, CaseIterable {
 
 /// One USB-PD Power Data Object (fixed voltage). Mapped from each
 /// `PowerSourceOptions` entry under the "USB-PD" feature.
-struct USBPDOption: Hashable, Identifiable {
+nonisolated struct USBPDOption: Hashable, Identifiable {
     let id: UUID
     let voltageMV: UInt64
     let maxCurrentMA: UInt64
@@ -213,7 +213,7 @@ struct USBPDOption: Hashable, Identifiable {
 }
 
 /// Aggregated USB-PD info for a single physical port.
-struct USBPDProfile: Hashable {
+nonisolated struct USBPDProfile: Hashable {
     /// The PDO the source and sink agreed on (active power draw).
     let winning: USBPDOption?
     /// All PDOs the source advertised.
@@ -223,7 +223,7 @@ struct USBPDProfile: Hashable {
 }
 
 /// Snapshot of the runtime state on one physical receptacle.
-struct PortAccessoryInfo: Identifiable, Hashable {
+nonisolated struct PortAccessoryInfo: Identifiable, Hashable {
     /// IORegistry entry ID of the `AppleHPMInterfaceType10` instance.
     let id: TBNodeID
     /// `PortNumber` field — the canonical physical port label (1, 2, 3 …).
@@ -288,7 +288,7 @@ struct PortAccessoryInfo: Identifiable, Hashable {
 }
 
 /// DisplayPort pin assignment label per USB-IF Type-C alt-mode spec.
-func displayPortPinAssignmentLabel(_ raw: UInt64) -> String {
+nonisolated func displayPortPinAssignmentLabel(_ raw: UInt64) -> String {
     switch raw {
     case 0: return "None"
     case 1: return "A (4-lane DP)"

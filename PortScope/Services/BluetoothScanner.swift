@@ -15,7 +15,7 @@
 
 import Foundation
 
-enum BluetoothScanner {
+nonisolated enum BluetoothScanner {
     /// Run the scan synchronously. Safe to call off-main (the scanners are
     /// dispatched on a background task in the view model already).
     static func scan() -> BluetoothSnapshot {

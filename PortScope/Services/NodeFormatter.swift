@@ -9,7 +9,7 @@
 
 import Foundation
 
-enum NodeFormatter {
+nonisolated enum NodeFormatter {
     /// Map an IORegistry class name (plus optional node name) to a TBNodeKind.
     /// Wrapper kext classes (DPConnectionManager, IPService, IPPort, etc.) fall
     /// to `.other` so the topology views can hide them and promote descendants.

@@ -14,7 +14,7 @@
 import Foundation
 import IOKit
 
-enum AccessoryScanner {
+nonisolated enum AccessoryScanner {
     /// IORegistry classes that publish per-receptacle accessory state.
     /// Type10 = USB-C receptacle, Type11 = MagSafe 3 receptacle, and the
     /// property schema is identical (port number, transports, USB-PD
