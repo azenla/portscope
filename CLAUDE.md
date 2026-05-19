@@ -27,9 +27,12 @@ BIN="$APP/Contents/MacOS/PortScope"
 
 "$BIN" --pretty                 # colourful tree with emoji (auto-detects TTY)
 "$BIN" --pretty --no-color      # plain text, safe for piping
-"$BIN" --json | jq .            # full structured dump (stable key ordering)
+"$BIN" --json | jq .            # pluggable-only structured dump (default)
+"$BIN" --json --all | jq .      # also include Bluetooth, Displays, Internal Hardware
 "$BIN" --help
 ```
+
+**Default vs `--all` (pluggable filter).** Both dump modes default to the same view the GUI shows when the **Show All Devices** Settings toggle is off — pluggable subsystems only: `physical_ports`, `accessories`, `usb`, `thunderbolt`, `pcie` (plus `host` / `captured_at`). Pass `--all` (or `-a`) to also emit `bluetooth`, `displays`, and `internal_hardware`. The JSON keys are **omitted entirely** when `--all` is missing — `jq .bluetooth` returns `null`, it isn't an empty object. When inspecting something internal (Wi-Fi card, battery, SoC coprocessor, etc.) **don't forget `--all`**, or you'll think the scanner returned nothing.
 
 Common diagnostic recipes:
 
@@ -116,14 +119,14 @@ Data flow is one direction: **IOKit → Scanners → SystemSnapshot → View Mod
 
 ### Views
 
-- `Views/SidebarView.swift` — seven-section nav:
+- `Views/SidebarView.swift` — seven-section nav. By default the sidebar only shows the **pluggable** subsystems (Physical Ports, Thunderbolt, USB, PCIe); the three "system-internal" sections (Displays, Bluetooth, Internal Hardware) are gated on the persistent `@AppStorage(SidebarVisibility.showAllDevicesKey)` preference (key `"showAllDevices"`, default `false`), which the **Settings → Show All Devices** toggle in `PortScopeApp.SettingsView` flips. The same toggle is mirrored by the CLI's `--all` / `-a` flag.
   1. **Physical Ports** — rows labelled `USB-C Port N` with a mode-coloured icon and live status (`Thunderbolt · TB5 · ×2`, `USB · USB 3.0`, `Empty`). Expanding reveals the connected TB device and up to 6 USB devices reachable through that port. MagSafe lives at the top.
   2. **Thunderbolt** — TB host controllers each expand into the full raw tree via `FullTopologyRow`. The controller's own row carries an enriched subtitle (`Connected · <vendor> <model>` when a depth>0 router lives downstream, else `No external device`) and auto-expands when an external host is attached. Both the controller row and the deeper rows share the file-scope `promotedChildren(of:)` helper, which drops `.other` wrapper kexts (DPConnectionManager / IPService / IOService shims) and recursively promotes their meaningful descendants up — so nothing in the IOKit tree is hidden.
   3. **USB** — USB host controllers expand into hubs/devices. `.usbInterface` and `.other` children are hidden in this section to keep it clean (interfaces appear in the device's detail view).
-  4. **Displays** — one row per framebuffer engine (`Built-in Display`, `External Display N`, or `External Engine N · Idle` when nothing's attached). Connected engines lead; idle slots fall to the bottom.
-  5. **Bluetooth** — controller row first, then `Connected (N)` and `Paired (N)` subgroup headers separating the device list. Each device row carries a category icon (headphones / keyboard / pointer / gamepad / …) inferred from SP's `device_minorType`.
+  4. **Displays** *(Show All only)* — one row per framebuffer engine (`Built-in Display`, `External Display N`, or `External Engine N · Idle` when nothing's attached). Connected engines lead; idle slots fall to the bottom.
+  5. **Bluetooth** *(Show All only)* — controller row first, then `Connected (N)` and `Paired (N)` subgroup headers separating the device list. Each device row carries a category icon (headphones / keyboard / pointer / gamepad / …) inferred from SP's `device_minorType`.
   6. **PCIe** — root bridges expand into downstream bridges/endpoints via `PCIBranch`. Endpoints show friendly names (Wi-Fi Adapter, Bluetooth Adapter, SD Card Reader) derived from the device-tree `name` (NOT `IOName`, which is shared across all `pci-bridge` instances).
-  7. **Internal Hardware** — battery first, then a `Buses` subsection (I²C / SPI), then **one labelled subsection per `SoCCoprocessorGroup`** (Display & Graphics / Image / ML / Video Codecs / Storage & Memory / Security & Power / Radios / Other). Subsection headers are rendered via `coprocessorSubsection(title:icon:)` as small uppercase captions, not collapsible disclosures — the grouping is cosmetic, not interactive.
+  7. **Internal Hardware** *(Show All only)* — battery first, then a `Buses` subsection (I²C / SPI), then **one labelled subsection per `SoCCoprocessorGroup`** (Display & Graphics / Image / ML / Video Codecs / Storage & Memory / Security & Power / Radios / Other). Subsection headers are rendered via `coprocessorSubsection(title:icon:)` as small uppercase captions, not collapsible disclosures — the grouping is cosmetic, not interactive.
 
 - `Views/DetailView.swift` — kind-specific summary cards. Dispatches on `TBNodeKind`: `.controller` → `ControllerView`, `.switch` → `RouterView`, `.port` → `PortView`, `.usbController` → `USBControllerView`, `.usbHub` → `USBHubView`, `.usbDevice` → `USBDeviceView`, `.usbInterface` → `USBInterfaceView`. Hosts the **`Developer details` disclosure** at the bottom that embeds `PropertyTableView` for the raw IORegistry dump. Receives both a `parentLookup` closure (for `RouterView.findUpstreamLane()`) and a **`tbContextForUSB`** closure that resolves a USB controller's TB switch ancestor; `DetailView.ancestorTBContext(for:)` walks parents to find the enclosing USB controller, then queries the closure.
 
