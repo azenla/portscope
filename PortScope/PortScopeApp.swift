@@ -136,15 +136,23 @@ struct PortScopeApp: App {
     }
 }
 
-/// The Preferences window. Currently houses a single persistent toggle
-/// controlling whether non-pluggable subsystems show in the sidebar.
+/// The Preferences window. Houses persistent toggles that gate which
+/// sidebar sections are visible.
 private struct SettingsView: View {
+    @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = false
     @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
 
     var body: some View {
         Form {
+            Toggle("Show Hardware Buses", isOn: $showBuses)
+            Text("Show the raw Thunderbolt, USB, and PCIe bus trees in the sidebar. The Physical Ports section is always visible.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             Toggle("Show All Devices", isOn: $showAllDevices)
-            Text("Show Bluetooth, Displays, and Internal Hardware in the sidebar alongside the pluggable USB-C, USB, Thunderbolt, and PCIe devices.")
+                .padding(.top, 8)
+            Text("Also show Bluetooth, Displays, and Internal Hardware in the sidebar.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -154,10 +162,14 @@ private struct SettingsView: View {
     }
 }
 
-/// Stable key + helper for the persistent "show everything" preference.
-/// The sidebar reads it via `@AppStorage` so the UI updates live when the
-/// Settings window toggles it.
+/// Stable keys for the persistent sidebar-visibility preferences. The
+/// sidebar reads each via `@AppStorage` so the UI updates live when the
+/// Settings window toggles them.
 enum SidebarVisibility {
+    /// Gates Thunderbolt / USB / PCIe sections (the bus trees). Default off,
+    /// so a fresh launch shows only the high-level Physical Ports view.
+    static let showBusesKey = "showBuses"
+    /// Gates Displays / Bluetooth / Internal Hardware. Default off.
     static let showAllDevicesKey = "showAllDevices"
 }
 

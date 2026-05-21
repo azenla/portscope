@@ -23,10 +23,13 @@ struct SidebarView: View {
     /// Top-level sidebar sections that the user has collapsed. Each entry
     /// keys a section by its stable name; missing = expanded (the default).
     @State private var collapsedSections: Set<String> = []
+    /// Persistent preference (Settings → Show Hardware Buses). When false
+    /// the sidebar shows only the Physical Ports section. When true the
+    /// raw Thunderbolt / USB / PCIe bus trees are surfaced too.
+    @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = false
     /// Persistent preference (Settings → Show All Devices). When false the
-    /// sidebar shows only pluggable subsystems (USB-C ports, Thunderbolt,
-    /// USB, PCIe). When true, Displays / Bluetooth / Internal Hardware are
-    /// surfaced too.
+    /// sidebar omits Displays / Bluetooth / Internal Hardware. Independent
+    /// of `showBuses` — both default off.
     @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
 
     var body: some View {
@@ -51,26 +54,28 @@ struct SidebarView: View {
                 }
             }
 
-            collapsibleSection("Thunderbolt", icon: "bolt.horizontal.circle") {
-                if vm.tbSnapshot.controllers.isEmpty {
-                    Text("No Thunderbolt controllers")
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
-                } else {
-                    ForEach(vm.tbSnapshot.controllers, id: \.id) { node in
-                        ControllerBranch(node: node, expanded: $expanded)
+            if showBuses {
+                collapsibleSection("Thunderbolt", icon: "bolt.horizontal.circle") {
+                    if vm.tbSnapshot.controllers.isEmpty {
+                        Text("No Thunderbolt controllers")
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    } else {
+                        ForEach(vm.tbSnapshot.controllers, id: \.id) { node in
+                            ControllerBranch(node: node, expanded: $expanded)
+                        }
                     }
                 }
-            }
 
-            collapsibleSection("USB", icon: "cable.connector") {
-                if vm.usbSnapshot.controllers.isEmpty {
-                    Text(vm.isScanning ? "Scanning…" : "No USB controllers")
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
-                } else {
-                    ForEach(vm.usbSnapshot.controllers, id: \.id) { node in
-                        USBBranch(node: node, depth: 0, expanded: $expanded)
+                collapsibleSection("USB", icon: "cable.connector") {
+                    if vm.usbSnapshot.controllers.isEmpty {
+                        Text(vm.isScanning ? "Scanning…" : "No USB controllers")
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    } else {
+                        ForEach(vm.usbSnapshot.controllers, id: \.id) { node in
+                            USBBranch(node: node, depth: 0, expanded: $expanded)
+                        }
                     }
                 }
             }
@@ -79,7 +84,9 @@ struct SidebarView: View {
                 displaysSection
                 bluetoothSection
             }
-            pcieSection
+            if showBuses {
+                pcieSection
+            }
             if showAllDevices {
                 internalHardwareSection
             }
