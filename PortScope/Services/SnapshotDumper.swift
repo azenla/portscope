@@ -546,7 +546,7 @@ private final class PrettyPrinter {
     // MARK: Physical Ports
 
     func physicalPorts(_ ports: [PhysicalPort]) {
-        section("⚡️ Physical Ports", ports.isEmpty ? "—" : "\(ports.count) receptacle(s)")
+        section("⚡️ Physical Ports", ports.isEmpty ? "—" : pluralize(ports.count, "receptacle"))
         if ports.isEmpty {
             line(dim("   none"))
             line()
@@ -559,16 +559,16 @@ private final class PrettyPrinter {
             if let acc = port.accessory {
                 let active = Array(acc.activeTransports).map { "\($0.label)" }.sorted().joined(separator: ", ")
                 if !active.isEmpty {
-                    line("      \(dim("transports:")) \(active)")
+                    line("      \(dim("Transports:")) \(active)")
                 }
                 if acc.plugOrientation != .unattached {
-                    line("      \(dim("orientation:")) \(acc.plugOrientation.label)")
+                    line("      \(dim("Orientation:")) \(acc.plugOrientation.label)")
                 }
                 if let pd = acc.usbPD, let win = pd.winning {
                     line("      \(dim("Power Input:")) \(bold(win.powerLabel)) (\(win.voltageLabel) · \(win.currentLabel))")
                 }
                 if let cable = acc.cableLabel {
-                    line("      \(dim("cable:")) \(cable)")
+                    line("      \(dim("Cable:")) \(cable)")
                 }
                 if acc.hpdAsserted {
                     line("      \(dim("DP HPD:")) asserted (pin \(displayPortPinAssignmentLabel(acc.displayPortPinAssignment)))")
@@ -614,7 +614,7 @@ private final class PrettyPrinter {
     // MARK: Thunderbolt
 
     func thunderbolt(_ snap: TBSnapshot) {
-        section("🌩  Thunderbolt", "\(snap.controllers.count) controller(s)")
+        section("🌩  Thunderbolt", pluralize(snap.controllers.count, "controller"))
         if snap.controllers.isEmpty {
             line(dim("   none"))
             line()
@@ -636,7 +636,7 @@ private final class PrettyPrinter {
     // MARK: USB
 
     func usb(_ snap: USBSnapshot) {
-        section("🔌 USB", "\(snap.controllers.count) host controller(s)")
+        section("🔌 USB", pluralize(snap.controllers.count, "host controller"))
         if snap.controllers.isEmpty {
             line(dim("   none"))
             line()
@@ -719,13 +719,13 @@ private final class PrettyPrinter {
 
     func bluetooth(_ snap: BluetoothSnapshot) {
         let total = snap.totalDeviceCount
-        let sub = snap.controller == nil ? "no controller" : "\(total) device\(total == 1 ? "" : "s")"
+        let sub = snap.controller == nil ? "no controller" : pluralize(total, "device")
         section("📶 Bluetooth", sub)
         if let c = snap.controller {
-            let state = c.isOn ? green("on") : dim("off")
+            let state = c.isOn ? green("On") : dim("Off")
             line("   \(bold(c.displayChipset)) · \(state) · \(c.transport ?? "—") · \(c.address ?? "—")")
             if let fw = c.firmwareVersion {
-                line("   " + dim("firmware: \(fw)"))
+                line("   " + dim("Firmware: \(fw)"))
             }
         }
         if !snap.connected.isEmpty {
@@ -779,7 +779,7 @@ private final class PrettyPrinter {
     // MARK: PCIe
 
     func pcie(_ snap: PCISnapshot) {
-        section("🚌 PCIe", "\(snap.roots.count) root bridge(s), \(snap.endpointCount) endpoint(s)")
+        section("🚌 PCIe", "\(pluralize(snap.roots.count, "root bridge")), \(pluralize(snap.endpointCount, "endpoint"))")
         if snap.roots.isEmpty {
             line(dim("   none"))
             line()
@@ -898,6 +898,12 @@ private final class PrettyPrinter {
         let head = bold(title)
         if let sub = subtitle { line(head + dim("  ·  \(sub)")) } else { line(head) }
         line(dim(String(repeating: "─", count: 60)))
+    }
+
+    /// "1 widget" / "3 widgets" — replaces the lazy "widget(s)" idiom.
+    /// Pass `plural:` for words where `+s` isn't right (e.g. "indices").
+    private func pluralize(_ n: Int, _ singular: String, plural: String? = nil) -> String {
+        "\(n) \(n == 1 ? singular : (plural ?? singular + "s"))"
     }
 
     /// Mirror of the sidebar's `promotedChildren`: drops `.other` wrapper
