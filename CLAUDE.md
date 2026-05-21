@@ -30,6 +30,8 @@ BIN="$APP/Contents/MacOS/PortScope"
 "$BIN" --json | jq .             # physical_ports + accessories (default)
 "$BIN" --json --buses | jq .     # + thunderbolt, usb, pcie
 "$BIN" --json --all --buses      # everything: + bluetooth, displays, internal_hardware
+"$BIN" --simple                  # tab-separated port summary, one line per receptacle
+"$BIN" --simple | column -t -s$'\t'   # human-readable alignment
 ```
 
 The CLI flags mirror the two Settings toggles, both default off:

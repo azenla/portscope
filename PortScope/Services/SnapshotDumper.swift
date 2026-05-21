@@ -388,6 +388,98 @@ enum SnapshotDumper {
         }
         return p.flush()
     }
+
+    // MARK: - Simple (shell-script friendly)
+
+    /// Tab-separated port summary, one record per chassis receptacle. Columns
+    /// are stable, fields never contain tabs, and `-` denotes absent. Lines
+    /// prefixed with `#` are comments (header + schema version) that scripts
+    /// can skip with `grep -v '^#'`. Modifiers (`--buses`, `--all`) are
+    /// ignored on purpose — `--simple` is a one-thing-only summary.
+    static func simple(_ snapshot: SystemSnapshot) -> String {
+        let ports = TopologyMapper.physicalPorts(from: snapshot)
+        var out = "# PortScope --simple v1\n"
+        out += "# connector\tport\tmode\tdetail\tdevice\tpower_in_w\tpower_out_w\n"
+        for p in ports {
+            let cols: [String] = [
+                simpleConnector(p.connector),
+                String(p.number),
+                simpleMode(p.mode),
+                simpleDetail(p),
+                simpleDevice(p),
+                simplePowerIn(p),
+                simplePowerOut(p)
+            ]
+            out += cols.map(simpleSanitise).joined(separator: "\t") + "\n"
+        }
+        return out
+    }
+
+    private static func simpleConnector(_ c: PortConnectorType) -> String {
+        switch c {
+        case .usbC: return "usb-c"
+        case .usbA: return "usb-a"
+        case .magsafe: return "magsafe"
+        case .other(let s): return s.lowercased().replacingOccurrences(of: " ", with: "-")
+        }
+    }
+
+    private static func simpleMode(_ m: PhysicalPortMode) -> String {
+        switch m {
+        case .empty: return "empty"
+        case .thunderbolt: return "thunderbolt"
+        case .usbOnly: return "usb"
+        case .displayOnly: return "display"
+        case .charging: return "charging"
+        case .unknown: return "unknown"
+        }
+    }
+
+    private static func simpleDetail(_ p: PhysicalPort) -> String {
+        switch p.mode {
+        case .empty: return "-"
+        case .thunderbolt(let speed):
+            return speed > 0 ? tbGenerationShortLabel(speed) : "thunderbolt"
+        case .usbOnly(let speed):
+            if let s = speed, s > 0 { return usbSpeedShortLabel(s) }
+            return "usb"
+        case .displayOnly: return "display"
+        case .charging(let w):
+            if let w, w > 0 { return "\(w)W" }
+            return "charging"
+        case .unknown: return "-"
+        }
+    }
+
+    private static func simpleDevice(_ p: PhysicalPort) -> String {
+        if let d = p.connectedDevice { return d.title }
+        if let root = p.usbDeviceRoots.first { return root.title }
+        return "-"
+    }
+
+    private static func simplePowerIn(_ p: PhysicalPort) -> String {
+        // Mac as the sink — a charger is supplying us. Read the winning PD
+        // contract published under IOPortFeaturePowerIn.
+        guard let win = p.accessory?.usbPD?.winning, win.maxPowerMW > 0 else { return "-" }
+        return String(format: "%.1f", Double(win.maxPowerMW) / 1000.0)
+    }
+
+    private static func simplePowerOut(_ p: PhysicalPort) -> String {
+        // Mac as the source — what we're delivering across all attached USB
+        // sinks on this port, computed at 5 V from allocated current. Matches
+        // the "PD out" line in --pretty.
+        guard let sp = p.sourcePower, sp.totalAllocatedMA > 0 else { return "-" }
+        let watts = Double(sp.totalAllocatedMA) / 1000.0 * 5.0
+        return String(format: "%.1f", watts)
+    }
+
+    /// Strip any tab / newline so columns can't be broken by user-controlled
+    /// strings (USB device names live in this output).
+    private static func simpleSanitise(_ s: String) -> String {
+        s.replacingOccurrences(of: "\t", with: " ")
+         .replacingOccurrences(of: "\n", with: " ")
+         .replacingOccurrences(of: "\r", with: " ")
+    }
 }
 
 // MARK: - Pretty printer

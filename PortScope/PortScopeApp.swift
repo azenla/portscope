@@ -51,6 +51,8 @@ enum PortScopeMain {
                                            useColor: forceColor ?? isTTY,
                                            showBuses: request.showBuses,
                                            showAll: request.showAll)
+        case .simple:
+            output = SnapshotDumper.simple(snapshot)
         }
         FileHandle.standardOutput.write(Data(output.utf8))
         if !output.hasSuffix("\n") { FileHandle.standardOutput.write(Data("\n".utf8)) }
@@ -67,6 +69,7 @@ private struct CLIRequest {
     enum Format {
         case pretty(forceColor: Bool?)
         case json
+        case simple
     }
     let format: Format
     let showBuses: Bool
@@ -75,6 +78,7 @@ private struct CLIRequest {
     static func from(_ argv: [String]) -> CLIRequest? {
         var pretty = false
         var json = false
+        var simple = false
         var showBuses = false
         var showAll = false
         var forceColor: Bool? = nil
@@ -82,6 +86,7 @@ private struct CLIRequest {
             switch arg {
             case "--pretty", "--dump", "-p": pretty = true
             case "--json", "-j": json = true
+            case "--simple", "-s": simple = true
             case "--buses", "-b": showBuses = true
             case "--all", "-a": showAll = true
             case "--color", "--colour": forceColor = true
@@ -95,12 +100,15 @@ private struct CLIRequest {
                 CLI dump modes (write to stdout, then exit):
                   --pretty | -p     Colourful tree view with emoji.
                   --json   | -j     Stable JSON dump (jq-friendly).
+                  --simple | -s     Tab-separated port summary, one line per
+                                    receptacle. Shell-script friendly.
 
                 Modifiers (all default off — match the GUI sidebar):
                   --buses  | -b     Include raw Thunderbolt, USB, and PCIe
                                     bus trees. Default: Physical Ports only.
+                                    Ignored by --simple.
                   --all    | -a     Include Bluetooth, Displays, and Internal
-                                    Hardware sections.
+                                    Hardware sections. Ignored by --simple.
                   --color / --no-color
                                     Force ANSI colour on/off (default: auto-detect TTY).
                   -h, --help        Show this help.
@@ -113,6 +121,7 @@ private struct CLIRequest {
                 continue
             }
         }
+        if simple { return CLIRequest(format: .simple, showBuses: showBuses, showAll: showAll) }
         if json { return CLIRequest(format: .json, showBuses: showBuses, showAll: showAll) }
         if pretty { return CLIRequest(format: .pretty(forceColor: forceColor), showBuses: showBuses, showAll: showAll) }
         return nil
