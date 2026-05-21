@@ -42,11 +42,14 @@ enum PortScopeMain {
         let output: String
         switch request.format {
         case .json:
-            output = SnapshotDumper.json(snapshot, showAll: request.showAll)
+            output = SnapshotDumper.json(snapshot,
+                                         showBuses: request.showBuses,
+                                         showAll: request.showAll)
         case .pretty(let forceColor):
             let isTTY = isatty(fileno(stdout)) != 0
             output = SnapshotDumper.pretty(snapshot,
                                            useColor: forceColor ?? isTTY,
+                                           showBuses: request.showBuses,
                                            showAll: request.showAll)
         }
         FileHandle.standardOutput.write(Data(output.utf8))
@@ -56,27 +59,30 @@ enum PortScopeMain {
 }
 
 /// One invocation's worth of CLI options. The format selects the output
-/// renderer; `showAll` controls whether non-pluggable subsystems (Bluetooth,
-/// Displays, Internal Hardware) are included in the dump. Without `--all`
-/// the dump matches the GUI's default view: USB-C ports, USB, Thunderbolt,
-/// and PCIe only.
+/// renderer; `showBuses` adds the raw Thunderbolt / USB / PCIe trees and
+/// `showAll` adds Bluetooth / Displays / Internal Hardware. Both default
+/// off, matching the GUI's default sidebar — bare invocation shows only
+/// the Physical Ports view and the accessory roll-up.
 private struct CLIRequest {
     enum Format {
         case pretty(forceColor: Bool?)
         case json
     }
     let format: Format
+    let showBuses: Bool
     let showAll: Bool
 
     static func from(_ argv: [String]) -> CLIRequest? {
         var pretty = false
         var json = false
+        var showBuses = false
         var showAll = false
         var forceColor: Bool? = nil
         for arg in argv.dropFirst() {
             switch arg {
             case "--pretty", "--dump", "-p": pretty = true
             case "--json", "-j": json = true
+            case "--buses", "-b": showBuses = true
             case "--all", "-a": showAll = true
             case "--color", "--colour": forceColor = true
             case "--no-color", "--no-colour": forceColor = false
@@ -90,10 +96,11 @@ private struct CLIRequest {
                   --pretty | -p     Colourful tree view with emoji.
                   --json   | -j     Stable JSON dump (jq-friendly).
 
-                Modifiers:
+                Modifiers (all default off — match the GUI sidebar):
+                  --buses  | -b     Include raw Thunderbolt, USB, and PCIe
+                                    bus trees. Default: Physical Ports only.
                   --all    | -a     Include Bluetooth, Displays, and Internal
-                                    Hardware sections. Default: pluggable
-                                    devices only (USB-C, USB, Thunderbolt, PCIe).
+                                    Hardware sections.
                   --color / --no-color
                                     Force ANSI colour on/off (default: auto-detect TTY).
                   -h, --help        Show this help.
@@ -106,8 +113,8 @@ private struct CLIRequest {
                 continue
             }
         }
-        if json { return CLIRequest(format: .json, showAll: showAll) }
-        if pretty { return CLIRequest(format: .pretty(forceColor: forceColor), showAll: showAll) }
+        if json { return CLIRequest(format: .json, showBuses: showBuses, showAll: showAll) }
+        if pretty { return CLIRequest(format: .pretty(forceColor: forceColor), showBuses: showBuses, showAll: showAll) }
         return nil
     }
 }

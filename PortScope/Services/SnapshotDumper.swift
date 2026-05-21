@@ -28,13 +28,15 @@ enum SnapshotDumper {
     /// `ioreg`. Sorted keys mean the same physical state produces a
     /// byte-identical dump across runs.
     ///
-    /// When `showAll` is false the dump mirrors the GUI's default view —
-    /// pluggable subsystems only (USB-C ports, USB, Thunderbolt, PCIe).
-    /// Bluetooth, Displays, and Internal Hardware are omitted entirely
-    /// (keys absent, not set to null) so consumers don't accidentally
-    /// inherit stale schema fields.
-    static func json(_ snapshot: SystemSnapshot, showAll: Bool) -> String {
-        let root: [String: Any] = snapshotToJSONObject(snapshot, showAll: showAll)
+    /// Defaults mirror the GUI sidebar: bare invocation emits only
+    /// `physical_ports` (plus `accessories` for the underlying HPM data
+    /// and `host` / `captured_at` metadata). `showBuses` adds the raw
+    /// `thunderbolt` / `usb` / `pcie` trees; `showAll` adds `bluetooth`
+    /// / `displays` / `internal_hardware`. Omitted keys are absent (not
+    /// set to null) so consumers don't accidentally inherit stale schema
+    /// fields.
+    static func json(_ snapshot: SystemSnapshot, showBuses: Bool, showAll: Bool) -> String {
+        let root: [String: Any] = snapshotToJSONObject(snapshot, showBuses: showBuses, showAll: showAll)
         let data = (try? JSONSerialization.data(
             withJSONObject: root,
             options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -42,17 +44,20 @@ enum SnapshotDumper {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    private static func snapshotToJSONObject(_ s: SystemSnapshot, showAll: Bool) -> [String: Any] {
+    private static func snapshotToJSONObject(_ s: SystemSnapshot, showBuses: Bool, showAll: Bool) -> [String: Any] {
         var out: [String: Any] = [
             "captured_at": ISO8601DateFormatter().string(from: s.capturedAt),
             "host": hostInfoJSON(),
             "physical_ports": TopologyMapper.physicalPorts(from: s).map(physicalPortToJSON(_:)),
-            "thunderbolt": [
+            "accessories": s.accessories.map(accessoryToJSON(_:))
+        ]
+        if showBuses {
+            out["thunderbolt"] = [
                 "controllers": s.tb.controllers.map(nodeToJSON(_:)),
                 "pcie_devices_over_tb": s.tb.pcieDevicesOverTB.map(nodeToJSON(_:)),
                 "usb_devices_over_tb": s.tb.usbDevicesOverTB.map(nodeToJSON(_:))
-            ],
-            "usb": [
+            ]
+            out["usb"] = [
                 "controllers": s.usb.controllers.map(nodeToJSON(_:)),
                 "tb_context": Dictionary(
                     uniqueKeysWithValues: s.usb.tbContext.map { kv -> (String, String) in
@@ -60,10 +65,9 @@ enum SnapshotDumper {
                          String(format: "0x%llX", kv.value.raw))
                     }
                 )
-            ],
-            "accessories": s.accessories.map(accessoryToJSON(_:)),
-            "pcie": s.pcie.roots.map(pciNodeToJSON(_:))
-        ]
+            ]
+            out["pcie"] = s.pcie.roots.map(pciNodeToJSON(_:))
+        }
         if showAll {
             out["bluetooth"] = bluetoothJSON(s.bluetooth)
             out["displays"] = s.displays.displays.map(displayToJSON(_:))
@@ -364,16 +368,19 @@ enum SnapshotDumper {
 
     /// Render a `SystemSnapshot` as a colourful tree. When stdout is a TTY
     /// the output uses ANSI colour escapes; otherwise the escapes are
-    /// stripped so piping into a file produces clean text. When `showAll`
-    /// is false the Bluetooth / Displays / Internal Hardware sections are
-    /// skipped, matching the GUI's default sidebar.
-    static func pretty(_ snapshot: SystemSnapshot, useColor: Bool, showAll: Bool) -> String {
+    /// stripped so piping into a file produces clean text. Section gating
+    /// matches the GUI sidebar: bare invocation emits only the Physical
+    /// Ports section, `showBuses` adds Thunderbolt / USB / PCIe trees, and
+    /// `showAll` adds Bluetooth / Displays / Internal Hardware.
+    static func pretty(_ snapshot: SystemSnapshot, useColor: Bool, showBuses: Bool, showAll: Bool) -> String {
         let p = PrettyPrinter(useColor: useColor)
         p.header(snapshot)
         p.physicalPorts(TopologyMapper.physicalPorts(from: snapshot))
-        p.thunderbolt(snapshot.tb)
-        p.usb(snapshot.usb)
-        p.pcie(snapshot.pcie)
+        if showBuses {
+            p.thunderbolt(snapshot.tb)
+            p.usb(snapshot.usb)
+            p.pcie(snapshot.pcie)
+        }
         if showAll {
             p.displays(snapshot.displays)
             p.bluetooth(snapshot.bluetooth)

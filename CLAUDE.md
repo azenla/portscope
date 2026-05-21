@@ -24,22 +24,29 @@ The app binary is **dual-mode**. No args → GUI; `--pretty` / `--json` → runs
 APP=$(ls -td ~/Library/Developer/Xcode/DerivedData/PortScope-*/Build/Products/Debug/PortScope.app | head -1)
 BIN="$APP/Contents/MacOS/PortScope"
 
-"$BIN" --pretty                 # tree with emoji (auto TTY)
-"$BIN" --pretty --no-color      # plain text, pipe-safe
-"$BIN" --json | jq .            # pluggable-only (default)
-"$BIN" --json --all | jq .      # + bluetooth, displays, internal_hardware
+"$BIN" --pretty                  # physical ports only (auto TTY)
+"$BIN" --pretty --buses          # + raw TB / USB / PCIe trees
+"$BIN" --pretty --no-color       # plain text, pipe-safe
+"$BIN" --json | jq .             # physical_ports + accessories (default)
+"$BIN" --json --buses | jq .     # + thunderbolt, usb, pcie
+"$BIN" --json --all --buses      # everything: + bluetooth, displays, internal_hardware
 ```
 
-**`--all` / `-a`** mirrors the **Show All Devices** Settings toggle. Without it, `bluetooth` / `displays` / `internal_hardware` keys are omitted entirely (not empty — `jq .bluetooth` returns `null`). When inspecting anything internal (Wi-Fi, battery, SoC coprocessors) **don't forget `--all`**.
+The CLI flags mirror the two Settings toggles, both default off:
+
+- **`--buses` / `-b`** → **Show Hardware Buses**. Without it, `thunderbolt` / `usb` / `pcie` keys are absent from JSON (the pretty tree skips those sections entirely). The bare default emits only `physical_ports` + `accessories` — the user-facing roll-up.
+- **`--all` / `-a`** → **Show All Devices**. Without it, `bluetooth` / `displays` / `internal_hardware` keys are absent. Independent of `--buses`. When inspecting anything internal (Wi-Fi, battery, SoC coprocessors) **don't forget `--all`**.
+
+Omitted keys are *absent*, not null — `jq .thunderbolt` returns `null` rather than an empty object.
 
 Diagnostic recipes:
 
 ```sh
-"$BIN" --json | jq '.physical_ports[0]'                       # port 1 summary
-"$BIN" --json | jq '.accessories[0].raw_properties'           # raw HPM props
-"$BIN" --json | jq '.thunderbolt.controllers[].class'         # Type5 vs Type7
-"$BIN" --json | jq '.usb.tb_context'                          # USB→TB cross-link map
-"$BIN" --json --all | jq '.internal_hardware.soc_coprocessors[].title'
+"$BIN" --json | jq '.physical_ports[0]'                              # port 1 summary
+"$BIN" --json | jq '.accessories[0].raw_properties'                  # raw HPM props
+"$BIN" --json --buses | jq '.thunderbolt.controllers[].class'        # Type5 vs Type7
+"$BIN" --json --buses | jq '.usb.tb_context'                         # USB→TB cross-link map
+"$BIN" --json --all   | jq '.internal_hardware.soc_coprocessors[].title'
 ```
 
 When `ioreg` and the CLI dump disagree, **trust the CLI dump** — the difference between "what the kernel exposes" and "what PortScope's pipeline produces" is usually the bug.
