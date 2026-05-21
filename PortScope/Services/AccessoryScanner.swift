@@ -36,9 +36,16 @@ nonisolated enum AccessoryScanner {
     /// the same `PortNumber` / `Transports*` / `ConnectionActive` shape but
     /// none of the USB-PD / e-marker / orientation children that USB-C
     /// receptacles have, so the resulting `PortAccessoryInfo` is sparser.
-    /// Right now the only example we know of is USB-A on rear-jack-equipped
-    /// desktops (Mac mini M2 Pro, etc.).
+    /// USB-A appears on rear-jack-equipped desktops (Mac mini M2 Pro, …).
     private static let ioPortPlainTypes: Set<String> = ["USB-A"]
+
+    /// HDMI receptacles are published through `AppleHDMIPortController`
+    /// (a `IOPort` subclass) and carry `PortTypeDescription = "HDMI"`,
+    /// `ConnectionActive`, `HDMI_HPD`, and `TransportsActive` (containing
+    /// `"DisplayPort"` when a sink is driving the line). Only one HDMI
+    /// receptacle exists on any Mac that ships one (Mac mini, Mac Studio,
+    /// MacBook Pro 14"/16").
+    private static let hdmiControllerClass = "AppleHDMIPortController"
 
     /// Find every accessory-managed receptacle (USB-C + MagSafe via HPM/TC
     /// classes, USB-A via plain `IOPort`) and turn each into a
@@ -80,16 +87,31 @@ nonisolated enum AccessoryScanner {
             out.append(port)
         }
 
+        // HDMI receptacles — `AppleHDMIPortController` is `IOPort`'s HDMI
+        // subclass with the same property shape (`PortTypeDescription`,
+        // `PortNumber`, `ConnectionActive`, `Transports*`). Live on Macs
+        // that ship a built-in HDMI jack.
+        for svc in IORegBridge.services(matchingClass: hdmiControllerClass) {
+            defer { IOObjectRelease(svc) }
+            guard let id = IORegBridge.entryID(of: svc), !seen.contains(id) else { continue }
+            seen.insert(id)
+            let props = IORegBridge.properties(of: svc)
+            guard let port = makePort(entry: svc, id: id, props: props) else { continue }
+            out.append(port)
+        }
+
         out.sort {
-            // USB-C first, then USB-A, then everything else. Within a connector
-            // family, sort by physical port number.
+            // USB-C first, then USB-A, HDMI, SD, MagSafe, everything else.
+            // Within a connector family, sort by physical port number.
             if $0.connector != $1.connector {
                 func rank(_ c: PortConnectorType) -> Int {
                     switch c {
                     case .usbC: return 0
                     case .usbA: return 1
-                    case .magsafe: return 2
-                    case .other: return 3
+                    case .hdmi: return 2
+                    case .sdCard: return 3
+                    case .magsafe: return 4
+                    case .other: return 5
                     }
                 }
                 let r0 = rank($0.connector), r1 = rank($1.connector)

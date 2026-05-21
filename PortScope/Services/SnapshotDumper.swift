@@ -433,6 +433,8 @@ enum SnapshotDumper {
         case .usbC: return "usb-c"
         case .usbA: return "usb-a"
         case .magsafe: return "magsafe"
+        case .hdmi: return "hdmi"
+        case .sdCard: return "sd-card"
         case .other(let s): return s.lowercased().replacingOccurrences(of: " ", with: "-")
         }
     }
@@ -554,7 +556,7 @@ private final class PrettyPrinter {
         }
         for port in ports {
             let badge = portBadge(port.mode)
-            let title = "\(port.connector.label) Port \(port.number)"
+            let title = port.cliTitle
             line("   \(badge) \(bold(title))  \(dim(port.statusLabel))")
             if let acc = port.accessory {
                 let active = Array(acc.activeTransports).map { "\($0.label)" }.sorted().joined(separator: ", ")

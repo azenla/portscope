@@ -81,7 +81,7 @@ struct PhysicalPortDetailView: View {
     }
 
     private var portTitle: String {
-        "\(port.connector.label) Port \(port.number)"
+        port.cliTitle
     }
 
     private var subheadline: String {

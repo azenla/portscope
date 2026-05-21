@@ -20,6 +20,8 @@ nonisolated enum PortConnectorType: Hashable {
     case usbC
     case usbA
     case magsafe
+    case hdmi
+    case sdCard
     case other(String)
 
     init(_ description: String?) {
@@ -27,6 +29,8 @@ nonisolated enum PortConnectorType: Hashable {
         case "USB-C": self = .usbC
         case "USB-A": self = .usbA
         case "MagSafe 3": self = .magsafe
+        case "HDMI": self = .hdmi
+        case "SD", "SD Card", "SDXC": self = .sdCard
         case let .some(d): self = .other(d)
         case .none: self = .other("Unknown")
         }
@@ -37,6 +41,8 @@ nonisolated enum PortConnectorType: Hashable {
         case .usbC: return "USB-C"
         case .usbA: return "USB-A"
         case .magsafe: return "MagSafe 3"
+        case .hdmi: return "HDMI"
+        case .sdCard: return "SD Card"
         case .other(let s): return s
         }
     }
@@ -46,6 +52,8 @@ nonisolated enum PortConnectorType: Hashable {
         case .usbC: return "cable.connector"
         case .usbA: return "cable.connector.horizontal"
         case .magsafe: return "powerplug.fill"
+        case .hdmi: return "tv"
+        case .sdCard: return "sdcard"
         case .other: return "questionmark.circle"
         }
     }

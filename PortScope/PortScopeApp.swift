@@ -27,7 +27,7 @@ enum PortScopeMain {
         let snapshot: SystemSnapshot = {
             let tb = ThunderboltScanner.scan()
             let usb = USBScanner.scan()
-            let accessories = AccessoryScanner.scan()
+            let accessories = AccessoryScanner.scan() + SDCardScanner.scan()
             let internalHardware = InternalHardwareScanner.scan(accessories: accessories)
             let bluetooth = BluetoothScanner.scan()
             let displays = DisplayScanner.scan()

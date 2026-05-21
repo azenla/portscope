@@ -94,6 +94,17 @@ struct ConnectedDevice {
 }
 
 extension PhysicalPort {
+    /// CLI / pretty-printer title. Mirrors the sidebar title but stays
+    /// plain ASCII (no leading icon). The catalog (commit pending) will
+    /// override this with a chassis-relative location string when known.
+    var cliTitle: String {
+        switch connector {
+        case .hdmi: return "HDMI Port"
+        case .sdCard: return "SD Card Slot"
+        default: return "\(connector.label) Port \(number)"
+        }
+    }
+
     /// Subtitle shown beneath the port in the sidebar.
     var statusLabel: String {
         switch mode {
@@ -315,7 +326,79 @@ nonisolated enum TopologyMapper {
                 sourcePower: nil
             ))
         }
-        return magsafePorts + out
+
+        // HDMI pass: `AppleHPMPortController` publishes one entry per built-in
+        // HDMI jack. The kernel leaves `ConnectionActive = false` and an empty
+        // `TransportsActive` array when nothing is plugged in, so we only
+        // surface the port when something is actively driving it. This
+        // matches the user-facing rule that HDMI is only a "physical port"
+        // worth listing when it has a sink.
+        let hdmiAccessories = snapshot.accessories.filter {
+            if case .hdmi = $0.connector { return true }
+            return false
+        }
+        var hdmiPorts: [PhysicalPort] = []
+        for acc in hdmiAccessories where hdmiIsAttached(acc) {
+            let stub = synthLane(accessoryID: acc.id)
+            hdmiPorts.append(PhysicalPort(
+                number: acc.portNumber,
+                id: acc.id,
+                connector: .hdmi,
+                laneAdapter: stub, linkLane: nil,
+                controller: stub,
+                connectedDevice: nil, mode: .displayOnly,
+                attachedUSBDevices: [],
+                usbDeviceRoots: [],
+                tunnels: [],
+                accessory: acc,
+                sourcePower: nil
+            ))
+        }
+
+        // SD Card pass: synthesised by `SDCardScanner` only when a card is
+        // mounted (IOMedia descendant exists under `pcie-sdreader`). Empty
+        // slot ⇒ no entry ⇒ no row, matching the user's mental model that an
+        // unloaded reader isn't worth listing.
+        let sdAccessories = snapshot.accessories.filter {
+            if case .sdCard = $0.connector { return true }
+            return false
+        }
+        var sdPorts: [PhysicalPort] = []
+        for acc in sdAccessories {
+            let stub = synthLane(accessoryID: acc.id)
+            sdPorts.append(PhysicalPort(
+                number: acc.portNumber,
+                id: acc.id,
+                connector: .sdCard,
+                laneAdapter: stub, linkLane: nil,
+                controller: stub,
+                connectedDevice: nil,
+                mode: .usbOnly(speed: nil),
+                attachedUSBDevices: [],
+                usbDeviceRoots: [],
+                tunnels: [],
+                accessory: acc,
+                sourcePower: nil
+            ))
+        }
+
+        return magsafePorts + out + hdmiPorts + sdPorts
+    }
+
+    /// True when the kernel reports something is actively connected to an
+    /// HDMI receptacle. The HDMI port controller exposes:
+    ///   * `ConnectionActive` — true when the sink has negotiated successfully
+    ///   * `HDMI_HPD` — Hot Plug Detect line; flips on the moment a cable
+    ///                  is seated, before any link training completes
+    ///   * `TransportsActive` containing `"DisplayPort"` — set once pixels
+    ///                  are flowing
+    /// Treat any of those as "attached" so a port being warmed up still
+    /// shows in the UI; treat none of them as "empty" (no row).
+    private static func hdmiIsAttached(_ acc: PortAccessoryInfo) -> Bool {
+        if acc.connectionActive { return true }
+        if acc.hpdAsserted { return true }
+        if acc.activeTransports.contains(.displayPort) { return true }
+        return false
     }
 
     /// Per-port flat list of every USB device reachable through this port,

@@ -357,12 +357,19 @@ private struct PortsByConnector: View {
         // any future unified view see a single port list.)
         let usbC = ports.filter { $0.connector == .usbC }
         let usbA = ports.filter { $0.connector == .usbA }
+        let hdmi = ports.filter { $0.connector == .hdmi }
+        let sd = ports.filter { $0.connector == .sdCard }
         let other = ports.filter {
-            $0.connector != .usbC && $0.connector != .usbA && $0.connector != .magsafe
+            switch $0.connector {
+            case .usbC, .usbA, .hdmi, .sdCard, .magsafe: return false
+            case .other: return true
+            }
         }
         var out: [Group] = []
         if !usbC.isEmpty { out.append(Group(title: "USB-C", ports: usbC)) }
         if !usbA.isEmpty { out.append(Group(title: "USB-A", ports: usbA)) }
+        if !hdmi.isEmpty { out.append(Group(title: "HDMI", ports: hdmi)) }
+        if !sd.isEmpty { out.append(Group(title: "SD Card", ports: sd)) }
         if !other.isEmpty { out.append(Group(title: "Expanded Ports", ports: other)) }
         return out
     }
@@ -445,12 +452,27 @@ private struct PortRow: View {
                 .foregroundStyle(port.mode.color)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text("\(port.connector.label) Port \(port.number)")
+                Text(port.sidebarTitle)
                 Text(port.statusLabel)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+        }
+    }
+}
+
+extension PhysicalPort {
+    /// Sidebar row title. Defaults to "USB-C Port 1" / "HDMI Port" — the
+    /// per-model catalog will swap this for "Left Rear USB-C Port" etc.
+    /// when it knows the chassis. HDMI / SD Card don't pluralise — every
+    /// Mac that has them ships exactly one, so the trailing "Port N" reads
+    /// as noise.
+    var sidebarTitle: String {
+        switch connector {
+        case .hdmi: return "HDMI Port"
+        case .sdCard: return "SD Card Slot"
+        default: return "\(connector.label) Port \(number)"
         }
     }
 }
