@@ -94,15 +94,28 @@ struct ConnectedDevice {
 }
 
 extension PhysicalPort {
-    /// CLI / pretty-printer title. Mirrors the sidebar title but stays
-    /// plain ASCII (no leading icon). The catalog (commit pending) will
-    /// override this with a chassis-relative location string when known.
+    /// CLI / pretty-printer title. Consults `MacPortCatalog.current` first
+    /// so a known chassis renders chassis-relative labels ("Right Front
+    /// USB-C Port"); on an unrecognised hw.model we fall back to the
+    /// generic numbered form. HDMI / SD Card / MagSafe stay singular even
+    /// in the fallback — every Mac that ships them only ships one.
     var cliTitle: String {
+        if let label = MacPortCatalog.current.descriptor(for: connector, portNumber: number)?.title {
+            return label
+        }
         switch connector {
         case .hdmi: return "HDMI Port"
         case .sdCard: return "SD Card Slot"
+        case .magsafe: return "MagSafe 3 Port"
         default: return "\(connector.label) Port \(number)"
         }
+    }
+
+    /// Capability blurb from the catalog (e.g. "Thunderbolt 4 · Rear
+    /// (left)"). Nil when the host isn't in the catalog or the receptacle
+    /// has no spec'd capability (some entries omit the field).
+    var catalogCapability: String? {
+        MacPortCatalog.current.descriptor(for: connector, portNumber: number)?.capability
     }
 
     /// Subtitle shown beneath the port in the sidebar.

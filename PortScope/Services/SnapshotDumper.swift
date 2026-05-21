@@ -175,11 +175,15 @@ enum SnapshotDumper {
     }
 
     private static func physicalPortToJSON(_ p: PhysicalPort) -> [String: Any] {
+        let descriptor = MacPortCatalog.current.descriptor(for: p.connector, portNumber: p.number)
         var out: [String: Any] = [
             "number": p.number,
             "id": String(format: "0x%llX", p.id.raw),
             "connector": "\(p.connector)",
             "connector_label": p.connector.label,
+            "title": p.cliTitle,
+            "location": descriptor?.location as Any? ?? NSNull(),
+            "capability": descriptor?.capability as Any? ?? NSNull(),
             "status_label": p.statusLabel,
             "mode": modeToJSON(p.mode),
             "lane_adapter_id": String(format: "0x%llX", p.laneAdapter.id.raw),
@@ -371,9 +375,13 @@ enum SnapshotDumper {
         let machine = withUnsafePointer(to: &info.machine) {
             $0.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) }
         }
+        let lookup = MacPortCatalog.current
         return [
             "kernel_release": release,
-            "kernel_machine": machine
+            "kernel_machine": machine,
+            "hw_model": lookup.modelID,
+            "marketing_name": lookup.entry?.marketingName as Any? ?? NSNull(),
+            "chassis": lookup.entry?.chassis as Any? ?? NSNull()
         ]
     }
 
@@ -558,6 +566,9 @@ private final class PrettyPrinter {
             let badge = portBadge(port.mode)
             let title = port.cliTitle
             line("   \(badge) \(bold(title))  \(dim(port.statusLabel))")
+            if let cap = port.catalogCapability {
+                line("      \(dim("Spec:")) \(cap)")
+            }
             if let acc = port.accessory {
                 let active = Array(acc.activeTransports).map { "\($0.label)" }.sorted().joined(separator: ", ")
                 if !active.isEmpty {

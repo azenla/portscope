@@ -452,27 +452,12 @@ private struct PortRow: View {
                 .foregroundStyle(port.mode.color)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(port.sidebarTitle)
+                Text(port.cliTitle)
                 Text(port.statusLabel)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-        }
-    }
-}
-
-extension PhysicalPort {
-    /// Sidebar row title. Defaults to "USB-C Port 1" / "HDMI Port" — the
-    /// per-model catalog will swap this for "Left Rear USB-C Port" etc.
-    /// when it knows the chassis. HDMI / SD Card don't pluralise — every
-    /// Mac that has them ships exactly one, so the trailing "Port N" reads
-    /// as noise.
-    var sidebarTitle: String {
-        switch connector {
-        case .hdmi: return "HDMI Port"
-        case .sdCard: return "SD Card Slot"
-        default: return "\(connector.label) Port \(number)"
         }
     }
 }

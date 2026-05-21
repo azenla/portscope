@@ -4,7 +4,7 @@ Guidance for Claude Code working in this repo.
 
 ## Project
 
-PortScope is a macOS-only SwiftUI app (target `macOS 26.5`, Swift 5, default actor isolation `MainActor`) that introspects host hardware buses via IOKit. Covers Thunderbolt (controllers / routers / ports / adapters / hop tables / tunnels / bandwidth), USB (controllers / hubs / devices / interfaces), a unified **Physical Ports** view (USB-C, USB-A, MagSafe in one list) with live operating mode + accessory state from `IOAccessoryManager` (transports, USB-PD voltage/current, plug orientation, DisplayPort HPD, cable e-marker), **Power Input** (Mac sinking from a charger, from `IOPortFeaturePowerIn`) and **Power Output** (Mac sourcing to attached devices, from per-device sink allocations + xHCI port wrappers), and **Displays / Bluetooth / PCIe / Internal Hardware** sections. User-facing labels are Mac-centric: "Power Input" always means power entering the machine, "Power Output" always means power the Mac is delivering to other devices — use these terms consistently in CLI and UI.
+PortScope is a macOS-only SwiftUI app (target `macOS 26.5`, Swift 5, default actor isolation `MainActor`) that introspects host hardware buses via IOKit. Covers Thunderbolt (controllers / routers / ports / adapters / hop tables / tunnels / bandwidth), USB (controllers / hubs / devices / interfaces), a unified **Physical Ports** view (USB-C, USB-A, MagSafe, HDMI, SD Card in one list) with live operating mode + accessory state from `IOAccessoryManager` (transports, USB-PD voltage/current, plug orientation, DisplayPort HPD, cable e-marker), **Power Input** (Mac sinking from a charger, from `IOPortFeaturePowerIn`) and **Power Output** (Mac sourcing to attached devices, from per-device sink allocations + xHCI port wrappers), and **Displays / Bluetooth / PCIe / Internal Hardware** sections. User-facing labels are Mac-centric: "Power Input" always means power entering the machine, "Power Output" always means power the Mac is delivering to other devices — use these terms consistently in CLI and UI. HDMI and SD Card ports are gated on **attachment** (HDMI: `ConnectionActive` / `HDMI_HPD` / live DisplayPort transport; SD: `IOMedia` descendant under `pcie-sdreader`) — an empty HDMI jack or unloaded SD slot doesn't show up in the port list. USB-C / USB-A / MagSafe always show, even when empty. Per-receptacle chassis labels (e.g. "Right Front USB-C Port · Thunderbolt 5") come from a static catalogue keyed by `hw.model` (see "Adding a new Mac model" below).
 
 ## Build / run
 
@@ -63,13 +63,45 @@ Source: `Services/SnapshotDumper.swift` + `PortScopeApp.swift` (`PortScopeMain` 
 
 Data flow: **IOKit → Scanners → SystemSnapshot → ViewModel → SwiftUI views**.
 
-Seven scanners run per refresh in `Services/`: `ThunderboltScanner`, `USBScanner`, `AccessoryScanner`, `InternalHardwareScanner`, `BluetoothScanner`, `DisplayScanner`, `PCIScanner`. TB and USB share `NodeBuilder` (recursive `IORegistry → TBNode`) and `NodeFormatter` (classify / label / preferred-key-order — **add classify/label logic here, not in scanners**). `IORegBridge` is the generic CF-to-Swift IOKit shim. `IORegMonitor` posts debounced rescan notifications on hot-plug. `TopologyMapper` derives the simplified user-facing `PhysicalPort` topology with mode inference, accessory merge-in, and `PortSourcePower` rollup.
+Eight scanners run per refresh in `Services/`: `ThunderboltScanner`, `USBScanner`, `AccessoryScanner` (incl. HDMI via `AppleHDMIPortController`), `SDCardScanner` (synthesises a card-present accessory when `IOMedia` lives under `pcie-sdreader`), `InternalHardwareScanner`, `BluetoothScanner`, `DisplayScanner`, `PCIScanner`. The accessory list passed into the snapshot is `AccessoryScanner.scan() + SDCardScanner.scan()`. TB and USB share `NodeBuilder` (recursive `IORegistry → TBNode`) and `NodeFormatter` (classify / label / preferred-key-order — **add classify/label logic here, not in scanners**). `IORegBridge` is the generic CF-to-Swift IOKit shim. `IORegMonitor` posts debounced rescan notifications on hot-plug. `TopologyMapper` derives the simplified user-facing `PhysicalPort` topology with mode inference, accessory merge-in, and `PortSourcePower` rollup. `MacPortCatalog` loads `Resources/MacPortLocations.json` once and resolves `(connector, port_number)` → chassis-relative label + capability for the running host's `hw.model`.
 
 Models in `Models/`: `TBNode` / `TBNodeKind` is used for **any** IOKit-derived entity (name predates USB expansion). `SystemSnapshot { tb, usb, accessories, internalHardware, bluetooth, displays, pcie, capturedAt }` is the top-level type the ViewModel owns. Subsystem-specific snapshots (`BluetoothSnapshot`, `DisplaySnapshot`, `PCISnapshot`, `InternalHardwareSnapshot`) and per-port types (`PhysicalPort`, `PortAccessoryInfo`, `PortSourcePower`, `USBPDProfile`) live in their respective `*Models.swift` files.
 
 ViewModel: `PortScopeViewModel` is `@MainActor ObservableObject`, scans off-main via `Task.detached`. `PhysicalPortSelector` / `BluetoothSelector` mint synthetic `TBNodeID`s (high bits `0xC0DE_…` and `0xB7E0_…/0xB7E1_…`) so sidebar rows that don't map to a registry entry don't collide with real entry IDs. `ContentView.detail` checks synthetic-ID predicates first, then PCINode / DisplayInfo lookups, then `vm.node(for:)`.
 
 Views in `Views/`: `SidebarView` is seven sections (Physical Ports, Thunderbolt, USB, Displays, Bluetooth, PCIe, Internal Hardware). **Physical Ports is the only section visible by default.** Two independent Settings toggles gate the rest, both default off: `@AppStorage("showBuses")` (**Show Hardware Buses**) reveals Thunderbolt / USB / PCIe; `@AppStorage("showAllDevices")` (**Show All Devices**, mirrored by CLI `--all`) reveals Displays / Bluetooth / Internal Hardware. `DetailView` dispatches on `TBNodeKind` and hosts the **Developer details** disclosure (raw IORegistry dump via `PropertyTableView`). `PhysicalPortDetailView` is the unified per-port view used when selection is a `PhysicalPortSelector` synthetic ID.
+
+## Adding a new Mac model to the port-location catalogue
+
+When Apple ships a new Mac (or you discover one missing from the catalogue), add it to `PortScope/Resources/MacPortLocations.json` so PortScope renders "Right Front USB-C Port · Thunderbolt 5" instead of the generic "USB-C Port 3" fallback. The procedure:
+
+1. **Get the chassis identifier.** On the target Mac: `sysctl -n hw.model` → e.g. `Mac17,12`. This is the JSON key. *Mac Pro tower & rack share one `hw.model`* (`MacPro7,1` for Intel, `Mac14,8` for M2 Ultra) — leave both shapes under the same key and use a generic location like `"Top/Front (left)"`.
+
+2. **Pull the kernel's per-receptacle data.** Build PortScope (`xcodebuild …` — see "Build / run") and run the CLI on that Mac:
+   ```sh
+   "$BIN" --json | jq '.accessories[] | {connector, port_number, raw: .raw_properties.PortTypeDescription}'
+   ```
+   This gives you the authoritative `port_number` the kernel assigns each USB-C / USB-A / HDMI receptacle. *Trust this number; don't guess from Apple's spec page.* Plug a USB device into each port one at a time and re-run to confirm which physical position is `port_number = 1`, `= 2`, etc. — Apple's chassis numbering scheme is not documented and varies by SoC.
+
+3. **Cross-check against Apple's tech-spec page.** `support.apple.com/en-us/<6-digit-id>` for the model lists ports under "Connections and Expansion". Mirror Apple's wording in `capability` — `"Thunderbolt / USB 4"` (M1, M2, M3 base, M4 base on iMac/MBA), `"Thunderbolt 4"` (Pro/Max chassis pre-M4), `"Thunderbolt 5"` (M4 Pro/Max, M3/M4 Ultra Studio, M4 Pro Mac mini). The kernel doesn't emit those strings; they only come from this catalogue.
+
+4. **Pick chassis-relative location strings.** Convention:
+   - **Laptops:** `"Left Rear"`, `"Left Center"`, `"Left Front"`, `"Right Rear"`, `"Right Center"`, `"Right Front"` (`Center` only when ≥3 ports per side).
+   - **Desktops with back-only ports** (Mac mini Intel, iMac, pre-2024 Mac mini): `"Rear (left)"`, `"Rear (left-center)"`, `"Rear (right-center)"`, `"Rear (right)"`, plus `"Rear (leftmost)"` / `"Rear (rightmost)"` when there are 5+ adjacent ports.
+   - **Mac Studio / 2024 Mac mini** (front + rear): prefix `"Front (left)"` / `"Front (right)"` / `"Rear (left)"` / `"Rear (right)"` etc.
+   - **Mac Pro tower/rack**: `"Top/Front (left)"` for the chassis-top TB pair (top on tower, front on rack) since one `hw.model` covers both form factors.
+   The `MacPortDescriptor.title` formula is `<location> <kind> Port` (`SD Card Slot` for sd-card), so make sure the location reads naturally with that suffix.
+
+5. **Drop the entry into the JSON, build, and verify.** The bundle's `Resources/` is part of the `PBXFileSystemSynchronizedRootGroup`, so editing the JSON is enough — no `project.pbxproj` change needed. Rebuild and run:
+   ```sh
+   "$BIN" --json | jq '.host'                       # confirm marketing_name resolves
+   "$BIN" --pretty                                  # eyeball every receptacle's title + Spec line
+   ```
+   If `marketing_name` comes back null, the JSON key doesn't match what `sysctl hw.model` returned on this host. If `Spec:` is missing on a receptacle but Apple says the port has a known capability, you forgot to add `"capability"`.
+
+6. **Update [the research source list in the catalogue's `$doc`](#) and Apple URLs** if you trawled a new spec page — future-you will want the same citations. The catalogue intentionally has no fallback for unknown `port_number` values, so a partial entry (e.g. listing USB-C ports 1 & 2 but not 3 on a 3-port chassis) silently makes port 3 render with the generic "USB-C Port 3" fallback. Cover the full receptacle set.
+
+When two `hw.model` identifiers map to the same chassis with the same port layout (M3 Max 14" splits as `Mac15,7` and `Mac15,8`; M3 Max 16" splits as `Mac15,9` and `Mac15,11`), duplicate the entry under both keys. There's no inheritance keyword — keep it explicit so a future redesign of one identifier doesn't silently corrupt the other.
 
 ## Things that bit me — read before "fixing"
 

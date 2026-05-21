@@ -1,0 +1,679 @@
+{
+  "$schema_version": 1,
+  "$doc": "Per-chassis port-location catalogue. Keyed by `sysctl hw.model` (the chassis identifier the kernel exposes — e.g. `Mac14,12`). Each `ports` entry maps a (connector, port_number) pair to a human-friendly chassis location. Port numbering follows what `AppleHPMInterfaceType10.PortNumber` (USB-C / USB-A / HDMI) and `IOPort.PortNumber` (USB-A) publish. When the kernel's port number doesn't have a physical-chassis meaning (HDMI, MagSafe, SDXC — never more than one per chassis), the entry uses `port_number: 1`. Capability strings mirror Apple's tech-spec wording — `Thunderbolt / USB 4` (M1/M2/M3 base), `Thunderbolt 4` (Pro/Max chassis pre-M4), `Thunderbolt 5` (M4 Pro/Max). See CLAUDE.md → 'Adding a new Mac model to the port-location catalogue' for the procedure when Apple ships a new chassis.",
+
+  "models": {
+
+    "MacBookAir10,1": {
+      "marketing_name": "MacBook Air (M1, 2020)",
+      "chassis": "MacBook Air 13″ (M1)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front", "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "Mac14,2": {
+      "marketing_name": "MacBook Air (13-inch, M2, 2022)",
+      "chassis": "MacBook Air 13″ (M2)",
+      "ports": [
+        { "connector": "magsafe", "port_number": 1, "location": "Left Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",   "port_number": 1, "location": "Left Center", "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",   "port_number": 2, "location": "Left Front",  "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "Mac14,15": {
+      "marketing_name": "MacBook Air (15-inch, M2, 2023)",
+      "chassis": "MacBook Air 15″ (M2)",
+      "ports": [
+        { "connector": "magsafe", "port_number": 1, "location": "Left Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",   "port_number": 1, "location": "Left Center", "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",   "port_number": 2, "location": "Left Front",  "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "Mac15,12": {
+      "marketing_name": "MacBook Air (13-inch, M3, 2024)",
+      "chassis": "MacBook Air 13″ (M3)",
+      "ports": [
+        { "connector": "magsafe", "port_number": 1, "location": "Left Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",   "port_number": 1, "location": "Left Center", "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",   "port_number": 2, "location": "Left Front",  "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "Mac15,13": {
+      "marketing_name": "MacBook Air (15-inch, M3, 2024)",
+      "chassis": "MacBook Air 15″ (M3)",
+      "ports": [
+        { "connector": "magsafe", "port_number": 1, "location": "Left Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",   "port_number": 1, "location": "Left Center", "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",   "port_number": 2, "location": "Left Front",  "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "Mac16,12": {
+      "marketing_name": "MacBook Air (13-inch, M4, 2025)",
+      "chassis": "MacBook Air 13″ (M4)",
+      "ports": [
+        { "connector": "magsafe", "port_number": 1, "location": "Left Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",   "port_number": 1, "location": "Left Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",   "port_number": 2, "location": "Left Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac16,13": {
+      "marketing_name": "MacBook Air (15-inch, M4, 2025)",
+      "chassis": "MacBook Air 15″ (M4)",
+      "ports": [
+        { "connector": "magsafe", "port_number": 1, "location": "Left Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",   "port_number": 1, "location": "Left Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",   "port_number": 2, "location": "Left Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "MacBookPro17,1": {
+      "marketing_name": "MacBook Pro (13-inch, M1, 2020)",
+      "chassis": "MacBook Pro 13″ (M1)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front", "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "Mac14,7": {
+      "marketing_name": "MacBook Pro (13-inch, M2, 2022)",
+      "chassis": "MacBook Pro 13″ (M2)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front", "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "MacBookPro18,3": {
+      "marketing_name": "MacBook Pro (14-inch, 2021, M1 Pro)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.0" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "MacBookPro18,4": {
+      "marketing_name": "MacBook Pro (14-inch, 2021, M1 Max)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.0" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "MacBookPro18,1": {
+      "marketing_name": "MacBook Pro (16-inch, 2021, M1 Pro)",
+      "chassis": "MacBook Pro 16″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.0" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "MacBookPro18,2": {
+      "marketing_name": "MacBook Pro (16-inch, 2021, M1 Max)",
+      "chassis": "MacBook Pro 16″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.0" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac14,9": {
+      "marketing_name": "MacBook Pro (14-inch, 2023, M2 Pro)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac14,5": {
+      "marketing_name": "MacBook Pro (14-inch, 2023, M2 Max)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac14,10": {
+      "marketing_name": "MacBook Pro (16-inch, 2023, M2 Pro)",
+      "chassis": "MacBook Pro 16″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac14,6": {
+      "marketing_name": "MacBook Pro (16-inch, 2023, M2 Max)",
+      "chassis": "MacBook Pro 16″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac15,3": {
+      "marketing_name": "MacBook Pro (14-inch, Nov 2023, M3)",
+      "chassis": "MacBook Pro 14″ Pro chassis (M3 base — only 2 TB ports, both on right)",
+      "ports": [
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Right Center", "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Front",  "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "Mac15,6": {
+      "marketing_name": "MacBook Pro (14-inch, Nov 2023, M3 Pro)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac15,7": {
+      "marketing_name": "MacBook Pro (14-inch, Nov 2023, M3 Max)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac15,8": {
+      "marketing_name": "MacBook Pro (14-inch, Nov 2023, M3 Max — alternate bin)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac15,9": {
+      "marketing_name": "MacBook Pro (16-inch, Nov 2023, M3 Max)",
+      "chassis": "MacBook Pro 16″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac15,10": {
+      "marketing_name": "MacBook Pro (16-inch, Nov 2023, M3 Pro)",
+      "chassis": "MacBook Pro 16″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac15,11": {
+      "marketing_name": "MacBook Pro (16-inch, Nov 2023, M3 Max — alternate bin)",
+      "chassis": "MacBook Pro 16″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac16,1": {
+      "marketing_name": "MacBook Pro (14-inch, 2024, M4)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac16,8": {
+      "marketing_name": "MacBook Pro (14-inch, 2024, M4 Pro)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
+      ]
+    },
+
+    "Mac16,6": {
+      "marketing_name": "MacBook Pro (14-inch, 2024, M4 Max)",
+      "chassis": "MacBook Pro 14″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
+      ]
+    },
+
+    "Mac16,7": {
+      "marketing_name": "MacBook Pro (16-inch, 2024, M4 Pro)",
+      "chassis": "MacBook Pro 16″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
+      ]
+    },
+
+    "Mac16,5": {
+      "marketing_name": "MacBook Pro (16-inch, 2024, M4 Max)",
+      "chassis": "MacBook Pro 16″ Pro chassis",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Left",         "capability": "HDMI 2.1" },
+        { "connector": "sd-card","port_number": 1, "location": "Left Front",   "capability": "SDXC UHS-II" },
+        { "connector": "magsafe","port_number": 1, "location": "Right Rear",   "capability": "MagSafe 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Right Center", "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
+      ]
+    },
+
+    "Macmini9,1": {
+      "marketing_name": "Mac mini (M1, 2020)",
+      "chassis": "Mac mini",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",         "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (left-center)",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (right-center)", "capability": "USB 3.0 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3.0 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.0" }
+      ]
+    },
+
+    "Mac14,3": {
+      "marketing_name": "Mac mini (2023, M2)",
+      "chassis": "Mac mini",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",         "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (left-center)",  "capability": "Thunderbolt 4" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (right-center)", "capability": "USB 3.0 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3.0 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.0" }
+      ]
+    },
+
+    "Mac14,12": {
+      "marketing_name": "Mac mini (2023, M2 Pro)",
+      "chassis": "Mac mini",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (leftmost)",     "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (left-center)",  "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (right-center)", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (rightmost)",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (left)",         "capability": "USB 3.0 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3.0 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.1" }
+      ]
+    },
+
+    "Mac16,10": {
+      "marketing_name": "Mac mini (2024, M4)",
+      "chassis": "Mac mini (2024 redesign)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Front (left)",  "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Front (right)", "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (left)",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (center)", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 5, "location": "Rear (right)",  "capability": "Thunderbolt 4" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",          "capability": "HDMI 2.1" }
+      ]
+    },
+
+    "Mac16,11": {
+      "marketing_name": "Mac mini (2024, M4 Pro)",
+      "chassis": "Mac mini (2024 redesign)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Front (left)",  "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Front (right)", "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (left)",   "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (center)", "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 5, "location": "Rear (right)",  "capability": "Thunderbolt 5" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",          "capability": "HDMI 2.1" }
+      ]
+    },
+
+    "iMac21,2": {
+      "marketing_name": "iMac (24-inch, M1, 2021, Two ports)",
+      "chassis": "iMac 24″",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (right)", "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "iMac21,1": {
+      "marketing_name": "iMac (24-inch, M1, 2021, Four ports)",
+      "chassis": "iMac 24″",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",         "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (left-center)",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (right-center)", "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (right)",        "capability": "USB 3 (10 Gb/s)" }
+      ]
+    },
+
+    "Mac15,4": {
+      "marketing_name": "iMac (24-inch, 2023, M3, Two ports)",
+      "chassis": "iMac 24″",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (right)", "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "Mac15,5": {
+      "marketing_name": "iMac (24-inch, 2023, M3, Four ports)",
+      "chassis": "iMac 24″",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",         "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (left-center)",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (right-center)", "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (right)",        "capability": "USB 3 (10 Gb/s)" }
+      ]
+    },
+
+    "Mac16,2": {
+      "marketing_name": "iMac (24-inch, 2024, M4, Two ports)",
+      "chassis": "iMac 24″",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (right)", "capability": "Thunderbolt / USB 4" }
+      ]
+    },
+
+    "Mac16,3": {
+      "marketing_name": "iMac (24-inch, 2024, M4, Four ports)",
+      "chassis": "iMac 24″",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",         "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (left-center)",  "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (right-center)", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (right)",        "capability": "Thunderbolt 4" }
+      ]
+    },
+
+    "Mac13,1": {
+      "marketing_name": "Mac Studio (2022, M1 Max)",
+      "chassis": "Mac Studio",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Front (left)",        "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Front (right)",       "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "sd-card","port_number": 1, "location": "Front",               "capability": "SDXC UHS-II" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (left)",         "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (left-center)",  "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 5, "location": "Rear (right-center)", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 6, "location": "Rear (right)",        "capability": "Thunderbolt 4" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (left)",         "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.0" }
+      ]
+    },
+
+    "Mac13,2": {
+      "marketing_name": "Mac Studio (2022, M1 Ultra)",
+      "chassis": "Mac Studio",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Front (left)",        "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Front (right)",       "capability": "Thunderbolt 4" },
+        { "connector": "sd-card","port_number": 1, "location": "Front",               "capability": "SDXC UHS-II" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (left)",         "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (left-center)",  "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 5, "location": "Rear (right-center)", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 6, "location": "Rear (right)",        "capability": "Thunderbolt 4" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (left)",         "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.0" }
+      ]
+    },
+
+    "Mac14,13": {
+      "marketing_name": "Mac Studio (2023, M2 Max)",
+      "chassis": "Mac Studio",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Front (left)",        "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Front (right)",       "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "sd-card","port_number": 1, "location": "Front",               "capability": "SDXC UHS-II" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (left)",         "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (left-center)",  "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 5, "location": "Rear (right-center)", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 6, "location": "Rear (right)",        "capability": "Thunderbolt 4" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (left)",         "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.1" }
+      ]
+    },
+
+    "Mac14,14": {
+      "marketing_name": "Mac Studio (2023, M2 Ultra)",
+      "chassis": "Mac Studio",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Front (left)",        "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Front (right)",       "capability": "Thunderbolt 4" },
+        { "connector": "sd-card","port_number": 1, "location": "Front",               "capability": "SDXC UHS-II" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (left)",         "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (left-center)",  "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 5, "location": "Rear (right-center)", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 6, "location": "Rear (right)",        "capability": "Thunderbolt 4" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (left)",         "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.1" }
+      ]
+    },
+
+    "Mac16,9": {
+      "marketing_name": "Mac Studio (2025, M4 Max)",
+      "chassis": "Mac Studio",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Front (left)",        "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Front (right)",       "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "sd-card","port_number": 1, "location": "Front",               "capability": "SDXC UHS-II" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (left)",         "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (left-center)",  "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 5, "location": "Rear (right-center)", "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 6, "location": "Rear (right)",        "capability": "Thunderbolt 5" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (left)",         "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.1" }
+      ]
+    },
+
+    "Mac15,14": {
+      "marketing_name": "Mac Studio (2025, M3 Ultra)",
+      "chassis": "Mac Studio",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Front (left)",        "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Front (right)",       "capability": "Thunderbolt 5" },
+        { "connector": "sd-card","port_number": 1, "location": "Front",               "capability": "SDXC UHS-II" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (left)",         "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (left-center)",  "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 5, "location": "Rear (right-center)", "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 6, "location": "Rear (right)",        "capability": "Thunderbolt 5" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (left)",         "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.1" }
+      ]
+    },
+
+    "Mac14,8": {
+      "marketing_name": "Mac Pro (2023, M2 Ultra)",
+      "chassis": "Mac Pro tower/rack (share hw.model)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Top/Front (left)",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Top/Front (right)",  "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear (left)",        "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear (left-center)", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 5, "location": "Rear (right-center)","capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 6, "location": "Rear (right)",       "capability": "Thunderbolt 4" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (left)",        "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",       "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "hdmi",   "port_number": 1, "location": "Rear (left)",        "capability": "HDMI 2.1" },
+        { "connector": "hdmi",   "port_number": 2, "location": "Rear (right)",       "capability": "HDMI 2.1" }
+      ]
+    },
+
+    "Mac17,5": {
+      "marketing_name": "MacBook Neo (13-inch, A18 Pro)",
+      "chassis": "MacBook Neo 13″",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",  "capability": "USB 3 (10 Gb/s)" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front", "capability": "USB 2.0 (480 Mb/s)" }
+      ]
+    },
+
+    "MacBookPro16,1": {
+      "marketing_name": "MacBook Pro (16-inch, 2019)",
+      "chassis": "MacBook Pro 16″ (Intel)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",   "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",  "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Rear",  "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Right Front", "capability": "Thunderbolt 3" }
+      ]
+    },
+
+    "MacBookPro16,4": {
+      "marketing_name": "MacBook Pro (16-inch, 2019, AMD 5600M)",
+      "chassis": "MacBook Pro 16″ (Intel)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",   "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",  "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Rear",  "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Right Front", "capability": "Thunderbolt 3" }
+      ]
+    },
+
+    "MacBookPro16,2": {
+      "marketing_name": "MacBook Pro (13-inch, 2020, Four Thunderbolt 3 ports)",
+      "chassis": "MacBook Pro 13″ (Intel)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",   "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",  "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Rear",  "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Right Front", "capability": "Thunderbolt 3" }
+      ]
+    },
+
+    "iMac20,1": {
+      "marketing_name": "iMac (Retina 5K, 27-inch, 2020, Core i5)",
+      "chassis": "iMac 27″ (Intel)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",         "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (right)",        "capability": "Thunderbolt 3" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (leftmost)",     "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (left-center)",  "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 3, "location": "Rear (right-center)", "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 4, "location": "Rear (rightmost)",    "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "sd-card","port_number": 1, "location": "Rear",                "capability": "SDXC UHS-II" }
+      ]
+    },
+
+    "iMac20,2": {
+      "marketing_name": "iMac (Retina 5K, 27-inch, 2020, Core i7/i9)",
+      "chassis": "iMac 27″ (Intel)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Rear (left)",         "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Rear (right)",        "capability": "Thunderbolt 3" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear (leftmost)",     "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear (left-center)",  "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 3, "location": "Rear (right-center)", "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 4, "location": "Rear (rightmost)",    "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "sd-card","port_number": 1, "location": "Rear",                "capability": "SDXC UHS-II" }
+      ]
+    },
+
+    "MacPro7,1": {
+      "marketing_name": "Mac Pro (2019)",
+      "chassis": "Mac Pro tower/rack (Intel; share hw.model)",
+      "ports": [
+        { "connector": "usb-c",  "port_number": 1, "location": "Top/Front (left)",   "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Top/Front (right)",  "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 3, "location": "Rear I/O card (left)",  "capability": "Thunderbolt 3" },
+        { "connector": "usb-c",  "port_number": 4, "location": "Rear I/O card (right)", "capability": "Thunderbolt 3" },
+        { "connector": "usb-a",  "port_number": 1, "location": "Rear I/O card (left)",  "capability": "USB 3 (5 Gb/s)" },
+        { "connector": "usb-a",  "port_number": 2, "location": "Rear I/O card (right)", "capability": "USB 3 (5 Gb/s)" }
+      ]
+    }
+  }
+}
