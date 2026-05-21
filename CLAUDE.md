@@ -4,7 +4,7 @@ Guidance for Claude Code working in this repo.
 
 ## Project
 
-PortScope is a macOS-only SwiftUI app (target `macOS 26.5`, Swift 5, default actor isolation `MainActor`) that introspects host hardware buses via IOKit. Covers Thunderbolt (controllers / routers / ports / adapters / hop tables / tunnels / bandwidth), USB (controllers / hubs / devices / interfaces), a unified **Physical Ports** view with live operating mode + accessory state from `IOAccessoryManager` (transports, USB-PD voltage/current, plug orientation, DisplayPort HPD, cable e-marker), **USB-C PD output** sourced from per-device sink allocations + xHCI port wrappers, and **Displays / Bluetooth / PCIe / Internal Hardware** sections.
+PortScope is a macOS-only SwiftUI app (target `macOS 26.5`, Swift 5, default actor isolation `MainActor`) that introspects host hardware buses via IOKit. Covers Thunderbolt (controllers / routers / ports / adapters / hop tables / tunnels / bandwidth), USB (controllers / hubs / devices / interfaces), a unified **Physical Ports** view (USB-C, USB-A, MagSafe in one list) with live operating mode + accessory state from `IOAccessoryManager` (transports, USB-PD voltage/current, plug orientation, DisplayPort HPD, cable e-marker), **Power Input** (Mac sinking from a charger, from `IOPortFeaturePowerIn`) and **Power Output** (Mac sourcing to attached devices, from per-device sink allocations + xHCI port wrappers), and **Displays / Bluetooth / PCIe / Internal Hardware** sections. User-facing labels are Mac-centric: "Power Input" always means power entering the machine, "Power Output" always means power the Mac is delivering to other devices — use these terms consistently in CLI and UI.
 
 ## Build / run
 

@@ -25,7 +25,7 @@ struct PhysicalPortDetailView: View {
                     connectorCableCard
                 }
                 if let pd = port.accessory?.usbPD {
-                    powerDeliveryCard(pd: pd)
+                    powerInputCard(pd: pd)
                 }
                 if let sp = port.sourcePower, !sp.sinks.isEmpty {
                     powerOutputCard(sp)
@@ -145,7 +145,7 @@ struct PhysicalPortDetailView: View {
         // published for USB-A IOPort accessories.
         if port.connector != .usbA {
             stats.append(contentsOf: [
-                Stat(label: "Power In",
+                Stat(label: "Power Input",
                      value: acc?.usbPD?.winning?.powerLabel ?? "—",
                      symbol: "bolt.fill"),
                 Stat(label: "Plug Orientation",
@@ -296,10 +296,10 @@ struct PhysicalPortDetailView: View {
         return "—"
     }
 
-    // MARK: - Power Delivery
+    // MARK: - Power Input (Mac is sinking — a charger is supplying us)
 
-    private func powerDeliveryCard(pd: USBPDProfile) -> some View {
-        SectionCard(title: "USB Power Delivery", symbol: "bolt.fill") {
+    private func powerInputCard(pd: USBPDProfile) -> some View {
+        SectionCard(title: "Power Input", symbol: "bolt.fill") {
             VStack(alignment: .leading, spacing: 12) {
                 if let win = pd.winning {
                     WinningPDO(option: win, brickID: pd.brickID)
@@ -331,7 +331,7 @@ struct PhysicalPortDetailView: View {
         let sleepA = sp.sleepLimitMA.map { Double($0) / 1000.0 }
         let portLimitW = sp.wakeLimitMA.map { Double($0) / 1000.0 * 5.0 }
 
-        return SectionCard(title: "USB-C Power Output", symbol: "bolt.batteryblock") {
+        return SectionCard(title: "Power Output", symbol: "bolt.batteryblock") {
             VStack(alignment: .leading, spacing: 12) {
                 if totalMA > 0 {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -600,7 +600,7 @@ private struct PowerCallout: View {
                 Image(systemName: "bolt.fill").foregroundStyle(.yellow)
                 Text(watts).font(.title2.weight(.semibold).monospacedDigit())
             }
-            Text("USB-PD in").font(.caption).foregroundStyle(.secondary)
+            Text("Power Input").font(.caption).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(.background.secondary)

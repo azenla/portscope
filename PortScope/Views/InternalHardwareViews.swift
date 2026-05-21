@@ -343,11 +343,11 @@ struct MagSafeView: View {
 
             // USB-PD profile, only meaningful when a charger is attached.
             if let pd = accessory.usbPD, accessory.connectionActive {
-                SectionCard(title: "USB Power Delivery", symbol: "bolt.batteryblock") {
+                SectionCard(title: "Power Input", symbol: "bolt.batteryblock") {
                     USBPDCard(profile: pd)
                 }
             } else {
-                SectionCard(title: "USB Power Delivery", symbol: "bolt.batteryblock") {
+                SectionCard(title: "Power Input", symbol: "bolt.batteryblock") {
                     Text("Plug in a MagSafe charger to see negotiated wattage and the full PDO list. PortScope reads this live from the USB-PD subsystem.")
                         .font(.callout)
                         .foregroundStyle(.secondary)

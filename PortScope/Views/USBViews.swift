@@ -126,7 +126,7 @@ struct USBHubView: View {
                 Stat(label: "Attached Devices",
                      value: "\(attached.devices)",
                      symbol: "cable.connector"),
-                Stat(label: "Sink Allocation",
+                Stat(label: "Power Output",
                      value: power.allocationLabel,
                      symbol: "bolt"),
                 Stat(label: "Built-In",
@@ -187,7 +187,7 @@ struct USBDeviceView: View {
                 Stat(label: "VID : PID",
                      value: formatVidPid(vid: vid, pid: pid),
                      symbol: "barcode"),
-                Stat(label: "Sink Allocation",
+                Stat(label: "Power Output",
                      value: power.allocationLabel,
                      symbol: "bolt"),
                 Stat(label: "Serial Number",
@@ -316,7 +316,10 @@ struct USBSinkPowerCard: View {
     let power: USBDevicePower
 
     var body: some View {
-        SectionCard(title: "USB-C Power Input", symbol: "bolt.fill") {
+        // Title is Mac-centric: from the host's POV this is power *output* —
+        // the Mac sources current to this attached USB device. The card shows
+        // the per-device sink-allocation properties published in IORegistry.
+        SectionCard(title: "Power Output", symbol: "bolt.fill") {
             VStack(alignment: .leading, spacing: 10) {
                 if let mA = power.primaryCurrentMA, mA > 0, let watts = power.estimatedPowerW {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -338,7 +341,7 @@ struct USBSinkPowerCard: View {
                     }
                     if let cap = power.capabilityMA {
                         GridRow {
-                            Text("Sink peak capability").foregroundStyle(.secondary)
+                            Text("Peak Capability").foregroundStyle(.secondary)
                             Text("\(cap) mA").monospacedDigit()
                         }
                     }

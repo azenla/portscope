@@ -202,6 +202,19 @@ enum SnapshotDumper {
             out["connected_device"] = NSNull()
         }
         if let acc = p.accessory { out["accessory"] = accessoryToJSON(acc) }
+        // power_input mirrors power_output for symmetry: a flat summary of
+        // the negotiated USB-PD contract when the Mac is sinking power on
+        // this port. Detailed PDO offers stay under accessory.usb_pd.
+        if let win = p.accessory?.usbPD?.winning {
+            out["power_input"] = [
+                "voltage_mv": win.voltageMV,
+                "current_ma": win.maxCurrentMA,
+                "power_mw": win.maxPowerMW,
+                "power_w": Double(win.maxPowerMW) / 1000.0
+            ]
+        } else {
+            out["power_input"] = NSNull()
+        }
         if let sp = p.sourcePower, sp.isInteresting {
             out["power_output"] = sourcePowerToJSON(sp)
         } else {
@@ -552,7 +565,7 @@ private final class PrettyPrinter {
                     line("      \(dim("orientation:")) \(acc.plugOrientation.label)")
                 }
                 if let pd = acc.usbPD, let win = pd.winning {
-                    line("      \(dim("USB-PD in:")) \(win.voltageLabel) @ \(win.currentLabel) = \(bold(win.powerLabel))")
+                    line("      \(dim("Power Input:")) \(bold(win.powerLabel)) (\(win.voltageLabel) · \(win.currentLabel))")
                 }
                 if let cable = acc.cableLabel {
                     line("      \(dim("cable:")) \(cable)")
@@ -566,11 +579,11 @@ private final class PrettyPrinter {
                     let totalW = Double(sp.totalAllocatedMA) / 1000.0 * 5.0
                     let watt = String(format: "%.1f W", totalW)
                     let amps = String(format: "%.2f A", Double(sp.totalAllocatedMA) / 1000.0)
-                    line("      \(dim("PD out:")) \(bold(watt)) (5 V · \(amps))")
+                    line("      \(dim("Power Output:")) \(bold(watt)) (5 V · \(amps))")
                 }
                 if let w = sp.wakeLimitMA {
                     let a = String(format: "%.1f A", Double(w) / 1000.0)
-                    line("      \(dim("port limit:")) \(a) awake\(sp.sleepLimitMA.map { " · " + String(format: "%.1f A", Double($0) / 1000.0) + " asleep" } ?? "")")
+                    line("      \(dim("Output Limit:")) \(a) awake\(sp.sleepLimitMA.map { " · " + String(format: "%.1f A", Double($0) / 1000.0) + " asleep" } ?? "")")
                 }
             }
             if let device = port.connectedDevice {
