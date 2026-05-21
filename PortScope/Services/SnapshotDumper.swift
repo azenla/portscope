@@ -249,6 +249,7 @@ enum SnapshotDumper {
         case .thunderbolt(let s): return ["kind": "thunderbolt", "link_speed": s]
         case .usbOnly(let s): return ["kind": "usb_only", "speed": s as Any? ?? NSNull()]
         case .displayOnly: return ["kind": "display_only"]
+        case .charging(let w): return ["kind": "charging", "watts": w as Any? ?? NSNull()]
         case .unknown: return ["kind": "unknown"]
         }
     }
@@ -493,6 +494,7 @@ private final class PrettyPrinter {
         case .thunderbolt: return blue("⚡")
         case .usbOnly: return cyan("🔌")
         case .displayOnly: return magenta("🖥")
+        case .charging: return green("🔋")
         case .unknown: return yellow("?")
         }
     }

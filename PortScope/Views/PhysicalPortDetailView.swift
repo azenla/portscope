@@ -94,6 +94,7 @@ struct PhysicalPortDetailView: View {
         case .displayOnly: return "Display only"
         case .usbOnly: return "USB device"
         case .thunderbolt: return "Thunderbolt device"
+        case .charging: return "Charger connected"
         case .unknown: return "Link up"
         }
     }
@@ -213,6 +214,11 @@ struct PhysicalPortDetailView: View {
             return "A \(connectorName) device is connected without Thunderbolt."
         case .displayOnly:
             return "DisplayPort is the only active alt-mode on this port — typically a passive HDMI / DP adapter or a monitor connected without USB hub functionality."
+        case .charging(let w):
+            if let w, w > 0 {
+                return "A USB-PD power source is connected and negotiated a \(w) W contract. No data transports are active — this is a power-only sink (e.g. a wall charger)."
+            }
+            return "A USB-PD power source is connected. No data transports are active — this is a power-only sink (e.g. a wall charger)."
         case .unknown:
             return "Link is up but no device is reachable through the registry. Connection may still be negotiating."
         }
@@ -242,14 +248,22 @@ struct PhysicalPortDetailView: View {
 
     private var connectorCableCard: some View {
         let acc = port.accessory!
+        // `connection` (IOAccessoryUSBConnectString) reports the USB role only
+        // — a power-only charger reads "None" even when something is plugged
+        // in. Use `connectionActive` for the attached-vs-empty visual, and
+        // substitute a clearer label when the port is live but has no USB role.
+        let connectionLabel: String = {
+            if acc.connection.isConnected { return acc.connection.label }
+            return acc.connectionActive ? "Power only" : acc.connection.label
+        }()
         var rows: [InfoRow] = [
             InfoRow(label: "Connector",
                     value: acc.connector.label,
                     symbol: acc.connector.symbol),
             InfoRow(label: "Connection",
-                    value: acc.connection.label,
-                    symbol: acc.connection.isConnected ? "checkmark.circle.fill" : "circle.dashed",
-                    tint: acc.connection.isConnected ? .green : .secondary)
+                    value: connectionLabel,
+                    symbol: acc.connectionActive ? "checkmark.circle.fill" : "circle.dashed",
+                    tint: acc.connectionActive ? .green : .secondary)
         ]
         // Cable e-marker / plug-event / overcurrent counters are USB-PD
         // bookkeeping — only USB-C / MagSafe HPM accessories publish them.
@@ -278,7 +292,7 @@ struct PhysicalPortDetailView: View {
     private func cableTypeLabel(_ acc: PortAccessoryInfo) -> String {
         if acc.opticalCable { return "Optical" }
         if acc.activeCable { return "Active (powered e-marker)" }
-        if acc.connection.isConnected { return "Passive" }
+        if acc.connectionActive { return "Passive" }
         return "—"
     }
 

@@ -240,6 +240,10 @@ nonisolated enum PhysicalPortMode: Hashable {
     case thunderbolt(linkSpeed: UInt64)
     case usbOnly(speed: UInt64?)
     case displayOnly
+    /// Power-only sink: a USB-PD partner is supplying the Mac with no data
+    /// transports active (e.g. a wall charger). `watts` is the negotiated
+    /// contract rounded to whole watts when known.
+    case charging(watts: UInt64?)
     case unknown
 
     var label: String {
@@ -251,6 +255,9 @@ nonisolated enum PhysicalPortMode: Hashable {
             if let s, s > 0 { return usbSpeedShortLabel(s) }
             return "USB"
         case .displayOnly: return "Display"
+        case .charging(let w):
+            if let w, w > 0 { return "Charging · \(w) W" }
+            return "Charging"
         case .unknown: return "Unknown"
         }
     }
@@ -261,6 +268,7 @@ nonisolated enum PhysicalPortMode: Hashable {
         case .thunderbolt: return .blue
         case .usbOnly: return .teal
         case .displayOnly: return .pink
+        case .charging: return .green
         case .unknown: return .gray
         }
     }
@@ -271,6 +279,7 @@ nonisolated enum PhysicalPortMode: Hashable {
         case .thunderbolt: return "bolt.horizontal.circle.fill"
         case .usbOnly: return "cable.connector"
         case .displayOnly: return "display"
+        case .charging: return "bolt.fill"
         case .unknown: return "questionmark.circle"
         }
     }

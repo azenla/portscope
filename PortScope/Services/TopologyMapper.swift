@@ -111,6 +111,9 @@ extension PhysicalPort {
             if accessory?.carriesDisplay == true { parts.append("+ DP") }
             return parts.joined(separator: " · ")
         case .displayOnly: return "Display"
+        case .charging(let w):
+            if let w, w > 0 { return "Charging · \(w) W" }
+            return "Charging"
         case .unknown: return "Link up"
         }
     }
@@ -516,7 +519,17 @@ nonisolated enum TopologyMapper {
             return .usbOnly(speed: highest)
         }
         if acc.activeTransports.contains(.displayPort) { return .displayOnly }
-        if acc.connection.isConnected { return .unknown }
+        // Power-only PD partner — e.g. an Apple USB-C wall charger. The kernel
+        // sets `IOAccessoryUSBConnectString = "None"` (no USB role) but
+        // `ConnectionActive = true` and publishes a winning PD contract under
+        // `IOPortFeaturePowerIn`. Without this branch the port reads as Empty
+        // even while pulling tens of watts.
+        if let winning = acc.usbPD?.winning {
+            return .charging(watts: winning.maxPowerMW / 1000)
+        }
+        // Something is detected but we can't tell what — fall back to Unknown
+        // when the kernel says the port is live, else Empty.
+        if acc.connectionActive { return .unknown }
         return .empty
     }
 
