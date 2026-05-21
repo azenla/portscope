@@ -11,10 +11,13 @@ import SwiftUI
 
 struct PCIDeviceView: View {
     let node: PCINode
+    let ancestors: [TBNode]
+    let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                BreadcrumbBar(ancestors: ancestors, onNavigate: onNavigate)
                 PCIHero(node: node)
 
                 StatGrid(stats: statRows())

@@ -57,13 +57,17 @@ struct ContentView: View {
             } else if let display = vm.snapshot.displays.displays.first(where: { $0.id == sel }) {
                 DisplayDetailView(display: display).id(sel)
             } else if let pciNode = findPCINode(id: sel, in: vm.snapshot.pcie.roots) {
-                PCIDeviceView(node: pciNode).id(sel)
+                PCIDeviceView(node: pciNode,
+                              ancestors: vm.ancestors(of: sel),
+                              onNavigate: { vm.select($0) })
+                    .id(sel)
             } else if let node = vm.node(for: sel) {
                 DetailView(
                     node: node,
                     onNavigate: { vm.select($0) },
                     parentLookup: { vm.parent(of: $0) },
-                    tbContextForUSB: { id in vm.usbSnapshot.tbContext[id] }
+                    tbContextForUSB: { id in vm.usbSnapshot.tbContext[id] },
+                    ancestors: vm.ancestors(of: sel)
                 )
             } else {
                 emptyState

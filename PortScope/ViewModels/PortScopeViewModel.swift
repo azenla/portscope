@@ -141,6 +141,24 @@ final class PortScopeViewModel: ObservableObject {
         return nil
     }
 
+    /// Ancestor chain of `id`, oldest-first, suitable for a breadcrumb.
+    /// Filters out `.other` kext-wrapper nodes (USB port wrappers,
+    /// `IOServicePort` etc.) so the chain shows only meaningful entities.
+    /// `safety` bounds the walk in case a parent loop ever sneaks in.
+    func ancestors(of id: TBNodeID) -> [TBNode] {
+        var chain: [TBNode] = []
+        var current = parent(of: id)
+        var safety = 32
+        while let p = current, safety > 0 {
+            if p.kind != .other {
+                chain.append(p)
+            }
+            current = parent(of: p.id)
+            safety -= 1
+        }
+        return chain.reversed()
+    }
+
     private func exists(id: TBNodeID) -> Bool {
         if PhysicalPortSelector.isPortID(id) { return true }
         if MagSafeSelector.isMagSafeID(id) { return snapshot.internalHardware.magsafe != nil }

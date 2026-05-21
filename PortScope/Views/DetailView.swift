@@ -14,10 +14,14 @@ struct DetailView: View {
     let parentLookup: (TBNodeID) -> TBNode?
     /// Looks up the TB switch ancestor for a USB controller, when applicable.
     let tbContextForUSB: (TBNodeID) -> TBNodeID?
+    /// Ancestor chain (oldest-first, `.other` wrappers filtered) for the
+    /// breadcrumb above the hero header.
+    let ancestors: [TBNode]
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                BreadcrumbBar(ancestors: ancestors, onNavigate: onNavigate)
                 HeroHeader(node: node)
                 summary(for: node)
                 DeveloperDisclosure(node: node)
