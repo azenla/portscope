@@ -351,9 +351,15 @@ private struct PortsByConnector: View {
     }
 
     private func grouped() -> [Group] {
+        // MagSafe is rendered separately by `MagSafeRow` at the top of the
+        // Physical Ports section, so omit it here to avoid duplicate rows.
+        // (`TopologyMapper.physicalPorts` includes it so the CLI dumper and
+        // any future unified view see a single port list.)
         let usbC = ports.filter { $0.connector == .usbC }
         let usbA = ports.filter { $0.connector == .usbA }
-        let other = ports.filter { $0.connector != .usbC && $0.connector != .usbA }
+        let other = ports.filter {
+            $0.connector != .usbC && $0.connector != .usbA && $0.connector != .magsafe
+        }
         var out: [Group] = []
         if !usbC.isEmpty { out.append(Group(title: "USB-C", ports: usbC)) }
         if !usbA.isEmpty { out.append(Group(title: "USB-A", ports: usbA)) }

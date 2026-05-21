@@ -288,7 +288,34 @@ nonisolated enum TopologyMapper {
                 sourcePower: tree.power
             ))
         }
-        return out
+
+        // MagSafe pass: power-only receptacle. No TB, no USB tree — the only
+        // signal is `usbPD.winning` when a charger is attached. Prepend so it
+        // sorts above the data ports in CLI output, matching the GUI sidebar
+        // which renders MagSafe at the top of Physical Ports.
+        let magsafeAccessories = snapshot.accessories.filter {
+            if case .magsafe = $0.connector { return true }
+            return false
+        }
+        var magsafePorts: [PhysicalPort] = []
+        for acc in magsafeAccessories {
+            let stub = synthLane(accessoryID: acc.id)
+            let mode = modeFromAccessory(acc, usbDevices: [])
+            magsafePorts.append(PhysicalPort(
+                number: acc.portNumber,
+                id: acc.id,
+                connector: .magsafe,
+                laneAdapter: stub, linkLane: nil,
+                controller: stub,
+                connectedDevice: nil, mode: mode,
+                attachedUSBDevices: [],
+                usbDeviceRoots: [],
+                tunnels: [],
+                accessory: acc,
+                sourcePower: nil
+            ))
+        }
+        return magsafePorts + out
     }
 
     /// Per-port flat list of every USB device reachable through this port,
