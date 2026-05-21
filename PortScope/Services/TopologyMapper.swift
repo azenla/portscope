@@ -10,14 +10,19 @@
 
 import Foundation
 
-/// One physical USB-C / Thunderbolt port on the Mac. Backed by the
-/// controller's "active" lane adapter (or port 1 if no device is plugged in).
+/// One physical chassis receptacle on the Mac — usually a USB-C / Thunderbolt
+/// port backed by a TB lane adapter, but also covers built-in USB-A jacks on
+/// desktops (no TB lane, just the USB host controller behind them).
 struct PhysicalPort {
     let number: Int
     let id: TBNodeID
+    /// What kind of receptacle this is. Drives sidebar grouping and the
+    /// detail-view title. USB-C is the default; USB-A is set when the port
+    /// is built from a `Port-USB-A@N` IOPort accessory.
+    let connector: PortConnectorType
     /// Host-side lane adapter on the root switch. Use this for static info
     /// like link speed / width (the link negotiates the same numbers on both
-    /// sides).
+    /// sides). For non-TB ports (USB-A) this is a synthetic stub.
     let laneAdapter: TBNode
     /// Lane port immediately above the connected switch — the "peer lane".
     /// When a device is connected, this is where the kernel aggregates
@@ -153,7 +158,9 @@ nonisolated enum TopologyMapper {
                 let usb = usbByPort[portNumber]
                 return PhysicalPort(
                     number: portNumber,
-                    id: p.id, laneAdapter: p.laneAdapter, linkLane: p.linkLane,
+                    id: p.id,
+                    connector: .usbC,
+                    laneAdapter: p.laneAdapter, linkLane: p.linkLane,
                     controller: p.controller,
                     connectedDevice: p.connectedDevice, mode: p.mode,
                     attachedUSBDevices: usb?.flat ?? p.attachedUSBDevices,
@@ -200,7 +207,9 @@ nonisolated enum TopologyMapper {
                 let refinedMode = refineMode(tb.mode, with: acc, usbDevices: usb.flat)
                 out.append(PhysicalPort(
                     number: acc.portNumber,
-                    id: tb.id, laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
+                    id: tb.id,
+                    connector: acc.connector,
+                    laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
                     controller: tb.controller,
                     connectedDevice: tb.connectedDevice, mode: refinedMode,
                     attachedUSBDevices: usb.flat.isEmpty ? tb.attachedUSBDevices : usb.flat,
@@ -215,7 +224,9 @@ nonisolated enum TopologyMapper {
                 let stub = synthLane(accessoryID: acc.id)
                 out.append(PhysicalPort(
                     number: acc.portNumber,
-                    id: acc.id, laneAdapter: stub, linkLane: nil,
+                    id: acc.id,
+                    connector: acc.connector,
+                    laneAdapter: stub, linkLane: nil,
                     controller: stub,
                     connectedDevice: nil, mode: modeFromAccessory(acc, usbDevices: usb.flat),
                     attachedUSBDevices: usb.flat,
@@ -232,7 +243,9 @@ nonisolated enum TopologyMapper {
             let usb = usbByPort[portNumber]
             out.append(PhysicalPort(
                 number: portNumber,
-                id: tb.id, laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
+                id: tb.id,
+                connector: .usbC,
+                laneAdapter: tb.laneAdapter, linkLane: tb.linkLane,
                 controller: tb.controller,
                 connectedDevice: tb.connectedDevice, mode: tb.mode,
                 attachedUSBDevices: usb?.flat ?? tb.attachedUSBDevices,
@@ -240,6 +253,36 @@ nonisolated enum TopologyMapper {
                 tunnels: tb.tunnels,
                 accessory: nil,
                 sourcePower: usb?.power
+            ))
+        }
+
+        // USB-A pass: each `Port-USB-A@N` IOPort accessory becomes one
+        // physical port. We cross-link USB devices and per-port power limits
+        // by matching the xHCI port wrappers' `UsbIOPort` property against the
+        // accessory's IORegistry path. SS + HS companion wrappers share the
+        // same `UsbIOPort`, so they merge into a single receptacle naturally.
+        let usbAByPath = usbTreeByAccessoryPath(in: snapshot.usb)
+        let usbAAccessories = snapshot.accessories.filter {
+            if case .usbA = $0.connector { return true }
+            return false
+        }
+        for acc in usbAAccessories {
+            let tree = (acc.registryPath.flatMap { usbAByPath[$0] })
+                ?? (flat: [], roots: [], power: nil, controller: nil)
+            let stub = synthLane(accessoryID: acc.id)
+            let mode = modeFromAccessory(acc, usbDevices: tree.flat)
+            out.append(PhysicalPort(
+                number: acc.portNumber,
+                id: acc.id,
+                connector: .usbA,
+                laneAdapter: stub, linkLane: nil,
+                controller: tree.controller ?? stub,
+                connectedDevice: nil, mode: mode,
+                attachedUSBDevices: tree.flat,
+                usbDeviceRoots: tree.roots,
+                tunnels: [],
+                accessory: acc,
+                sourcePower: tree.power
             ))
         }
         return out
@@ -289,6 +332,64 @@ nonisolated enum TopologyMapper {
                                   sinks: sinks,
                                   outputProfile: nil)
             out[portNumber] = (flat: flat, roots: roots, power: power)
+        }
+        return out
+    }
+
+    /// Build a per-USB-A-receptacle map keyed by the IOAccessory IOPort's
+    /// IORegistry path (e.g. `"IOService:/AppleARMPE/port-usb-a-1/Port-USB-A@1"`).
+    /// External xHCI controllers (ASMedia ASM3142, etc.) expose one wrapper
+    /// per protocol per receptacle (SS + HS companion); both wrappers carry
+    /// the same `UsbIOPort` property pointing at the accessory entry, so
+    /// merging on that string coalesces the pair back into one physical port.
+    /// `usb-drd` (Thunderbolt USB-C) and `usb-auss` (internal SoC USB)
+    /// controllers are skipped — their receptacles are already accounted for
+    /// by the USB-C / TB topology pass.
+    private static func usbTreeByAccessoryPath(in snapshot: USBSnapshot) -> [String: (flat: [TBNode], roots: [TBNode], power: PortSourcePower?, controller: TBNode?)] {
+        var flatByPath: [String: [TBNode]] = [:]
+        var rootsByPath: [String: [TBNode]] = [:]
+        var wakeByPath: [String: UInt64] = [:]
+        var sleepByPath: [String: UInt64] = [:]
+        var controllerByPath: [String: TBNode] = [:]
+        for controller in snapshot.controllers {
+            let nameMatch = controller.properties["IONameMatch"]?.asString
+                ?? controller.properties["IONameMatched"]?.asString
+                ?? ""
+            if nameMatch.hasPrefix("usb-drd") || nameMatch.hasPrefix("usb-auss") { continue }
+            for wrapper in controller.children where wrapper.kind == .other {
+                let cls = wrapper.className
+                guard cls.contains("XHCIPort") else { continue }
+                guard let path = wrapper.properties["UsbIOPort"]?.asString,
+                      !path.isEmpty else { continue }
+                flatByPath[path, default: []] += allUSBDevices(under: wrapper)
+                rootsByPath[path, default: []] += topLevelUSBDevices(under: wrapper)
+                if let w = wrapper.properties["kUSBWakePortCurrentLimit"]?.asUInt {
+                    wakeByPath[path] = max(wakeByPath[path] ?? 0, w)
+                }
+                if let s = wrapper.properties["kUSBSleepPortCurrentLimit"]?.asUInt {
+                    sleepByPath[path] = max(sleepByPath[path] ?? 0, s)
+                }
+                controllerByPath[path] = controller
+            }
+        }
+        var out: [String: (flat: [TBNode], roots: [TBNode], power: PortSourcePower?, controller: TBNode?)] = [:]
+        let allPaths = Set(flatByPath.keys)
+            .union(rootsByPath.keys)
+            .union(wakeByPath.keys)
+            .union(sleepByPath.keys)
+        for path in allPaths {
+            let flat = flatByPath[path] ?? []
+            let roots = rootsByPath[path] ?? []
+            let sinks = flat.compactMap(sinkConsumer(from:))
+            let wake = wakeByPath[path]
+            let sleep = sleepByPath[path]
+            let power: PortSourcePower? = (wake == nil && sleep == nil && sinks.isEmpty)
+                ? nil
+                : PortSourcePower(wakeLimitMA: wake,
+                                  sleepLimitMA: sleep,
+                                  sinks: sinks,
+                                  outputProfile: nil)
+            out[path] = (flat, roots, power, controllerByPath[path])
         }
         return out
     }
@@ -457,6 +558,7 @@ nonisolated enum TopologyMapper {
         return PhysicalPort(
             number: number,
             id: lane.id,
+            connector: accessory?.connector ?? .usbC,
             laneAdapter: lane,
             linkLane: linkLane,
             controller: controller,

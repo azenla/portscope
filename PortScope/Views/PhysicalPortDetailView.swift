@@ -81,7 +81,7 @@ struct PhysicalPortDetailView: View {
     }
 
     private var portTitle: String {
-        "USB-C Port \(port.number)"
+        "\(port.connector.label) Port \(port.number)"
     }
 
     private var subheadline: String {
@@ -101,6 +101,10 @@ struct PhysicalPortDetailView: View {
     // MARK: - Stats grid
 
     private var stats: some View {
+        StatGrid(stats: buildStats())
+    }
+
+    private func buildStats() -> [Stat] {
         // Link speed / width / capacity all describe the negotiated link and
         // are present on both ends of it. Read them from `bandwidthLane`
         // (peer side when connected) so the numbers match the dock's
@@ -113,38 +117,48 @@ struct PhysicalPortDetailView: View {
         let width = lane.properties["Current Link Width"]?.asUInt
             ?? port.laneAdapter.properties["Current Link Width"]?.asUInt
             ?? 0
-        // Only show link capacity when a link is actually up. The host's root
-        // lane advertises potential capacity even when nothing is plugged in,
-        // which would be misleading on empty ports.
         let bw = speed > 0 ? (lane.properties["Link Bandwidth"]?.asUInt ?? 0) : 0
         let acc = port.accessory
 
-        return StatGrid(stats: [
+        var stats: [Stat] = [
             Stat(label: "Operating Mode",
                  value: port.mode.label,
-                 symbol: port.mode.symbol),
-            Stat(label: "Link Speed",
-                 value: speed > 0 ? tbLinkSpeedLabel(speed) : "Inactive",
-                 symbol: "antenna.radiowaves.left.and.right"),
-            Stat(label: "Lane Width",
-                 value: width > 0 ? "\(width) lanes" : "—",
-                 symbol: "arrow.left.and.right"),
-            Stat(label: "Link Capacity",
-                 value: bw > 0 ? tbBandwidthLabel(bw) : "—",
-                 symbol: "gauge.with.dots.needle.67percent"),
-            Stat(label: "Power In",
-                 value: acc?.usbPD?.winning?.powerLabel ?? "—",
-                 symbol: "bolt.fill"),
-            Stat(label: "Plug Orientation",
-                 value: acc?.plugOrientation.label ?? "—",
-                 symbol: acc?.plugOrientation.symbol ?? "arrow.up.arrow.down"),
-            Stat(label: "TB Devices",
-                 value: port.connectedDevice == nil ? "0" : "\(countRouters(port.connectedDevice!))",
-                 symbol: "shippingbox"),
-            Stat(label: "USB Devices",
-                 value: "\(port.attachedUSBDevices.count)",
-                 symbol: "cable.connector")
-        ])
+                 symbol: port.mode.symbol)
+        ]
+        // Lane / link stats only make sense when a Thunderbolt lane adapter
+        // is backing this port. USB-A jacks (no TB lane) get a different mix.
+        if hasRealLaneAdapter {
+            stats.append(contentsOf: [
+                Stat(label: "Link Speed",
+                     value: speed > 0 ? tbLinkSpeedLabel(speed) : "Inactive",
+                     symbol: "antenna.radiowaves.left.and.right"),
+                Stat(label: "Lane Width",
+                     value: width > 0 ? "\(width) lanes" : "—",
+                     symbol: "arrow.left.and.right"),
+                Stat(label: "Link Capacity",
+                     value: bw > 0 ? tbBandwidthLabel(bw) : "—",
+                     symbol: "gauge.with.dots.needle.67percent")
+            ])
+        }
+        // Power In and Plug Orientation come from USB-PD / HPM — neither is
+        // published for USB-A IOPort accessories.
+        if port.connector != .usbA {
+            stats.append(contentsOf: [
+                Stat(label: "Power In",
+                     value: acc?.usbPD?.winning?.powerLabel ?? "—",
+                     symbol: "bolt.fill"),
+                Stat(label: "Plug Orientation",
+                     value: acc?.plugOrientation.label ?? "—",
+                     symbol: acc?.plugOrientation.symbol ?? "arrow.up.arrow.down"),
+                Stat(label: "TB Devices",
+                     value: port.connectedDevice == nil ? "0" : "\(countRouters(port.connectedDevice!))",
+                     symbol: "shippingbox")
+            ])
+        }
+        stats.append(Stat(label: "USB Devices",
+                          value: "\(port.attachedUSBDevices.count)",
+                          symbol: "cable.connector"))
+        return stats
     }
 
     // MARK: - "What's happening on this port" card
@@ -186,10 +200,17 @@ struct PhysicalPortDetailView: View {
                 : ""
             return "A Thunderbolt / USB4 device is connected\(speedPart)."
         case .usbOnly(let s):
+            let connectorName = port.connector.label
             if let s, s > 0 {
-                return "A USB-C device is connected without Thunderbolt; it negotiated \(usbSpeedLabel(s))."
+                if port.connector == .usbA {
+                    return "A \(connectorName) device is connected at \(usbSpeedLabel(s))."
+                }
+                return "A \(connectorName) device is connected without Thunderbolt; it negotiated \(usbSpeedLabel(s))."
             }
-            return "A USB-C device is connected without Thunderbolt."
+            if port.connector == .usbA {
+                return "A \(connectorName) device is connected."
+            }
+            return "A \(connectorName) device is connected without Thunderbolt."
         case .displayOnly:
             return "DisplayPort is the only active alt-mode on this port — typically a passive HDMI / DP adapter or a monitor connected without USB hub functionality."
         case .unknown:
@@ -221,28 +242,34 @@ struct PhysicalPortDetailView: View {
 
     private var connectorCableCard: some View {
         let acc = port.accessory!
-        let rows: [InfoRow] = [
+        var rows: [InfoRow] = [
             InfoRow(label: "Connector",
                     value: acc.connector.label,
                     symbol: acc.connector.symbol),
             InfoRow(label: "Connection",
                     value: acc.connection.label,
                     symbol: acc.connection.isConnected ? "checkmark.circle.fill" : "circle.dashed",
-                    tint: acc.connection.isConnected ? .green : .secondary),
-            InfoRow(label: "Cable Type",
-                    value: cableTypeLabel(acc),
-                    symbol: "cable.connector"),
-            InfoRow(label: "Cable E-Marker",
-                    value: acc.cableLabel ?? "Not reported",
-                    symbol: "barcode"),
-            InfoRow(label: "Plug Events (since boot)",
-                    value: "\(acc.plugEventCount)",
-                    symbol: "arrow.up.arrow.down.circle"),
-            InfoRow(label: "Overcurrent Events",
-                    value: "\(acc.overcurrentCount)",
-                    symbol: "exclamationmark.triangle",
-                    tint: acc.overcurrentCount > 0 ? .red : .secondary)
+                    tint: acc.connection.isConnected ? .green : .secondary)
         ]
+        // Cable e-marker / plug-event / overcurrent counters are USB-PD
+        // bookkeeping — only USB-C / MagSafe HPM accessories publish them.
+        if port.connector != .usbA {
+            rows.append(contentsOf: [
+                InfoRow(label: "Cable Type",
+                        value: cableTypeLabel(acc),
+                        symbol: "cable.connector"),
+                InfoRow(label: "Cable E-Marker",
+                        value: acc.cableLabel ?? "Not reported",
+                        symbol: "barcode"),
+                InfoRow(label: "Plug Events (since boot)",
+                        value: "\(acc.plugEventCount)",
+                        symbol: "arrow.up.arrow.down.circle"),
+                InfoRow(label: "Overcurrent Events",
+                        value: "\(acc.overcurrentCount)",
+                        symbol: "exclamationmark.triangle",
+                        tint: acc.overcurrentCount > 0 ? .red : .secondary)
+            ])
+        }
         return SectionCard(title: "Connector & Cable", symbol: "cable.connector") {
             InfoRowsView(rows: rows)
         }
@@ -467,10 +494,12 @@ struct PhysicalPortDetailView: View {
     private var relatedCard: some View {
         SectionCard(title: "Jump to", symbol: "arrow.up.right.square") {
             HStack(spacing: 8) {
-                Button {
-                    onNavigate(port.laneAdapter.id)
-                } label: {
-                    Label("Lane adapter", systemImage: "bolt.horizontal")
+                if hasRealLaneAdapter {
+                    Button {
+                        onNavigate(port.laneAdapter.id)
+                    } label: {
+                        Label("Lane adapter", systemImage: "bolt.horizontal")
+                    }
                 }
                 Button {
                     onNavigate(port.controller.id)
@@ -480,6 +509,13 @@ struct PhysicalPortDetailView: View {
                 Spacer()
             }
         }
+    }
+
+    /// True iff `laneAdapter` is a real IORegistry node rather than a synthetic
+    /// stub (USB-A ports and HPM-only fallbacks don't have a Thunderbolt lane
+    /// to jump to, so the button would dead-end in the empty state).
+    private var hasRealLaneAdapter: Bool {
+        !port.laneAdapter.className.isEmpty
     }
 
     private func countRouters(_ device: ConnectedDevice) -> Int {

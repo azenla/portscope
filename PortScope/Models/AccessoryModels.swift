@@ -12,15 +12,20 @@
 import Foundation
 import SwiftUI
 
-/// Receptacle type reported by `PortTypeDescription`.
+/// Receptacle type reported by `PortTypeDescription`. Apple's
+/// `IOAccessoryManager` publishes one of these strings on every chassis
+/// receptacle it manages (USB-C on Apple Silicon, USB-A on desktops that
+/// ship with rear A-jacks, MagSafe 3 on the relevant laptops).
 nonisolated enum PortConnectorType: Hashable {
     case usbC
+    case usbA
     case magsafe
     case other(String)
 
     init(_ description: String?) {
         switch description {
         case "USB-C": self = .usbC
+        case "USB-A": self = .usbA
         case "MagSafe 3": self = .magsafe
         case let .some(d): self = .other(d)
         case .none: self = .other("Unknown")
@@ -30,6 +35,7 @@ nonisolated enum PortConnectorType: Hashable {
     var label: String {
         switch self {
         case .usbC: return "USB-C"
+        case .usbA: return "USB-A"
         case .magsafe: return "MagSafe 3"
         case .other(let s): return s
         }
@@ -38,6 +44,7 @@ nonisolated enum PortConnectorType: Hashable {
     var symbol: String {
         switch self {
         case .usbC: return "cable.connector"
+        case .usbA: return "cable.connector.horizontal"
         case .magsafe: return "powerplug.fill"
         case .other: return "questionmark.circle"
         }
@@ -265,6 +272,13 @@ nonisolated struct PortAccessoryInfo: Identifiable, Hashable {
     /// Raw IORegistry properties of the `AppleHPMInterfaceType10` entry, kept
     /// for the Developer details disclosure.
     let registryProperties: [String: IORegValue]
+    /// IOService-plane registry path of the accessory entry (e.g.
+    /// `"IOService:/AppleARMPE/port-usb-a-1/Port-USB-A@1"`). The xHCI port
+    /// wrappers below external USB controllers carry a `UsbIOPort` property
+    /// whose string value matches this path — that's how we attribute USB
+    /// devices to a USB-A receptacle. Nil only if `IORegistryEntryGetPath`
+    /// failed (shouldn't happen in practice).
+    let registryPath: String?
 
     /// Whether this port is currently carrying Thunderbolt / USB4 (CIO transport).
     var carriesThunderbolt: Bool { activeTransports.contains(.cio) }

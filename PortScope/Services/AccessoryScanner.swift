@@ -31,10 +31,20 @@ nonisolated enum AccessoryScanner {
         "AppleTCControllerType11"
     ]
 
-    /// Find every HPM interface (USB-C + MagSafe) and turn it into a
-    /// `PortAccessoryInfo`. The `connector` field on each entry distinguishes
-    /// them — callers that only care about USB-C ports should filter on
-    /// `connector == .usbC`. Sorted by `PortNumber` ascending.
+    /// Built-in receptacles that `IOAccessoryManager` publishes as plain
+    /// `IOPort` instances rather than HPM/TC controllers. Each one carries
+    /// the same `PortNumber` / `Transports*` / `ConnectionActive` shape but
+    /// none of the USB-PD / e-marker / orientation children that USB-C
+    /// receptacles have, so the resulting `PortAccessoryInfo` is sparser.
+    /// Right now the only example we know of is USB-A on rear-jack-equipped
+    /// desktops (Mac mini M2 Pro, etc.).
+    private static let ioPortPlainTypes: Set<String> = ["USB-A"]
+
+    /// Find every accessory-managed receptacle (USB-C + MagSafe via HPM/TC
+    /// classes, USB-A via plain `IOPort`) and turn each into a
+    /// `PortAccessoryInfo`. The `connector` field distinguishes them — callers
+    /// that only care about USB-C ports should filter on `connector == .usbC`.
+    /// Sorted by connector family then by `PortNumber` ascending.
     static func scan() -> [PortAccessoryInfo] {
         var seen: Set<UInt64> = []
         var out: [PortAccessoryInfo] = []
@@ -50,15 +60,40 @@ nonisolated enum AccessoryScanner {
                 out.append(port)
             }
         }
+
+        // Plain-`IOPort` receptacles (USB-A, …). `IOServiceMatching("IOPort")`
+        // will also drag in HPM/TC subclasses; the className gate plus the
+        // entry-ID dedup keep us from double-counting.
+        for svc in IORegBridge.services(matchingClass: "IOPort") {
+            defer { IOObjectRelease(svc) }
+            guard let id = IORegBridge.entryID(of: svc), !seen.contains(id) else { continue }
+            let actualClass = IORegBridge.className(of: svc) ?? ""
+            guard actualClass == "IOPort" else { continue }
+            let props = IORegBridge.properties(of: svc)
+            let portType = props["PortTypeDescription"]?.asString ?? ""
+            guard ioPortPlainTypes.contains(portType) else { continue }
+            guard props["IOPersonalityPublisher"]?.asString == "com.apple.iokit.IOAccessoryManager"
+            else { continue }
+            seen.insert(id)
+
+            guard let port = makePort(entry: svc, id: id, props: props) else { continue }
+            out.append(port)
+        }
+
         out.sort {
-            // Within a connector type, sort by physical port number. USB-C
-            // receptacles come first since they're the more common case.
+            // USB-C first, then USB-A, then everything else. Within a connector
+            // family, sort by physical port number.
             if $0.connector != $1.connector {
-                switch ($0.connector, $1.connector) {
-                case (.usbC, _): return true
-                case (_, .usbC): return false
-                default: break
+                func rank(_ c: PortConnectorType) -> Int {
+                    switch c {
+                    case .usbC: return 0
+                    case .usbA: return 1
+                    case .magsafe: return 2
+                    case .other: return 3
+                    }
                 }
+                let r0 = rank($0.connector), r1 = rank($1.connector)
+                if r0 != r1 { return r0 < r1 }
             }
             return $0.portNumber < $1.portNumber
         }
@@ -70,19 +105,39 @@ nonisolated enum AccessoryScanner {
                                  props: [String: IORegValue]) -> PortAccessoryInfo? {
         guard let portNumber = props["PortNumber"]?.asUInt else { return nil }
 
+        let connector = PortConnectorType(props["PortTypeDescription"]?.asString)
         let supported = parseTransports(props["TransportsSupported"])
         let provisioned = parseTransports(props["TransportsProvisioned"])
         let active = parseTransports(props["TransportsActive"])
 
-        let pd = readUSBPDProfile(under: entry)
+        // USB-PD lives under `IOPortFeaturePowerIn/Out` children, which only
+        // exist on USB-C / MagSafe HPM entries. USB-A IOPort entries have no
+        // such children — skip the descent so we don't waste IORegistry walks.
+        let pd: USBPDProfile? = {
+            switch connector {
+            case .usbC, .magsafe: return readUSBPDProfile(under: entry)
+            default: return nil
+            }
+        }()
+
+        // USB-A `IOPort` accessories don't publish `IOAccessoryUSBConnectString`
+        // or `IOAccessoryDetect`. Derive both from `ConnectionActive` so the
+        // sidebar's "empty / connected" colouring still works for USB-A.
+        let connectionActive = props["ConnectionActive"]?.asBool ?? false
+        let detected = props["IOAccessoryDetect"]?.asBool ?? connectionActive
+        let connectionRaw = props["IOAccessoryUSBConnectString"]?.asString
+        let connection: AccessoryConnection = {
+            if let connectionRaw { return AccessoryConnection(connectionRaw) }
+            return connectionActive ? .device : .none
+        }()
 
         return PortAccessoryInfo(
             id: TBNodeID(raw: id),
             portNumber: Int(portNumber),
-            connector: PortConnectorType(props["PortTypeDescription"]?.asString),
-            connection: AccessoryConnection(props["IOAccessoryUSBConnectString"]?.asString),
-            connectionActive: props["ConnectionActive"]?.asBool ?? false,
-            detected: props["IOAccessoryDetect"]?.asBool ?? false,
+            connector: connector,
+            connection: connection,
+            connectionActive: connectionActive,
+            detected: detected,
             plugOrientation: PlugOrientation(props["PlugOrientation"]?.asUInt),
             supportedTransports: supported,
             provisionedTransports: provisioned,
@@ -98,7 +153,8 @@ nonisolated enum AccessoryScanner {
             cableProductID: readDataAsUInt(props["SOPPID"]),
             cableManufacturer: props["SOPMfgString"]?.asString,
             usbPD: pd,
-            registryProperties: props
+            registryProperties: props,
+            registryPath: IORegBridge.path(of: entry)
         )
     }
 

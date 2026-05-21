@@ -174,6 +174,8 @@ enum SnapshotDumper {
         var out: [String: Any] = [
             "number": p.number,
             "id": String(format: "0x%llX", p.id.raw),
+            "connector": "\(p.connector)",
+            "connector_label": p.connector.label,
             "status_label": p.statusLabel,
             "mode": modeToJSON(p.mode),
             "lane_adapter_id": String(format: "0x%llX", p.laneAdapter.id.raw),
@@ -439,7 +441,7 @@ private final class PrettyPrinter {
         }
         for port in ports {
             let badge = portBadge(port.mode)
-            let title = "USB-C Port \(port.number)"
+            let title = "\(port.connector.label) Port \(port.number)"
             line("   \(badge) \(bold(title))  \(dim(port.statusLabel))")
             if let acc = port.accessory {
                 let active = Array(acc.activeTransports).map { "\($0.label)" }.sorted().joined(separator: ", ")

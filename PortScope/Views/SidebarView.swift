@@ -47,9 +47,7 @@ struct SidebarView: View {
                         .foregroundStyle(.secondary)
                         .font(.callout)
                 } else {
-                    ForEach(ports, id: \.id) { port in
-                        PortBranch(port: port, expanded: $expanded)
-                    }
+                    PortsByConnector(ports: ports, expanded: $expanded)
                 }
             }
 
@@ -317,6 +315,46 @@ struct SidebarView: View {
 
 // MARK: - Physical Ports section
 
+/// Render the physical ports list split into connector-family subsections
+/// (USB-C, USB-A, …). Subsection headers only appear when more than one
+/// family is present, so the common single-family case stays clean.
+private struct PortsByConnector: View {
+    let ports: [PhysicalPort]
+    @Binding var expanded: Set<TBNodeID>
+
+    var body: some View {
+        let groups = grouped()
+        ForEach(groups, id: \.title) { group in
+            if groups.count > 1 {
+                Text(group.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .padding(.top, 4)
+            }
+            ForEach(group.ports, id: \.id) { port in
+                PortBranch(port: port, expanded: $expanded)
+            }
+        }
+    }
+
+    private struct Group {
+        let title: String
+        let ports: [PhysicalPort]
+    }
+
+    private func grouped() -> [Group] {
+        let usbC = ports.filter { $0.connector == .usbC }
+        let usbA = ports.filter { $0.connector == .usbA }
+        let other = ports.filter { $0.connector != .usbC && $0.connector != .usbA }
+        var out: [Group] = []
+        if !usbC.isEmpty { out.append(Group(title: "USB-C", ports: usbC)) }
+        if !usbA.isEmpty { out.append(Group(title: "USB-A", ports: usbA)) }
+        if !other.isEmpty { out.append(Group(title: "Expanded Ports", ports: other)) }
+        return out
+    }
+}
+
 private struct PortBranch: View {
     let port: PhysicalPort
     @Binding var expanded: Set<TBNodeID>
@@ -394,7 +432,7 @@ private struct PortRow: View {
                 .foregroundStyle(port.mode.color)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text("USB-C Port \(port.number)")
+                Text("\(port.connector.label) Port \(port.number)")
                 Text(port.statusLabel)
                     .font(.caption2)
                     .foregroundStyle(.secondary)

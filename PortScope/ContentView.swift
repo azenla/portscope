@@ -20,8 +20,8 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         if let sel = vm.selection {
-            if let portNumber = PhysicalPortSelector.portNumber(sel),
-               let port = TopologyMapper.physicalPorts(from: vm.snapshot).first(where: { $0.number == portNumber }) {
+            if PhysicalPortSelector.isPortID(sel),
+               let port = TopologyMapper.physicalPorts(from: vm.snapshot).first(where: { PhysicalPortSelector.id(for: $0).raw == sel.raw }) {
                 PhysicalPortDetailView(port: port,
                                        onNavigate: { vm.select($0) })
                 .id(sel)

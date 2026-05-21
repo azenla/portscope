@@ -205,13 +205,16 @@ enum BluetoothSelector {
 }
 
 /// Synthetic IDs used to select a "physical port" row in the sidebar without
-/// colliding with real IORegistry entry IDs.
+/// colliding with real IORegistry entry IDs. The lower 32 bits encode the
+/// receptacle: bits 24..31 = connector family code (so USB-C port 1 and
+/// USB-A port 1 don't share an ID), bits 0..23 = chassis port number.
 enum PhysicalPortSelector {
-    /// High bit reserved for synthetic IDs.
     private static let portMask: UInt64 = 0xC0DE_C0DE_0000_0000
 
     static func id(for port: PhysicalPort) -> TBNodeID {
-        TBNodeID(raw: portMask | UInt64(port.number))
+        let connector = connectorCode(port.connector) << 24
+        let number = UInt64(port.number) & 0xFFFFFF
+        return TBNodeID(raw: portMask | connector | number)
     }
 
     static func isPortID(_ id: TBNodeID) -> Bool {
@@ -220,6 +223,15 @@ enum PhysicalPortSelector {
 
     static func portNumber(_ id: TBNodeID) -> Int? {
         guard isPortID(id) else { return nil }
-        return Int(id.raw & 0xFFFF_FFFF)
+        return Int(id.raw & 0xFFFFFF)
+    }
+
+    private static func connectorCode(_ c: PortConnectorType) -> UInt64 {
+        switch c {
+        case .usbC: return 0
+        case .usbA: return 1
+        case .magsafe: return 2
+        case .other: return 3
+        }
     }
 }
