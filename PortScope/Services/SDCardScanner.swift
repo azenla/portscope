@@ -2,23 +2,25 @@
 //  SDCardScanner.swift
 //  PortScope
 //
-//  Surface the built-in SD card reader as a physical port — but only when
-//  a card is actually inserted, mirroring the user's intuition that an
-//  empty SD slot is uninteresting.
+//  Surface the built-in SD card reader as a physical port whenever the
+//  chassis has one. The receptacle is rendered the same way USB-C / USB-A
+//  are: the row appears as long as the hardware exists; card-present is
+//  reflected in the mode (empty vs. card inserted).
 //
 //  The reader on Apple Silicon laptops sits behind a dedicated PCIe lane
 //  (`pcie-sdreader` device-tree name) on the SoC's PCIe complex. When a
 //  card goes in, the storage stack publishes `IOMedia` nodes underneath
-//  the reader's driver. Card-out: no media. That presence flag is the
-//  authoritative "is something here right now" signal we use.
+//  the reader's driver — that's how we distinguish "empty slot" from
+//  "card in".
 //
 
 import Foundation
 import IOKit
 
 nonisolated enum SDCardScanner {
-    /// Synthetic accessory entries for the SD slot, one per chassis. Empty
-    /// when the Mac has no reader, or when the reader is empty.
+    /// Synthetic accessory entry for the SD slot. Empty when the Mac has
+    /// no reader; otherwise exactly one entry, with `connectionActive`
+    /// set iff a card is currently mounted.
     static func scan() -> [PortAccessoryInfo] {
         var out: [PortAccessoryInfo] = []
         for svc in IORegBridge.services(matchingClass: "IOPCIDevice") {
@@ -29,9 +31,9 @@ nonisolated enum SDCardScanner {
                 ?? unwrapDataString(props["name"])
                 ?? ""
             guard dtName == "pcie-sdreader" else { continue }
-            guard hasIOMediaDescendant(svc) else { continue }
             guard let id = IORegBridge.entryID(of: svc) else { continue }
-            out.append(synthesise(entry: svc, id: id, props: props))
+            let cardPresent = hasIOMediaDescendant(svc)
+            out.append(synthesise(entry: svc, id: id, props: props, cardPresent: cardPresent))
             break // One SD slot is the maximum any Mac has shipped.
         }
         return out
@@ -55,14 +57,15 @@ nonisolated enum SDCardScanner {
 
     private static func synthesise(entry: io_registry_entry_t,
                                    id: UInt64,
-                                   props: [String: IORegValue]) -> PortAccessoryInfo {
+                                   props: [String: IORegValue],
+                                   cardPresent: Bool) -> PortAccessoryInfo {
         return PortAccessoryInfo(
             id: TBNodeID(raw: id),
             portNumber: 1,
             connector: .sdCard,
-            connection: .device,
-            connectionActive: true,
-            detected: true,
+            connection: cardPresent ? .device : .none,
+            connectionActive: cardPresent,
+            detected: cardPresent,
             plugOrientation: .unattached,
             supportedTransports: [],
             provisionedTransports: [],

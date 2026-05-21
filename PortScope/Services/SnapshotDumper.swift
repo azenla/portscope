@@ -184,6 +184,7 @@ enum SnapshotDumper {
             "title": p.cliTitle,
             "location": descriptor?.location as Any? ?? NSNull(),
             "capability": descriptor?.capability as Any? ?? NSNull(),
+            "location_label": p.locationLabel as Any? ?? NSNull(),
             "status_label": p.statusLabel,
             "mode": modeToJSON(p.mode),
             "lane_adapter_id": String(format: "0x%llX", p.laneAdapter.id.raw),
@@ -443,6 +444,8 @@ enum SnapshotDumper {
         case .magsafe: return "magsafe"
         case .hdmi: return "hdmi"
         case .sdCard: return "sd-card"
+        case .acPower: return "power"
+        case .ethernet: return "ethernet"
         case .other(let s): return s.lowercased().replacingOccurrences(of: " ", with: "-")
         }
     }
@@ -566,6 +569,9 @@ private final class PrettyPrinter {
             let badge = portBadge(port.mode)
             let title = port.cliTitle
             line("   \(badge) \(bold(title))  \(dim(port.statusLabel))")
+            if let loc = port.catalogLocation {
+                line("      \(dim("Location:")) \(loc)")
+            }
             if let cap = port.catalogCapability {
                 line("      \(dim("Spec:")) \(cap)")
             }
@@ -577,7 +583,10 @@ private final class PrettyPrinter {
                 if acc.plugOrientation != .unattached {
                     line("      \(dim("Orientation:")) \(acc.plugOrientation.label)")
                 }
-                if let pd = acc.usbPD, let win = pd.winning {
+                // AC Power's own status line already carries the wattage,
+                // so don't double up here. USB-C / MagSafe still get this
+                // line as the canonical Power Input readout.
+                if port.connector != .acPower, let pd = acc.usbPD, let win = pd.winning {
                     line("      \(dim("Power Input:")) \(bold(win.powerLabel)) (\(win.voltageLabel) · \(win.currentLabel))")
                 }
                 if let cable = acc.cableLabel {

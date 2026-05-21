@@ -378,13 +378,15 @@
       "marketing_name": "Mac mini (2023, M2 Pro)",
       "chassis": "Mac mini",
       "ports": [
-        { "connector": "usb-c",  "port_number": 1, "location": "Rear (leftmost)",     "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Rear (left-center)",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Rear (right-center)", "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 4, "location": "Rear (rightmost)",    "capability": "Thunderbolt 4" },
-        { "connector": "usb-a",  "port_number": 1, "location": "Rear (left)",         "capability": "USB 3.0 (5 Gb/s)" },
-        { "connector": "usb-a",  "port_number": 2, "location": "Rear (right)",        "capability": "USB 3.0 (5 Gb/s)" },
-        { "connector": "hdmi",   "port_number": 1, "location": "Rear",                "capability": "HDMI 2.1" }
+        { "connector": "ac-power", "port_number": 1, "location": "Rear",                "capability": "Built-in PSU" },
+        { "connector": "usb-c",    "port_number": 1, "location": "Rear (leftmost)",     "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",    "port_number": 2, "location": "Rear (left-center)",  "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",    "port_number": 3, "location": "Rear (right-center)", "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",    "port_number": 4, "location": "Rear (rightmost)",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-a",    "port_number": 1, "location": "Rear (left)",         "capability": "USB 3.0 (5 Gb/s)" },
+        { "connector": "usb-a",    "port_number": 2, "location": "Rear (right)",        "capability": "USB 3.0 (5 Gb/s)" },
+        { "connector": "hdmi",     "port_number": 1, "location": "Rear",                "capability": "HDMI 2.1" },
+        { "connector": "ethernet", "port_number": 1, "location": "Rear",                "capability": "Gigabit Ethernet (10 Gb BTO)" }
       ]
     },
 

@@ -94,32 +94,81 @@ struct ConnectedDevice {
 }
 
 extension PhysicalPort {
-    /// CLI / pretty-printer title. Consults `MacPortCatalog.current` first
-    /// so a known chassis renders chassis-relative labels ("Right Front
-    /// USB-C Port"); on an unrecognised hw.model we fall back to the
-    /// generic numbered form. HDMI / SD Card / MagSafe stay singular even
-    /// in the fallback — every Mac that ships them only ships one.
+    /// CLI / sidebar title. Generic numbered form — chassis-specific
+    /// detail (location + spec) lives on the separate `locationLabel`
+    /// line so the title stays predictable across Macs. SD Card uses
+    /// "Slot" since "Port" reads oddly for a card receptacle, and HDMI /
+    /// MagSafe stay singular because every Mac that ships them only
+    /// ships one.
     var cliTitle: String {
-        if let label = MacPortCatalog.current.descriptor(for: connector, portNumber: number)?.title {
-            return label
-        }
         switch connector {
         case .hdmi: return "HDMI Port"
         case .sdCard: return "SD Card Slot"
         case .magsafe: return "MagSafe 3 Port"
+        case .acPower: return "Power Input"
+        case .ethernet:
+            // Ethernet receptacles are numbered too on Macs that ship
+            // more than one (Mac Pro back I/O card). For the typical
+            // single-jack case the suffix reads as noise, so drop it.
+            return number > 1 ? "Ethernet Port \(number)" : "Ethernet Port"
         default: return "\(connector.label) Port \(number)"
         }
     }
 
-    /// Capability blurb from the catalog (e.g. "Thunderbolt 4 · Rear
-    /// (left)"). Nil when the host isn't in the catalog or the receptacle
-    /// has no spec'd capability (some entries omit the field).
+    /// Chassis-relative label sourced from `MacPortLocations.json`, e.g.
+    /// "Rear (rightmost) · Thunderbolt 4". Nil when the running host's
+    /// `hw.model` isn't catalogued or this particular receptacle has no
+    /// entry — the title stands on its own in that case.
+    var locationLabel: String? {
+        guard let d = MacPortCatalog.current.descriptor(for: connector, portNumber: number) else {
+            return nil
+        }
+        if let cap = d.capability, !cap.isEmpty {
+            return "\(d.location) · \(cap)"
+        }
+        return d.location
+    }
+
+    /// Capability blurb from the catalog (e.g. "Thunderbolt 4"). Nil when
+    /// the host isn't in the catalog or the receptacle has no spec'd
+    /// capability (some entries omit the field).
     var catalogCapability: String? {
         MacPortCatalog.current.descriptor(for: connector, portNumber: number)?.capability
     }
 
+    /// Just the catalog location string (e.g. "Right Front") without
+    /// the trailing capability. Used when the capability is rendered on
+    /// its own line elsewhere.
+    var catalogLocation: String? {
+        MacPortCatalog.current.descriptor(for: connector, portNumber: number)?.location
+    }
+
     /// Subtitle shown beneath the port in the sidebar.
     var statusLabel: String {
+        // Connector-specific labels for non-USB/TB receptacles. AC Power
+        // and Ethernet don't share USB / TB / DP mode semantics — surface
+        // their own measured-power / link-state strings instead.
+        switch connector {
+        case .acPower:
+            if let pd = accessory?.usbPD?.winning, pd.maxPowerMW > 0 {
+                let w = String(format: "%.1f W", Double(pd.maxPowerMW) / 1000.0)
+                let v = String(format: "%.1f V", Double(pd.voltageMV) / 1000.0)
+                return "Drawing \(w) · \(v)"
+            }
+            return accessory?.connectionActive == true ? "Connected" : "Empty"
+        case .ethernet:
+            let active = accessory?.connectionActive == true
+            let mbps = accessory?.registryProperties["LinkSpeedMbps"]?.asUInt ?? 0
+            if active, mbps > 0 { return "Linked · \(ethernetSpeedLabel(mbps))" }
+            if active { return "Linked" }
+            return "Unplugged"
+        case .sdCard:
+            return accessory?.connectionActive == true ? "Card inserted" : "Empty"
+        case .hdmi:
+            return mode == .empty ? "Empty" : "Display"
+        default:
+            break
+        }
         switch mode {
         case .empty: return "Empty"
         case .thunderbolt:
@@ -140,6 +189,22 @@ extension PhysicalPort {
             return "Charging"
         case .unknown: return "Link up"
         }
+    }
+}
+
+/// Translate a raw Mb/s figure into the marketing-style speed label
+/// people recognise on Ethernet ports.
+nonisolated func ethernetSpeedLabel(_ mbps: UInt64) -> String {
+    switch mbps {
+    case 10: return "10 Mb/s"
+    case 100: return "100 Mb/s"
+    case 1_000: return "1 Gb/s"
+    case 2_500: return "2.5 Gb/s"
+    case 5_000: return "5 Gb/s"
+    case 10_000: return "10 Gb/s"
+    default:
+        if mbps >= 1000 { return String(format: "%.1f Gb/s", Double(mbps) / 1000.0) }
+        return "\(mbps) Mb/s"
     }
 }
 
@@ -340,26 +405,27 @@ nonisolated enum TopologyMapper {
             ))
         }
 
-        // HDMI pass: `AppleHPMPortController` publishes one entry per built-in
-        // HDMI jack. The kernel leaves `ConnectionActive = false` and an empty
-        // `TransportsActive` array when nothing is plugged in, so we only
-        // surface the port when something is actively driving it. This
-        // matches the user-facing rule that HDMI is only a "physical port"
-        // worth listing when it has a sink.
+        // HDMI pass: `AppleHDMIPortController` publishes one entry per
+        // built-in HDMI jack. We surface the receptacle whenever the
+        // chassis has one, regardless of whether a cable is seated —
+        // it's a physical port and should appear in the list the same
+        // way USB-C and USB-A do. Mode reflects attachment so the badge
+        // colour still differentiates "empty" from "driving a display".
         let hdmiAccessories = snapshot.accessories.filter {
             if case .hdmi = $0.connector { return true }
             return false
         }
         var hdmiPorts: [PhysicalPort] = []
-        for acc in hdmiAccessories where hdmiIsAttached(acc) {
+        for acc in hdmiAccessories {
             let stub = synthLane(accessoryID: acc.id)
+            let mode: PhysicalPortMode = hdmiIsAttached(acc) ? .displayOnly : .empty
             hdmiPorts.append(PhysicalPort(
                 number: acc.portNumber,
                 id: acc.id,
                 connector: .hdmi,
                 laneAdapter: stub, linkLane: nil,
                 controller: stub,
-                connectedDevice: nil, mode: .displayOnly,
+                connectedDevice: nil, mode: mode,
                 attachedUSBDevices: [],
                 usbDeviceRoots: [],
                 tunnels: [],
@@ -368,10 +434,11 @@ nonisolated enum TopologyMapper {
             ))
         }
 
-        // SD Card pass: synthesised by `SDCardScanner` only when a card is
-        // mounted (IOMedia descendant exists under `pcie-sdreader`). Empty
-        // slot ⇒ no entry ⇒ no row, matching the user's mental model that an
-        // unloaded reader isn't worth listing.
+        // SD Card pass: `SDCardScanner` emits an accessory entry whenever
+        // the reader hardware exists. Card-present (IOMedia descendant)
+        // shows as "Card inserted" via the mode; empty slot reads as
+        // "Empty". This matches the HDMI behaviour — the receptacle is
+        // visible on every chassis that has it.
         let sdAccessories = snapshot.accessories.filter {
             if case .sdCard = $0.connector { return true }
             return false
@@ -379,6 +446,11 @@ nonisolated enum TopologyMapper {
         var sdPorts: [PhysicalPort] = []
         for acc in sdAccessories {
             let stub = synthLane(accessoryID: acc.id)
+            // `connectionActive` is the scanner-set flag for media
+            // present; map directly to the operating mode.
+            let mode: PhysicalPortMode = acc.connectionActive
+                ? .usbOnly(speed: nil)
+                : .empty
             sdPorts.append(PhysicalPort(
                 number: acc.portNumber,
                 id: acc.id,
@@ -386,7 +458,7 @@ nonisolated enum TopologyMapper {
                 laneAdapter: stub, linkLane: nil,
                 controller: stub,
                 connectedDevice: nil,
-                mode: .usbOnly(speed: nil),
+                mode: mode,
                 attachedUSBDevices: [],
                 usbDeviceRoots: [],
                 tunnels: [],
@@ -395,7 +467,48 @@ nonisolated enum TopologyMapper {
             ))
         }
 
-        return magsafePorts + out + hdmiPorts + sdPorts
+        // AC Power + Ethernet passes — both come from synthetic accessory
+        // entries planted by their dedicated scanners. They live at the
+        // top of the port list (power) and bottom (ethernet) respectively,
+        // matching where the user looks for them in product photography.
+        let acPowerPorts = snapshot.accessories.compactMap { acc -> PhysicalPort? in
+            guard case .acPower = acc.connector else { return nil }
+            let stub = synthLane(accessoryID: acc.id)
+            return PhysicalPort(
+                number: acc.portNumber,
+                id: acc.id,
+                connector: .acPower,
+                laneAdapter: stub, linkLane: nil,
+                controller: stub,
+                connectedDevice: nil,
+                mode: acc.connectionActive ? .charging(watts: nil) : .empty,
+                attachedUSBDevices: [],
+                usbDeviceRoots: [],
+                tunnels: [],
+                accessory: acc,
+                sourcePower: nil
+            )
+        }
+        let ethernetPorts = snapshot.accessories.compactMap { acc -> PhysicalPort? in
+            guard case .ethernet = acc.connector else { return nil }
+            let stub = synthLane(accessoryID: acc.id)
+            return PhysicalPort(
+                number: acc.portNumber,
+                id: acc.id,
+                connector: .ethernet,
+                laneAdapter: stub, linkLane: nil,
+                controller: stub,
+                connectedDevice: nil,
+                mode: acc.connectionActive ? .usbOnly(speed: nil) : .empty,
+                attachedUSBDevices: [],
+                usbDeviceRoots: [],
+                tunnels: [],
+                accessory: acc,
+                sourcePower: nil
+            )
+        }
+
+        return magsafePorts + acPowerPorts + out + hdmiPorts + sdPorts + ethernetPorts
     }
 
     /// True when the kernel reports something is actively connected to an
@@ -405,8 +518,8 @@ nonisolated enum TopologyMapper {
     ///                  is seated, before any link training completes
     ///   * `TransportsActive` containing `"DisplayPort"` — set once pixels
     ///                  are flowing
-    /// Treat any of those as "attached" so a port being warmed up still
-    /// shows in the UI; treat none of them as "empty" (no row).
+    /// Drives the operating mode (empty vs. display-driving) for the HDMI
+    /// physical port; the receptacle is rendered regardless.
     private static func hdmiIsAttached(_ acc: PortAccessoryInfo) -> Bool {
         if acc.connectionActive { return true }
         if acc.hpdAsserted { return true }

@@ -41,7 +41,10 @@ final class PortScopeViewModel: ObservableObject {
         Task.detached(priority: .userInitiated) {
             let tb = ThunderboltScanner.scan()
             let usb = USBScanner.scan()
-            let accessories = AccessoryScanner.scan() + SDCardScanner.scan()
+            let accessories = AccessoryScanner.scan()
+                + SDCardScanner.scan()
+                + PowerInputScanner.scan()
+                + EthernetScanner.scan()
             let internalHardware = InternalHardwareScanner.scan(accessories: accessories)
             let bluetooth = BluetoothScanner.scan()
             let displays = DisplayScanner.scan()
@@ -251,7 +254,9 @@ enum PhysicalPortSelector {
         case .magsafe: return 2
         case .hdmi: return 3
         case .sdCard: return 4
-        case .other: return 5
+        case .acPower: return 5
+        case .ethernet: return 6
+        case .other: return 7
         }
     }
 }

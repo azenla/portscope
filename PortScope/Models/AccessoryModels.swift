@@ -22,6 +22,16 @@ nonisolated enum PortConnectorType: Hashable {
     case magsafe
     case hdmi
     case sdCard
+    /// Built-in AC power input on desktop Macs (Mac mini, iMac, Mac Studio,
+    /// Mac Pro). Measured wattage comes from `AppleSmartBattery`'s
+    /// `PowerTelemetryData` — the same telemetry source the kernel uses to
+    /// drive battery-less power reporting.
+    case acPower
+    /// Built-in RJ-45 Ethernet jack. Link state + speed come from the
+    /// `IOEthernetController` driver class (e.g. `BCM5701Enet` on Apple
+    /// Silicon, AppleAVE2 on M2/M3 internal). Excludes USB / TB-tunneled
+    /// adapters — those show up under their connecting USB-C port.
+    case ethernet
     case other(String)
 
     init(_ description: String?) {
@@ -31,6 +41,8 @@ nonisolated enum PortConnectorType: Hashable {
         case "MagSafe 3": self = .magsafe
         case "HDMI": self = .hdmi
         case "SD", "SD Card", "SDXC": self = .sdCard
+        case "AC Power", "Power": self = .acPower
+        case "Ethernet", "RJ-45": self = .ethernet
         case let .some(d): self = .other(d)
         case .none: self = .other("Unknown")
         }
@@ -43,6 +55,8 @@ nonisolated enum PortConnectorType: Hashable {
         case .magsafe: return "MagSafe 3"
         case .hdmi: return "HDMI"
         case .sdCard: return "SD Card"
+        case .acPower: return "AC Power"
+        case .ethernet: return "Ethernet"
         case .other(let s): return s
         }
     }
@@ -54,6 +68,8 @@ nonisolated enum PortConnectorType: Hashable {
         case .magsafe: return "powerplug.fill"
         case .hdmi: return "tv"
         case .sdCard: return "sdcard"
+        case .acPower: return "bolt.fill"
+        case .ethernet: return "cable.coaxial"
         case .other: return "questionmark.circle"
         }
     }

@@ -355,21 +355,27 @@ private struct PortsByConnector: View {
         // Physical Ports section, so omit it here to avoid duplicate rows.
         // (`TopologyMapper.physicalPorts` includes it so the CLI dumper and
         // any future unified view see a single port list.)
+        let power = ports.filter { $0.connector == .acPower }
         let usbC = ports.filter { $0.connector == .usbC }
         let usbA = ports.filter { $0.connector == .usbA }
         let hdmi = ports.filter { $0.connector == .hdmi }
         let sd = ports.filter { $0.connector == .sdCard }
+        let ethernet = ports.filter { $0.connector == .ethernet }
         let other = ports.filter {
             switch $0.connector {
-            case .usbC, .usbA, .hdmi, .sdCard, .magsafe: return false
-            case .other: return true
+            case .usbC, .usbA, .hdmi, .sdCard, .magsafe, .acPower, .ethernet:
+                return false
+            case .other:
+                return true
             }
         }
         var out: [Group] = []
+        if !power.isEmpty { out.append(Group(title: "Power", ports: power)) }
         if !usbC.isEmpty { out.append(Group(title: "USB-C", ports: usbC)) }
         if !usbA.isEmpty { out.append(Group(title: "USB-A", ports: usbA)) }
         if !hdmi.isEmpty { out.append(Group(title: "HDMI", ports: hdmi)) }
         if !sd.isEmpty { out.append(Group(title: "SD Card", ports: sd)) }
+        if !ethernet.isEmpty { out.append(Group(title: "Ethernet", ports: ethernet)) }
         if !other.isEmpty { out.append(Group(title: "Expanded Ports", ports: other)) }
         return out
     }
@@ -457,6 +463,12 @@ private struct PortRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let loc = port.locationLabel {
+                    Text(loc)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
         }
     }

@@ -106,12 +106,14 @@ nonisolated enum AccessoryScanner {
             if $0.connector != $1.connector {
                 func rank(_ c: PortConnectorType) -> Int {
                     switch c {
-                    case .usbC: return 0
-                    case .usbA: return 1
-                    case .hdmi: return 2
-                    case .sdCard: return 3
-                    case .magsafe: return 4
-                    case .other: return 5
+                    case .acPower: return 0
+                    case .magsafe: return 1
+                    case .usbC: return 2
+                    case .usbA: return 3
+                    case .hdmi: return 4
+                    case .sdCard: return 5
+                    case .ethernet: return 6
+                    case .other: return 7
                     }
                 }
                 let r0 = rank($0.connector), r1 = rank($1.connector)

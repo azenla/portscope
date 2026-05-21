@@ -127,6 +127,8 @@ nonisolated enum MacPortCatalog {
         case "magsafe": return .magsafe
         case "hdmi":    return .hdmi
         case "sd-card", "sdcard": return .sdCard
+        case "ac-power", "power": return .acPower
+        case "ethernet": return .ethernet
         default: return nil
         }
     }
