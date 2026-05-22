@@ -39,6 +39,12 @@ struct SidebarView: View {
     /// sidebar omits Displays / Bluetooth / Internal Hardware. Independent
     /// of `showBuses` — both default off.
     @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
+    /// Persistent preference (Settings → Show Intermediate USB Hubs). When
+    /// off (the default) USB hub nodes are flattened away so leaf devices
+    /// sit directly under the port — useful for cascaded dock internals
+    /// where every branch has 3–4 generic "USB2.0 Hub" rows between the
+    /// port and the actual device. Flip on to surface the raw hub chain.
+    @AppStorage(SidebarVisibility.showIntermediateHubsKey) private var showIntermediateHubs: Bool = false
 
     var body: some View {
         let ports = TopologyMapper.physicalPorts(from: vm.snapshot)
@@ -67,12 +73,14 @@ struct SidebarView: View {
                 collapsibleSection("Physical Device", icon: "powerplug.fill") {
                     physicalDeviceContent(ports: ports,
                                           hw: hw,
-                                          batteryNode: batteryNode)
+                                          batteryNode: batteryNode,
+                                          flattenHubs: !showIntermediateHubs)
                 }
             } else {
                 physicalDeviceContent(ports: ports,
                                       hw: hw,
-                                      batteryNode: batteryNode)
+                                      batteryNode: batteryNode,
+                                      flattenHubs: !showIntermediateHubs)
             }
 
             if showBuses {
@@ -83,7 +91,9 @@ struct SidebarView: View {
                             .font(.callout)
                     } else {
                         ForEach(vm.tbSnapshot.controllers, id: \.id) { node in
-                            ControllerBranch(node: node, expanded: $expanded)
+                            ControllerBranch(node: node,
+                                             expanded: $expanded,
+                                             flattenHubs: !showIntermediateHubs)
                         }
                     }
                 }
@@ -95,7 +105,10 @@ struct SidebarView: View {
                             .font(.callout)
                     } else {
                         ForEach(vm.usbSnapshot.controllers, id: \.id) { node in
-                            USBBranch(node: node, depth: 0, expanded: $expanded)
+                            USBBranch(node: node,
+                                      depth: 0,
+                                      expanded: $expanded,
+                                      flattenHubs: !showIntermediateHubs)
                         }
                     }
                 }
@@ -151,7 +164,8 @@ struct SidebarView: View {
     @ViewBuilder
     private func physicalDeviceContent(ports: [PhysicalPort],
                                        hw: InternalHardwareSnapshot,
-                                       batteryNode: TBNode?) -> some View {
+                                       batteryNode: TBNode?,
+                                       flattenHubs: Bool) -> some View {
         if ports.isEmpty && hw.magsafe == nil && batteryNode == nil {
             Text(vm.isScanning ? "Scanning…" : "No Thunderbolt controllers")
                 .foregroundStyle(.secondary)
@@ -161,7 +175,8 @@ struct SidebarView: View {
                              battery: batteryNode,
                              magsafe: hw.magsafe,
                              expanded: $expanded,
-                             collapsedSubgroups: $collapsedSubgroups)
+                             collapsedSubgroups: $collapsedSubgroups,
+                             flattenHubs: flattenHubs)
         }
     }
 
@@ -361,6 +376,7 @@ private struct PortsByConnector: View {
     /// uses a namespaced key (`"physical:Power"`, `"physical:USB-C"`, …) so
     /// it doesn't collide with subgroup keys used by other sections.
     @Binding var collapsedSubgroups: Set<String>
+    let flattenHubs: Bool
 
     var body: some View {
         let powerPorts = ports.filter { $0.connector == .acPower }
@@ -378,7 +394,7 @@ private struct PortsByConnector: View {
                     MagSafeRow(accessory: magsafe).tag(MagSafeSelector.id)
                 }
                 ForEach(powerPorts, id: \.id) { port in
-                    PortBranch(port: port, expanded: $expanded)
+                    PortBranch(port: port, expanded: $expanded, flattenHubs: flattenHubs)
                 }
             }
         }
@@ -387,7 +403,7 @@ private struct PortsByConnector: View {
                                 title: group.title,
                                 collapsedSubgroups: $collapsedSubgroups) {
                 ForEach(group.ports, id: \.id) { port in
-                    PortBranch(port: port, expanded: $expanded)
+                    PortBranch(port: port, expanded: $expanded, flattenHubs: flattenHubs)
                 }
             }
         }
@@ -508,11 +524,15 @@ fileprivate func collapsibleSubgroup<Content: View>(
 private struct PortBranch: View {
     let port: PhysicalPort
     @Binding var expanded: Set<TBNodeID>
+    let flattenHubs: Bool
 
     var body: some View {
         let selectionID = PhysicalPortSelector.id(for: port)
         let device = port.connectedDevice
-        let roots = port.usbDeviceRoots
+        // When the user has chosen to hide intermediate hubs, expand any
+        // top-level hub roots into their non-hub descendants so cascaded
+        // dock internals don't appear as nested rows under the port.
+        let roots = flattenedUSBRoots(port.usbDeviceRoots, flattenHubs: flattenHubs)
 
         if device == nil && roots.isEmpty {
             PortRow(port: port).tag(selectionID)
@@ -535,7 +555,7 @@ private struct PortBranch: View {
                 // 0 so the top-level hubs auto-expand to reveal what's
                 // immediately under them; nested hubs stay collapsed.
                 ForEach(roots, id: \.id) { dev in
-                    USBBranch(node: dev, depth: 0, expanded: $expanded)
+                    USBBranch(node: dev, depth: 0, expanded: $expanded, flattenHubs: flattenHubs)
                 }
             } label: {
                 PortRow(port: port).tag(selectionID)
@@ -624,12 +644,13 @@ private struct DeviceRow: View {
 private struct ControllerBranch: View {
     let node: TBNode
     @Binding var expanded: Set<TBNodeID>
+    let flattenHubs: Bool
 
     var body: some View {
         // Skip `.other` wrapper kexts (DPConnectionManager, IPService, etc.)
         // and promote their meaningful descendants up — same recursion the
         // deeper rows use, so nothing in the IOKit tree is hidden.
-        let kids = promotedChildren(of: node)
+        let kids = promotedChildren(of: node, flattenHubs: flattenHubs)
         DisclosureGroup(
             isExpanded: Binding(
                 get: { expanded.contains(node.id) },
@@ -639,7 +660,7 @@ private struct ControllerBranch: View {
             )
         ) {
             ForEach(kids, id: \.id) { child in
-                FullTopologyRow(node: child, depth: 1, expanded: $expanded)
+                FullTopologyRow(node: child, depth: 1, expanded: $expanded, flattenHubs: flattenHubs)
             }
         } label: {
             HStack(spacing: 6) {
@@ -696,6 +717,7 @@ private struct USBBranch: View {
     let node: TBNode
     let depth: Int
     @Binding var expanded: Set<TBNodeID>
+    let flattenHubs: Bool
 
     var body: some View {
         // USB host controllers wrap each port in an `.other` kext (e.g.
@@ -703,7 +725,7 @@ private struct USBBranch: View {
         // A flat filter would drop the wrapper *and* the device with it —
         // recurse through wrappers and promote real USB nodes up. Interfaces
         // are hidden here and shown only in the device's detail view.
-        let kids = promotedUSBChildren(of: node)
+        let kids = promotedUSBChildren(of: node, flattenHubs: flattenHubs)
         if kids.isEmpty {
             label.tag(node.id)
         } else {
@@ -716,7 +738,7 @@ private struct USBBranch: View {
                 )
             ) {
                 ForEach(kids, id: \.id) { child in
-                    USBBranch(node: child, depth: depth + 1, expanded: $expanded)
+                    USBBranch(node: child, depth: depth + 1, expanded: $expanded, flattenHubs: flattenHubs)
                 }
             } label: {
                 label
@@ -745,11 +767,15 @@ private struct USBBranch: View {
 /// Walk a node's children, dropping `.other` wrapper kexts and promoting their
 /// meaningful descendants up. Shared by `ControllerBranch` and `FullTopologyRow`
 /// so a port hidden under one IOService wrapper is still visible in the tree.
-private func promotedChildren(of node: TBNode) -> [TBNode] {
+/// When `flattenHubs` is true, `.usbHub` nodes are also treated as pass-through
+/// wrappers so cascaded dock internals don't bury the leaf devices.
+private func promotedChildren(of node: TBNode, flattenHubs: Bool = false) -> [TBNode] {
     var out: [TBNode] = []
     for c in node.children {
         if c.kind == .other {
-            out.append(contentsOf: promotedChildren(of: c))
+            out.append(contentsOf: promotedChildren(of: c, flattenHubs: flattenHubs))
+        } else if flattenHubs && c.kind == .usbHub {
+            out.append(contentsOf: promotedChildren(of: c, flattenHubs: flattenHubs))
         } else {
             out.append(c)
         }
@@ -760,13 +786,35 @@ private func promotedChildren(of node: TBNode) -> [TBNode] {
 /// Same recursion as `promotedChildren` but also hides USB interfaces — they
 /// don't carry their own subtree worth navigating and the device detail view
 /// surfaces them in a dedicated section.
-private func promotedUSBChildren(of node: TBNode) -> [TBNode] {
+private func promotedUSBChildren(of node: TBNode, flattenHubs: Bool = false) -> [TBNode] {
     var out: [TBNode] = []
     for c in node.children {
         if c.kind == .other {
-            out.append(contentsOf: promotedUSBChildren(of: c))
-        } else if c.kind != .usbInterface {
+            out.append(contentsOf: promotedUSBChildren(of: c, flattenHubs: flattenHubs))
+        } else if c.kind == .usbInterface {
+            continue
+        } else if flattenHubs && c.kind == .usbHub {
+            out.append(contentsOf: promotedUSBChildren(of: c, flattenHubs: flattenHubs))
+        } else {
             out.append(c)
+        }
+    }
+    return out
+}
+
+/// Expand top-level USB roots when hub-flattening is on: any root that's
+/// itself a hub gets replaced by its non-hub descendants, so a port's row
+/// reads as `[leaf, leaf, …]` instead of `[hub → hub → leaf]`. Used by
+/// `PortBranch` since the roots come from `PhysicalPort.usbDeviceRoots`
+/// (computed once in `TopologyMapper` and not aware of this preference).
+private func flattenedUSBRoots(_ roots: [TBNode], flattenHubs: Bool) -> [TBNode] {
+    guard flattenHubs else { return roots }
+    var out: [TBNode] = []
+    for r in roots {
+        if r.kind == .usbHub {
+            out.append(contentsOf: promotedUSBChildren(of: r, flattenHubs: true))
+        } else {
+            out.append(r)
         }
     }
     return out
@@ -776,9 +824,10 @@ private struct FullTopologyRow: View {
     let node: TBNode
     let depth: Int
     @Binding var expanded: Set<TBNodeID>
+    var flattenHubs: Bool = false
 
     var body: some View {
-        let kids = promotedChildren(of: node)
+        let kids = promotedChildren(of: node, flattenHubs: flattenHubs)
         if kids.isEmpty {
             label.tag(node.id)
         } else {
@@ -791,7 +840,7 @@ private struct FullTopologyRow: View {
                 )
             ) {
                 ForEach(kids, id: \.id) { child in
-                    FullTopologyRow(node: child, depth: depth + 1, expanded: $expanded)
+                    FullTopologyRow(node: child, depth: depth + 1, expanded: $expanded, flattenHubs: flattenHubs)
                 }
             } label: {
                 label

@@ -47,13 +47,15 @@ enum PortScopeMain {
         case .json:
             output = SnapshotDumper.json(snapshot,
                                          showBuses: request.showBuses,
-                                         showAll: request.showAll)
+                                         showAll: request.showAll,
+                                         showHubs: request.showHubs)
         case .pretty(let forceColor):
             let isTTY = isatty(fileno(stdout)) != 0
             output = SnapshotDumper.pretty(snapshot,
                                            useColor: forceColor ?? isTTY,
                                            showBuses: request.showBuses,
-                                           showAll: request.showAll)
+                                           showAll: request.showAll,
+                                           showHubs: request.showHubs)
         case .simple:
             output = SnapshotDumper.simple(snapshot)
         }
@@ -64,10 +66,10 @@ enum PortScopeMain {
 }
 
 /// One invocation's worth of CLI options. The format selects the output
-/// renderer; `showBuses` adds the raw Thunderbolt / USB / PCIe trees and
-/// `showAll` adds Bluetooth / Displays / Internal Hardware. Both default
-/// off, matching the GUI's default sidebar — bare invocation shows only
-/// the Physical Ports view and the accessory roll-up.
+/// renderer; `showBuses` adds the raw Thunderbolt / USB / PCIe trees,
+/// `showAll` adds Bluetooth / Displays / Internal Hardware, and
+/// `showHubs` un-flattens the chains of intermediate USB hubs that the
+/// default view hides. All three default off, matching the GUI sidebar.
 private struct CLIRequest {
     enum Format {
         case pretty(forceColor: Bool?)
@@ -77,6 +79,7 @@ private struct CLIRequest {
     let format: Format
     let showBuses: Bool
     let showAll: Bool
+    let showHubs: Bool
 
     static func from(_ argv: [String]) -> CLIRequest? {
         var pretty = false
@@ -84,6 +87,7 @@ private struct CLIRequest {
         var simple = false
         var showBuses = false
         var showAll = false
+        var showHubs = false
         var forceColor: Bool? = nil
         for arg in argv.dropFirst() {
             switch arg {
@@ -92,6 +96,7 @@ private struct CLIRequest {
             case "--simple", "-s": simple = true
             case "--buses", "-b": showBuses = true
             case "--all", "-a": showAll = true
+            case "--hubs", "--show-hubs": showHubs = true
             case "--color", "--colour": forceColor = true
             case "--no-color", "--no-colour": forceColor = false
             case "--help", "-h":
@@ -112,6 +117,11 @@ private struct CLIRequest {
                                     Ignored by --simple.
                   --all    | -a     Include Bluetooth, Displays, and Internal
                                     Hardware sections. Ignored by --simple.
+                  --hubs            Show intermediate USB hubs. By default the
+                                    sidebar/tree hides cascaded hub chains and
+                                    promotes their leaf devices up so dock
+                                    internals don't bury what's attached.
+                                    Ignored by --simple.
                   --color / --no-color
                                     Force ANSI colour on/off (default: auto-detect TTY).
                   -h, --help        Show this help.
@@ -124,9 +134,9 @@ private struct CLIRequest {
                 continue
             }
         }
-        if simple { return CLIRequest(format: .simple, showBuses: showBuses, showAll: showAll) }
-        if json { return CLIRequest(format: .json, showBuses: showBuses, showAll: showAll) }
-        if pretty { return CLIRequest(format: .pretty(forceColor: forceColor), showBuses: showBuses, showAll: showAll) }
+        if simple { return CLIRequest(format: .simple, showBuses: showBuses, showAll: showAll, showHubs: showHubs) }
+        if json { return CLIRequest(format: .json, showBuses: showBuses, showAll: showAll, showHubs: showHubs) }
+        if pretty { return CLIRequest(format: .pretty(forceColor: forceColor), showBuses: showBuses, showAll: showAll, showHubs: showHubs) }
         return nil
     }
 }
@@ -160,6 +170,7 @@ struct PortScopeApp: App {
 private struct SettingsView: View {
     @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = false
     @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
+    @AppStorage(SidebarVisibility.showIntermediateHubsKey) private var showIntermediateHubs: Bool = false
 
     var body: some View {
         Form {
@@ -172,6 +183,13 @@ private struct SettingsView: View {
             Toggle("Show All Devices", isOn: $showAllDevices)
                 .padding(.top, 8)
             Text("Also show Bluetooth, Displays, and Internal Hardware in the sidebar.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle("Show Intermediate USB Hubs", isOn: $showIntermediateHubs)
+                .padding(.top, 8)
+            Text("Show the full chain of cascaded USB hubs (dock internals, hub-of-hubs) in the sidebar. By default these are flattened away so leaf devices appear directly under the port they're attached to.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -190,6 +208,11 @@ enum SidebarVisibility {
     static let showBusesKey = "showBuses"
     /// Gates Displays / Bluetooth / Internal Hardware. Default off.
     static let showAllDevicesKey = "showAllDevices"
+    /// When off (the default), USB hubs in the sidebar are treated as
+    /// pass-through wrappers (like `.other` IOService kexts): their non-hub
+    /// descendants are promoted up so cascaded dock internals don't bury the
+    /// actual leaf devices. Flip on to see the raw hub-of-hubs chain.
+    static let showIntermediateHubsKey = "showIntermediateHubs"
 }
 
 extension Notification.Name {

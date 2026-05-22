@@ -35,8 +35,11 @@ enum SnapshotDumper {
     /// / `displays` / `internal_hardware`. Omitted keys are absent (not
     /// set to null) so consumers don't accidentally inherit stale schema
     /// fields.
-    static func json(_ snapshot: SystemSnapshot, showBuses: Bool, showAll: Bool) -> String {
-        let root: [String: Any] = snapshotToJSONObject(snapshot, showBuses: showBuses, showAll: showAll)
+    static func json(_ snapshot: SystemSnapshot, showBuses: Bool, showAll: Bool, showHubs: Bool) -> String {
+        let root: [String: Any] = snapshotToJSONObject(snapshot,
+                                                       showBuses: showBuses,
+                                                       showAll: showAll,
+                                                       flattenHubs: !showHubs)
         let data = (try? JSONSerialization.data(
             withJSONObject: root,
             options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -44,21 +47,21 @@ enum SnapshotDumper {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    private static func snapshotToJSONObject(_ s: SystemSnapshot, showBuses: Bool, showAll: Bool) -> [String: Any] {
+    private static func snapshotToJSONObject(_ s: SystemSnapshot, showBuses: Bool, showAll: Bool, flattenHubs: Bool) -> [String: Any] {
         var out: [String: Any] = [
             "captured_at": ISO8601DateFormatter().string(from: s.capturedAt),
             "host": hostInfoJSON(),
-            "physical_ports": TopologyMapper.physicalPorts(from: s).map(physicalPortToJSON(_:)),
+            "physical_ports": TopologyMapper.physicalPorts(from: s).map { physicalPortToJSON($0, flattenHubs: flattenHubs) },
             "accessories": s.accessories.map(accessoryToJSON(_:))
         ]
         if showBuses {
             out["thunderbolt"] = [
-                "controllers": s.tb.controllers.map(nodeToJSON(_:)),
-                "pcie_devices_over_tb": s.tb.pcieDevicesOverTB.map(nodeToJSON(_:)),
-                "usb_devices_over_tb": s.tb.usbDevicesOverTB.map(nodeToJSON(_:))
+                "controllers": s.tb.controllers.map { nodeToJSON($0, flattenHubs: flattenHubs) },
+                "pcie_devices_over_tb": s.tb.pcieDevicesOverTB.map { nodeToJSON($0, flattenHubs: flattenHubs) },
+                "usb_devices_over_tb": s.tb.usbDevicesOverTB.map { nodeToJSON($0, flattenHubs: flattenHubs) }
             ]
             out["usb"] = [
-                "controllers": s.usb.controllers.map(nodeToJSON(_:)),
+                "controllers": s.usb.controllers.map { nodeToJSON($0, flattenHubs: flattenHubs) },
                 "tb_context": Dictionary(
                     uniqueKeysWithValues: s.usb.tbContext.map { kv -> (String, String) in
                         (String(format: "0x%llX", kv.key.raw),
@@ -72,18 +75,18 @@ enum SnapshotDumper {
             out["bluetooth"] = bluetoothJSON(s.bluetooth)
             out["displays"] = s.displays.displays.map(displayToJSON(_:))
             out["internal_hardware"] = [
-                "battery": s.internalHardware.batteryManager.map(nodeToJSON(_:)) ?? NSNull(),
+                "battery": s.internalHardware.batteryManager.map { nodeToJSON($0, flattenHubs: flattenHubs) } ?? NSNull(),
                 "magsafe": s.internalHardware.magsafe.map(accessoryToJSON(_:)) ?? NSNull(),
-                "i2c_buses": s.internalHardware.i2cBuses.map(nodeToJSON(_:)),
-                "spi_buses": s.internalHardware.spiBuses.map(nodeToJSON(_:)),
+                "i2c_buses": s.internalHardware.i2cBuses.map { nodeToJSON($0, flattenHubs: flattenHubs) },
+                "spi_buses": s.internalHardware.spiBuses.map { nodeToJSON($0, flattenHubs: flattenHubs) },
                 "soc_coprocessor_groups": s.internalHardware.coprocessorGroups.map { g in
                     [
                         "category": g.category.rawValue,
                         "title": g.category.title,
-                        "coprocessors": g.coprocessors.map(nodeToJSON(_:))
+                        "coprocessors": g.coprocessors.map { nodeToJSON($0, flattenHubs: flattenHubs) }
                     ] as [String: Any]
                 },
-                "soc_coprocessors": s.internalHardware.socCoprocessors.map(nodeToJSON(_:))
+                "soc_coprocessors": s.internalHardware.socCoprocessors.map { nodeToJSON($0, flattenHubs: flattenHubs) }
             ]
         }
         return out
@@ -174,7 +177,7 @@ enum SnapshotDumper {
         ]
     }
 
-    private static func physicalPortToJSON(_ p: PhysicalPort) -> [String: Any] {
+    private static func physicalPortToJSON(_ p: PhysicalPort, flattenHubs: Bool) -> [String: Any] {
         let descriptor = MacPortCatalog.current.descriptor(for: p.connector, portNumber: p.number)
         var out: [String: Any] = [
             "number": p.number,
@@ -190,7 +193,8 @@ enum SnapshotDumper {
             "lane_adapter_id": String(format: "0x%llX", p.laneAdapter.id.raw),
             "controller_id": String(format: "0x%llX", p.controller.id.raw),
             "attached_usb_device_count": p.attachedUSBDevices.count,
-            "usb_device_roots": p.usbDeviceRoots.map(nodeToJSON(_:)),
+            "usb_device_roots": flattenedRootsForJSON(p.usbDeviceRoots, flattenHubs: flattenHubs)
+                .map { nodeToJSON($0, flattenHubs: flattenHubs) },
             "tunnels": p.tunnels.map { t -> [String: Any] in
                 [
                     "kind": "\(t.kind)",
@@ -260,7 +264,7 @@ enum SnapshotDumper {
             "id": String(format: "0x%llX", d.id.raw),
             "title": d.title,
             "subtitle": d.subtitle ?? NSNull(),
-            "router_node": nodeToJSON(d.routerNode),
+            "router_node": nodeToJSON(d.routerNode, flattenHubs: false),
             "daisy_chained": d.daisyChained.map(connectedDeviceToJSON(_:))
         ]
     }
@@ -276,7 +280,8 @@ enum SnapshotDumper {
         }
     }
 
-    private static func nodeToJSON(_ node: TBNode) -> [String: Any] {
+    private static func nodeToJSON(_ node: TBNode, flattenHubs: Bool = false) -> [String: Any] {
+        let kids = flattenedChildrenForJSON(node.children, flattenHubs: flattenHubs)
         return [
             "id": String(format: "0x%llX", node.id.raw),
             "kind": "\(node.kind)",
@@ -285,8 +290,42 @@ enum SnapshotDumper {
             "class": node.className,
             "registry_path": node.registryPath ?? NSNull(),
             "properties": propertiesToJSON(node.properties),
-            "children": node.children.map(nodeToJSON(_:))
+            "children": kids.map { nodeToJSON($0, flattenHubs: flattenHubs) }
         ]
+    }
+
+    /// Strip `.usbHub` nodes out of a children array, splicing each hub's own
+    /// descendants up in its place. Recursive — a chain of three cascaded
+    /// hubs collapses to whatever leaves sit at the bottom. Off by default;
+    /// only the `--hubs`-aware top-level paths flip it on.
+    private static func flattenedChildrenForJSON(_ kids: [TBNode], flattenHubs: Bool) -> [TBNode] {
+        guard flattenHubs else { return kids }
+        var out: [TBNode] = []
+        for c in kids {
+            if c.kind == .usbHub {
+                out.append(contentsOf: flattenedChildrenForJSON(c.children, flattenHubs: true))
+            } else {
+                out.append(c)
+            }
+        }
+        return out
+    }
+
+    /// Same idea but for `physical_ports[].usb_device_roots`: the roots array
+    /// can itself contain hubs (a single-hub dock with one downstream device
+    /// shows up as `[hub]` here), and we want to expand those into the
+    /// non-hub descendants so the JSON reads as a flat device list.
+    private static func flattenedRootsForJSON(_ roots: [TBNode], flattenHubs: Bool) -> [TBNode] {
+        guard flattenHubs else { return roots }
+        var out: [TBNode] = []
+        for r in roots {
+            if r.kind == .usbHub {
+                out.append(contentsOf: flattenedChildrenForJSON(r.children, flattenHubs: true))
+            } else {
+                out.append(r)
+            }
+        }
+        return out
     }
 
     /// Walk a property dict and convert each `IORegValue` to a JSON-safe
@@ -394,8 +433,8 @@ enum SnapshotDumper {
     /// matches the GUI sidebar: bare invocation emits only the Physical
     /// Ports section, `showBuses` adds Thunderbolt / USB / PCIe trees, and
     /// `showAll` adds Bluetooth / Displays / Internal Hardware.
-    static func pretty(_ snapshot: SystemSnapshot, useColor: Bool, showBuses: Bool, showAll: Bool) -> String {
-        let p = PrettyPrinter(useColor: useColor)
+    static func pretty(_ snapshot: SystemSnapshot, useColor: Bool, showBuses: Bool, showAll: Bool, showHubs: Bool) -> String {
+        let p = PrettyPrinter(useColor: useColor, flattenHubs: !showHubs)
         p.header(snapshot)
         p.physicalPorts(TopologyMapper.physicalPorts(from: snapshot))
         if showBuses {
@@ -513,8 +552,15 @@ enum SnapshotDumper {
 private final class PrettyPrinter {
     private var buffer = ""
     private let useColor: Bool
+    /// When true, USB hubs are treated as pass-through wrappers and their
+    /// non-hub descendants are spliced up — matching the GUI sidebar's
+    /// default. Off when the user opted into `--hubs` on the CLI.
+    private let flattenHubs: Bool
 
-    init(useColor: Bool) { self.useColor = useColor }
+    init(useColor: Bool, flattenHubs: Bool = true) {
+        self.useColor = useColor
+        self.flattenHubs = flattenHubs
+    }
 
     func flush() -> String { buffer }
 
@@ -614,7 +660,7 @@ private final class PrettyPrinter {
                     line("         ↳ \(chained.title)\(chained.subtitle.map { dim(" · \($0)") } ?? "")")
                 }
             }
-            for root in port.usbDeviceRoots {
+            for root in flattenedRoots(port.usbDeviceRoots) {
                 line("      \(cyan("🔌")) \(root.title)\(root.subtitle.map { dim(" · \($0)") } ?? "")")
                 indentedNode(root, prefix: "         ", showUSBOnly: true)
             }
@@ -931,11 +977,14 @@ private final class PrettyPrinter {
     /// Mirror of the sidebar's `promotedChildren`: drops `.other` wrapper
     /// kexts (DPConnectionManager / IPService / port wrappers) and
     /// promotes their meaningful descendants up so the CLI tree matches
-    /// what a user sees in the GUI.
+    /// what a user sees in the GUI. When `flattenHubs` is on, `.usbHub`
+    /// nodes are also collapsed in the same way.
     private func promotedChildren(of node: TBNode) -> [TBNode] {
         var out: [TBNode] = []
         for c in node.children {
             if c.kind == .other {
+                out.append(contentsOf: promotedChildren(of: c))
+            } else if flattenHubs && c.kind == .usbHub {
                 out.append(contentsOf: promotedChildren(of: c))
             } else {
                 out.append(c)
@@ -949,8 +998,28 @@ private final class PrettyPrinter {
         for c in node.children {
             if c.kind == .other {
                 out.append(contentsOf: promotedUSBChildren(of: c))
-            } else if c.kind != .usbInterface {
+            } else if c.kind == .usbInterface {
+                continue
+            } else if flattenHubs && c.kind == .usbHub {
+                out.append(contentsOf: promotedUSBChildren(of: c))
+            } else {
                 out.append(c)
+            }
+        }
+        return out
+    }
+
+    /// Expand the top-level USB roots under a physical port the same way
+    /// the sidebar does: if `flattenHubs` is on and a root is itself a hub,
+    /// splice in the non-hub descendants.
+    private func flattenedRoots(_ roots: [TBNode]) -> [TBNode] {
+        guard flattenHubs else { return roots }
+        var out: [TBNode] = []
+        for r in roots {
+            if r.kind == .usbHub {
+                out.append(contentsOf: promotedUSBChildren(of: r))
+            } else {
+                out.append(r)
             }
         }
         return out
