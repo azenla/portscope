@@ -22,9 +22,35 @@ struct ContentView: View {
         if let sel = vm.selection {
             if PhysicalPortSelector.isPortID(sel),
                let port = TopologyMapper.physicalPorts(from: vm.snapshot).first(where: { PhysicalPortSelector.id(for: $0).raw == sel.raw }) {
-                PhysicalPortDetailView(port: port,
+                // Built-in non-USB receptacles get curated, connector-specific
+                // detail pages. The unified `PhysicalPortDetailView` is built
+                // around USB-C semantics (USB-PD profiles, alt-mode transports,
+                // cable e-markers) which don't apply to a kettle-cord PSU,
+                // a plain RJ-45, an HDMI jack, or an SD slot. Everything else
+                // — USB-C, USB-A, MagSafe, and the `.other` long tail —
+                // still uses the unified view.
+                switch port.connector {
+                case .acPower:
+                    ACPowerDetailView(port: port,
+                                      onNavigate: { vm.select($0) })
+                        .id(sel)
+                case .ethernet:
+                    EthernetDetailView(port: port,
                                        onNavigate: { vm.select($0) })
-                .id(sel)
+                        .id(sel)
+                case .hdmi:
+                    HDMIDetailView(port: port,
+                                   onNavigate: { vm.select($0) })
+                        .id(sel)
+                case .sdCard:
+                    SDCardDetailView(port: port,
+                                     onNavigate: { vm.select($0) })
+                        .id(sel)
+                case .usbC, .usbA, .magsafe, .other:
+                    PhysicalPortDetailView(port: port,
+                                           onNavigate: { vm.select($0) })
+                        .id(sel)
+                }
             } else if MagSafeSelector.isMagSafeID(sel),
                       let magsafe = vm.snapshot.internalHardware.magsafe {
                 ScrollView {
