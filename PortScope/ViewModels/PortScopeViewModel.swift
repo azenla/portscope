@@ -21,12 +21,24 @@ final class PortScopeViewModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var debounceTask: Task<Void, Never>?
 
+    /// Cadence for the live power-telemetry poll. The kernel updates
+    /// `AppleSmartBattery.PowerTelemetryData` (and per-port HPM USB-PD
+    /// readouts) every few seconds, so a faster interval just spins.
+    private static let powerRefreshInterval: TimeInterval = 2.0
+
     init() {
         NotificationCenter.default.publisher(for: IORegMonitor.didChange)
             .sink { [weak self] _ in self?.debouncedRescan() }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: .portScopeRefresh)
             .sink { [weak self] _ in self?.rescan() }
+            .store(in: &cancellables)
+        // Live power telemetry — re-runs only the accessory + battery
+        // scanners so the Power Input wattage / voltage / amperage tick
+        // forward without the cost of a full topology rescan.
+        Timer.publish(every: Self.powerRefreshInterval, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in self?.refreshPower() }
             .store(in: &cancellables)
         monitor.start()
         rescan()
@@ -73,6 +85,48 @@ final class PortScopeViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 350_000_000)
             if Task.isCancelled { return }
             self?.rescan()
+        }
+    }
+
+    /// Lightweight refresh that re-reads only the per-port accessory state
+    /// (USB-PD profiles, MagSafe, AC PSU telemetry, SD card, ethernet) and
+    /// the battery manager subtree. Bus topology (TB / USB / PCIe),
+    /// displays, Bluetooth, I²C/SPI buses and SoC coprocessors are carried
+    /// over from the previous snapshot — none of those change on the
+    /// few-second cadence we poll at, and re-running them would spawn
+    /// `system_profiler` and re-walk every `AppleARMIODevice`. Doesn't
+    /// touch `isScanning` so the toolbar spinner stays out of the way.
+    private func refreshPower() {
+        Task.detached(priority: .utility) {
+            let accessories = AccessoryScanner.scan()
+                + SDCardScanner.scan()
+                + PowerInputScanner.scan()
+                + EthernetScanner.scan()
+            let battery = InternalHardwareScanner.scanBatteryManager()
+            await MainActor.run {
+                let prev = self.snapshot
+                let magsafe = accessories.first { acc in
+                    if case .magsafe = acc.connector { return true }
+                    return false
+                }
+                let internalHardware = InternalHardwareSnapshot(
+                    i2cBuses: prev.internalHardware.i2cBuses,
+                    spiBuses: prev.internalHardware.spiBuses,
+                    batteryManager: battery ?? prev.internalHardware.batteryManager,
+                    magsafe: magsafe,
+                    coprocessorGroups: prev.internalHardware.coprocessorGroups
+                )
+                self.snapshot = SystemSnapshot(
+                    tb: prev.tb,
+                    usb: prev.usb,
+                    accessories: accessories,
+                    internalHardware: internalHardware,
+                    bluetooth: prev.bluetooth,
+                    displays: prev.displays,
+                    pcie: prev.pcie,
+                    capturedAt: Date()
+                )
+            }
         }
     }
 

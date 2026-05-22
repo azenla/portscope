@@ -182,7 +182,9 @@ nonisolated enum InternalHardwareScanner {
     /// battery node hangs off it). Returns nil on desktops or VMs without a
     /// battery. NodeBuilder will classify the children — `AppleSmartBattery`
     /// becomes `.battery`, the manager itself stays as `.batteryManager`.
-    private static func scanBatteryManager() -> TBNode? {
+    /// Exposed so the view model's periodic power refresh can pull fresh
+    /// telemetry without re-walking the AppleARMIODevice haystack.
+    static func scanBatteryManager() -> TBNode? {
         for svc in IORegBridge.services(matchingClass: "AppleSmartBatteryManager") {
             defer { IOObjectRelease(svc) }
             if let node = NodeBuilder.build(from: svc) {
