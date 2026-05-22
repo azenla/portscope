@@ -20,6 +20,7 @@ final class PortScopeViewModel: ObservableObject {
     private let monitor = IORegMonitor()
     private var cancellables: Set<AnyCancellable> = []
     private var debounceTask: Task<Void, Never>?
+    private var powerRefreshTask: Task<Void, Never>?
 
     /// Cadence for the live power-telemetry poll. The kernel updates
     /// `AppleSmartBattery.PowerTelemetryData` (and per-port HPM USB-PD
@@ -33,19 +34,30 @@ final class PortScopeViewModel: ObservableObject {
         NotificationCenter.default.publisher(for: .portScopeRefresh)
             .sink { [weak self] _ in self?.rescan() }
             .store(in: &cancellables)
+        monitor.start()
         // Live power telemetry — re-runs only the accessory + battery
         // scanners so the Power Input wattage / voltage / amperage tick
-        // forward without the cost of a full topology rescan.
-        Timer.publish(every: Self.powerRefreshInterval, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in self?.refreshPower() }
-            .store(in: &cancellables)
-        monitor.start()
+        // forward without the cost of a full topology rescan. Driven by
+        // `Task.sleep` rather than `Timer.publish` because the runloop
+        // timer fires during view-update ticks (.common mode), and the
+        // sink/continuation chain can resume the snapshot assignment
+        // inside a SwiftUI body evaluation — SwiftUI warns and the
+        // publish is undefined behaviour. Task.sleep resumes at a clean
+        // async point that is never inside a view body.
+        powerRefreshTask = Task { [weak self] in
+            let nanos = UInt64(Self.powerRefreshInterval * 1_000_000_000)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: nanos)
+                if Task.isCancelled { return }
+                await self?.refreshPower()
+            }
+        }
         rescan()
     }
 
     deinit {
         debounceTask?.cancel()
+        powerRefreshTask?.cancel()
     }
 
     func rescan() {
@@ -96,38 +108,38 @@ final class PortScopeViewModel: ObservableObject {
     /// few-second cadence we poll at, and re-running them would spawn
     /// `system_profiler` and re-walk every `AppleARMIODevice`. Doesn't
     /// touch `isScanning` so the toolbar spinner stays out of the way.
-    private func refreshPower() {
-        Task.detached(priority: .utility) {
+    private func refreshPower() async {
+        let scanned = await Task.detached(priority: .utility) {
             let accessories = AccessoryScanner.scan()
                 + SDCardScanner.scan()
                 + PowerInputScanner.scan()
                 + EthernetScanner.scan()
             let battery = InternalHardwareScanner.scanBatteryManager()
-            await MainActor.run {
-                let prev = self.snapshot
-                let magsafe = accessories.first { acc in
-                    if case .magsafe = acc.connector { return true }
-                    return false
-                }
-                let internalHardware = InternalHardwareSnapshot(
-                    i2cBuses: prev.internalHardware.i2cBuses,
-                    spiBuses: prev.internalHardware.spiBuses,
-                    batteryManager: battery ?? prev.internalHardware.batteryManager,
-                    magsafe: magsafe,
-                    coprocessorGroups: prev.internalHardware.coprocessorGroups
-                )
-                self.snapshot = SystemSnapshot(
-                    tb: prev.tb,
-                    usb: prev.usb,
-                    accessories: accessories,
-                    internalHardware: internalHardware,
-                    bluetooth: prev.bluetooth,
-                    displays: prev.displays,
-                    pcie: prev.pcie,
-                    capturedAt: Date()
-                )
-            }
+            return (accessories, battery)
+        }.value
+        let (accessories, battery) = scanned
+        let prev = self.snapshot
+        let magsafe = accessories.first { acc in
+            if case .magsafe = acc.connector { return true }
+            return false
         }
+        let internalHardware = InternalHardwareSnapshot(
+            i2cBuses: prev.internalHardware.i2cBuses,
+            spiBuses: prev.internalHardware.spiBuses,
+            batteryManager: battery ?? prev.internalHardware.batteryManager,
+            magsafe: magsafe,
+            coprocessorGroups: prev.internalHardware.coprocessorGroups
+        )
+        self.snapshot = SystemSnapshot(
+            tb: prev.tb,
+            usb: prev.usb,
+            accessories: accessories,
+            internalHardware: internalHardware,
+            bluetooth: prev.bluetooth,
+            displays: prev.displays,
+            pcie: prev.pcie,
+            capturedAt: Date()
+        )
     }
 
     // MARK: - Selection helpers
