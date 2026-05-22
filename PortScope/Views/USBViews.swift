@@ -207,6 +207,14 @@ struct USBDeviceView: View {
                            tbSwitchID: tb,
                            onNavigate: onNavigate)
             }
+            // USB-Ethernet adapters publish their BSD interface several
+            // levels below the IOUSBHostDevice. Surface a synthesized
+            // ethernet card here so the user doesn't have to dig down to
+            // the driver kext to see the MAC, link state, and link speed.
+            let ethernet = findUSBEthernetAdapters(in: [node])
+            if !ethernet.isEmpty {
+                USBEthernetCard(adapters: ethernet, onNavigate: onNavigate)
+            }
             InterfacesCard(device: node, onNavigate: onNavigate)
         }
     }
@@ -545,6 +553,123 @@ struct InterfacesCard: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Rich Ethernet card shown on the `USBDeviceView` for USB-Ethernet adapters.
+/// Pulled out of the surrounding stat grid because BSD name / MAC / link
+/// status / negotiated speed are the *operating state* of the adapter and
+/// deserve a focused section instead of getting buried among VID / PID /
+/// power numbers. Each adapter renders as a card row that navigates to the
+/// IOEthernetInterface entry when clicked (matches the InterfacesCard
+/// pattern), so the user can still drill down into raw IORegistry.
+struct USBEthernetCard: View {
+    let adapters: [USBEthernetAdapterInfo]
+    let onNavigate: (TBNodeID) -> Void
+
+    var body: some View {
+        SectionCard(title: title, symbol: "network") {
+            VStack(spacing: 0) {
+                ForEach(adapters, id: \.interfaceID) { info in
+                    AdapterDetailRow(info: info, onNavigate: onNavigate)
+                    if info.interfaceID != adapters.last?.interfaceID { Divider() }
+                }
+            }
+        }
+    }
+
+    private var title: String {
+        adapters.count == 1 ? "Ethernet" : "Ethernet (\(adapters.count))"
+    }
+
+    private struct AdapterDetailRow: View {
+        let info: USBEthernetAdapterInfo
+        let onNavigate: (TBNodeID) -> Void
+
+        var body: some View {
+            Button { onNavigate(info.interfaceID) } label: {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: info.linkActive ? "network" : "network.slash")
+                        .foregroundStyle(info.linkActive ? .green : .secondary)
+                        .frame(width: 22)
+                    VStack(alignment: .leading, spacing: 6) {
+                        // Headline: BSD name + link state, with negotiated
+                        // speed as a chip on the right.
+                        HStack(spacing: 8) {
+                            Text(info.bsdName ?? "Network Interface")
+                                .font(.callout.weight(.semibold).monospaced())
+                            statusChip
+                            if let mbps = info.linkSpeedMbps {
+                                speedChip(mbps: mbps)
+                            }
+                        }
+                        // Property grid: MAC, controller, source.
+                        if !rows.isEmpty {
+                            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 3) {
+                                ForEach(rows, id: \.label) { row in
+                                    GridRow {
+                                        Text(row.label)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .gridColumnAlignment(.leading)
+                                        Text(row.value)
+                                            .font(.caption.monospacedDigit())
+                                            .textSelection(.enabled)
+                                            .gridColumnAlignment(.leading)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 8).padding(.horizontal, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+
+        private var statusChip: some View {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(info.linkActive ? Color.green : Color.secondary)
+                    .frame(width: 7, height: 7)
+                Text(info.linkActive ? "Link Up" : "Link Down")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(info.linkActive ? .green : .secondary)
+            }
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background((info.linkActive ? Color.green : Color.secondary).opacity(0.12))
+            .clipShape(Capsule())
+        }
+
+        private func speedChip(mbps: UInt64) -> some View {
+            HStack(spacing: 4) {
+                Image(systemName: "speedometer").font(.caption2)
+                Text(ethernetSpeedLabel(mbps)).font(.caption.weight(.medium))
+            }
+            .foregroundStyle(.blue)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Color.blue.opacity(0.12))
+            .clipShape(Capsule())
+        }
+
+        private struct Row { let label: String; let value: String }
+
+        private var rows: [Row] {
+            var out: [Row] = []
+            if let mac = info.macAddress {
+                out.append(Row(label: "MAC Address", value: mac.uppercased()))
+            }
+            if let speed = info.linkSpeedMbps {
+                out.append(Row(label: "Negotiated Speed", value: ethernetSpeedLabel(speed)))
+            }
+            if let ctrl = info.controllerClassName, !ctrl.isEmpty {
+                out.append(Row(label: "Driver", value: ctrl))
+            }
+            return out
         }
     }
 }

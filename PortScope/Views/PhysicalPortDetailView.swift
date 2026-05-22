@@ -12,9 +12,15 @@ import SwiftUI
 
 struct PhysicalPortDetailView: View {
     let port: PhysicalPort
+    /// External displays attributed to this port by `ContentView`. Attribution
+    /// is heuristic (the IOService plane doesn't expose a clean port→display
+    /// link), but accurate enough when there's only one DP-active port or
+    /// when DP-active ports and external displays come in matching counts.
+    var displays: [DisplayInfo] = []
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
+        let ethernet = findUSBEthernetAdapters(in: port.usbDeviceRoots)
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
@@ -30,8 +36,11 @@ struct PhysicalPortDetailView: View {
                 if let sp = port.sourcePower, !sp.sinks.isEmpty {
                     powerOutputCard(sp)
                 }
-                if let acc = port.accessory, acc.carriesDisplay {
-                    displayCard(acc: acc)
+                if shouldShowDisplaysCard {
+                    displaysCard
+                }
+                if !ethernet.isEmpty {
+                    ethernetCard(adapters: ethernet)
                 }
                 if !port.tunnels.isEmpty {
                     tunnelsCard
@@ -431,21 +440,86 @@ struct PhysicalPortDetailView: View {
         .clipShape(Capsule())
     }
 
-    // MARK: - DisplayPort
+    // MARK: - Displays
 
-    private func displayCard(acc: PortAccessoryInfo) -> some View {
-        SectionCard(title: "DisplayPort Alt-Mode", symbol: "display") {
-            let rows: [InfoRow] = [
-                InfoRow(label: "Hot-Plug Detect",
-                        value: acc.hpdAsserted ? "Asserted — display attached" : "Idle",
-                        symbol: "dot.radiowaves.up.forward",
-                        tint: acc.hpdAsserted ? .pink : .secondary),
-                InfoRow(label: "Pin Assignment",
-                        value: displayPortPinAssignmentLabel(acc.displayPortPinAssignment),
-                        symbol: "rectangle.connected.to.line.below")
-            ]
-            InfoRowsView(rows: rows)
+    /// We show the card when either (a) DP alt-mode is asserted on the
+    /// USB-C connector itself or (b) `ContentView` has attributed at least
+    /// one display to this port (covers the TB-tunneled-display case where
+    /// the connector reports no DP transport but the dock's TB lane carries
+    /// a DisplayPort tunnel). When neither holds, displays aren't on this
+    /// port and the card stays hidden.
+    private var shouldShowDisplaysCard: Bool {
+        if port.accessory?.carriesDisplay == true { return true }
+        if !displays.isEmpty { return true }
+        return false
+    }
+
+    /// Display section: lists each external display attributed to this port
+    /// (resolution, refresh, color depth, HDR support) and folds the
+    /// DisplayPort alt-mode pin assignment + the DP tunnel's reserved
+    /// bandwidth in as inline rows. Attribution comes from `ContentView`
+    /// so the view doesn't reason about which display goes where.
+    private var displaysCard: some View {
+        let acc = port.accessory
+        let dpTunnel = port.tunnels.first { $0.kind == .displayPort }
+        return SectionCard(title: displaysCardTitle, symbol: "display") {
+            VStack(alignment: .leading, spacing: 14) {
+                if displays.isEmpty {
+                    Text("This port has a DisplayPort path active but no lit display surface was found. The framebuffer engine may still be coming up, or the panel may be in standby.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(displays) { d in
+                        DisplayRowCompact(display: d, onNavigate: onNavigate)
+                        if d.id != displays.last?.id { Divider() }
+                    }
+                }
+                // Alt-mode pin / HPD lines only make sense when the
+                // connector itself is driving the display — TB-tunneled
+                // displays don't touch USB-C alt-mode at all.
+                if let acc, acc.carriesDisplay {
+                    Divider()
+                    let altRows: [InfoRow] = [
+                        InfoRow(label: "Hot-Plug Detect",
+                                value: acc.hpdAsserted ? "Asserted — display attached" : "Idle",
+                                symbol: "dot.radiowaves.up.forward",
+                                tint: acc.hpdAsserted ? .pink : .secondary),
+                        InfoRow(label: "Pin Assignment",
+                                value: displayPortPinAssignmentLabel(acc.displayPortPinAssignment),
+                                symbol: "rectangle.connected.to.line.below")
+                    ]
+                    InfoRowsView(rows: altRows)
+                }
+                if let dp = dpTunnel {
+                    Divider()
+                    DPBandwidthRow(tunnel: dp,
+                                   linkBandwidth: port.bandwidthLane.properties["Link Bandwidth"]?.asUInt)
+                }
+            }
         }
+    }
+
+    private var displaysCardTitle: String {
+        if displays.isEmpty { return "Display" }
+        if displays.count == 1 { return "Display" }
+        return "Displays (\(displays.count))"
+    }
+
+    // MARK: - Ethernet (synthesised from USB-Ethernet adapters attached to the port)
+
+    private func ethernetCard(adapters: [USBEthernetAdapterInfo]) -> some View {
+        SectionCard(title: ethernetCardTitle(count: adapters.count), symbol: "network") {
+            VStack(spacing: 0) {
+                ForEach(adapters, id: \.interfaceID) { info in
+                    EthernetAdapterRow(info: info, onNavigate: onNavigate)
+                    if info.interfaceID != adapters.last?.interfaceID { Divider() }
+                }
+            }
+        }
+    }
+
+    private func ethernetCardTitle(count: Int) -> String {
+        count == 1 ? "Ethernet" : "Ethernet (\(count))"
     }
 
     // MARK: - Existing cards (tunnels / USB / connected device / related)
@@ -847,5 +921,215 @@ private struct TunnelRow: View {
             }
         }
         .padding(.vertical, 8).padding(.horizontal, 4)
+    }
+}
+
+// MARK: - Display row (compact)
+
+/// One external display in the port's Displays card. Resolution + refresh
+/// dominate the row; HDR / bit depth ride along as secondary chips. Clicking
+/// the row jumps to the full `DisplayDetailView`.
+private struct DisplayRowCompact: View {
+    let display: DisplayInfo
+    let onNavigate: (TBNodeID) -> Void
+
+    var body: some View {
+        Button { onNavigate(display.id) } label: {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: display.iconSymbol)
+                    .foregroundStyle(.pink)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(display.title).font(.callout.weight(.medium))
+                    if let s = subtitleLine, !s.isEmpty {
+                        Text(s).font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    if !badges.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(badges, id: \.self) { b in
+                                Text(b)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color.secondary.opacity(0.10))
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+                }
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var subtitleLine: String? {
+        var parts: [String] = []
+        if let w = display.widthPixels, let h = display.heightPixels, w > 0, h > 0 {
+            parts.append("\(w) × \(h)")
+        }
+        if let mx = display.maxRefreshHz {
+            if let mn = display.minRefreshHz, abs(mx - mn) > 1 {
+                parts.append("\(Int(mn.rounded()))–\(Int(mx.rounded())) Hz")
+            } else {
+                parts.append("\(Int(mx.rounded())) Hz")
+            }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var badges: [String] {
+        var out: [String] = []
+        if let d = display.colorBitDepth { out.append("\(d)-bit color") }
+        if display.supportsHDR { out.append("HDR") }
+        if let acc = display.colorAccuracyIndex { out.append("Accuracy index \(acc)") }
+        return out
+    }
+}
+
+// MARK: - DisplayPort bandwidth row
+
+/// Inline row used inside the Displays card: surfaces the DP tunnel's
+/// reservation against the link's capacity. Reads as "Bandwidth Reserved
+/// 25.6 Gb/s of 80 Gb/s" with a small progress bar — the user asked for
+/// reserved/consumed bandwidth to show up where they can see what's eating
+/// the link.
+///
+/// DP function adapters often publish `Required = Maximum = 1` (100 Mb/s)
+/// even on a live tunnel — that's a placeholder, not the real allocation
+/// (CLAUDE.md "Things that bit me"). When we see that, the row degrades
+/// to "Carried over Thunderbolt" without a misleading number.
+private struct DPBandwidthRow: View {
+    let tunnel: PortTunnel
+    let linkBandwidth: UInt64?
+
+    private var hasRealReservation: Bool {
+        max(tunnel.reservedBandwidth, tunnel.maxBandwidth) >= 10
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "gauge.with.dots.needle.50percent")
+                .foregroundStyle(.blue)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(hasRealReservation ? "DisplayPort Bandwidth" : "DisplayPort Tunnel")
+                    .font(.callout.weight(.medium))
+                Text(detailLine).font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if hasRealReservation, let bw = linkBandwidth, bw > 0 {
+                ProgressView(value: progress(linkBandwidth: bw))
+                    .progressViewStyle(.linear)
+                    .frame(width: 120)
+                    .tint(.blue)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var detailLine: String {
+        if !hasRealReservation {
+            // DP adapters don't statically reserve TB bandwidth; the link
+            // capacity is the only meaningful number to show here.
+            var parts: [String] = ["Active · \(tunnel.adapterCount) adapter\(tunnel.adapterCount == 1 ? "" : "s")"]
+            if let bw = linkBandwidth, bw > 0 {
+                parts.append("\(tbBandwidthLabel(bw)) link")
+            }
+            return parts.joined(separator: " · ")
+        }
+        var parts: [String] = []
+        if tunnel.reservedBandwidth >= 10 {
+            parts.append("Reserved \(tbBandwidthLabel(tunnel.reservedBandwidth))")
+        }
+        if tunnel.maxBandwidth >= 10 {
+            parts.append("Max \(tbBandwidthLabel(tunnel.maxBandwidth))")
+        }
+        if let bw = linkBandwidth, bw > 0 {
+            parts.append("of \(tbBandwidthLabel(bw)) link")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func progress(linkBandwidth: UInt64) -> Double {
+        let used = max(tunnel.reservedBandwidth, tunnel.maxBandwidth)
+        guard linkBandwidth > 0, used > 0 else { return 0 }
+        return min(Double(used) / Double(linkBandwidth), 1.0)
+    }
+}
+
+// MARK: - USB-Ethernet row
+
+private struct EthernetAdapterRow: View {
+    let info: USBEthernetAdapterInfo
+    let onNavigate: (TBNodeID) -> Void
+
+    var body: some View {
+        Button { onNavigate(info.interfaceID) } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "network")
+                    .foregroundStyle(info.linkActive ? .green : .secondary)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(adapterTitle).font(.callout.weight(.medium))
+                    if let s = adapterSubtitle, !s.isEmpty {
+                        Text(s).font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    let chips = statusChips
+                    if !chips.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(chips, id: \.label) { chip in
+                                HStack(spacing: 3) {
+                                    Image(systemName: chip.symbol).font(.caption2)
+                                    Text(chip.label).font(.caption2)
+                                }
+                                .foregroundStyle(chip.color)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(chip.color.opacity(0.12))
+                                .clipShape(Capsule())
+                            }
+                        }
+                    }
+                }
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var adapterTitle: String {
+        info.productName ?? info.usbDeviceTitle ?? "USB Ethernet Adapter"
+    }
+
+    private var adapterSubtitle: String? {
+        var parts: [String] = []
+        if let v = info.usbVendorName, !v.isEmpty { parts.append(v) }
+        if let bsd = info.bsdName { parts.append("Interface \(bsd)") }
+        if let mac = info.macAddress { parts.append(mac.uppercased()) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private struct Chip { let symbol: String; let label: String; let color: Color }
+
+    private var statusChips: [Chip] {
+        var out: [Chip] = []
+        if info.linkActive {
+            out.append(Chip(symbol: "checkmark.circle.fill", label: "Link up", color: .green))
+        } else {
+            out.append(Chip(symbol: "minus.circle", label: "Link down", color: .secondary))
+        }
+        if let mbps = info.linkSpeedMbps {
+            out.append(Chip(symbol: "speedometer", label: ethernetSpeedLabel(mbps), color: .blue))
+        }
+        return out
     }
 }

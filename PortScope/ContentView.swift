@@ -48,6 +48,7 @@ struct ContentView: View {
                         .id(sel)
                 case .usbC, .usbA, .magsafe, .other:
                     PhysicalPortDetailView(port: port,
+                                           displays: displaysForPort(port),
                                            onNavigate: { vm.select($0) })
                         .id(sel)
                 }
@@ -101,6 +102,13 @@ struct ContentView: View {
         } else {
             emptyState
         }
+    }
+
+    private func displaysForPort(_ port: PhysicalPort) -> [DisplayInfo] {
+        let allPorts = TopologyMapper.physicalPorts(from: vm.snapshot)
+        return displaysAttributed(to: port,
+                                  allPorts: allPorts,
+                                  allDisplays: vm.snapshot.displays.displays)
     }
 
     private func findBluetoothDevice(id: TBNodeID) -> BluetoothDevice? {

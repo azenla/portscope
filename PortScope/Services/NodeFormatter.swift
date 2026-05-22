@@ -175,9 +175,14 @@ nonisolated enum NodeFormatter {
             return (product ?? "USB Device", sub.isEmpty ? nil : sub.joined(separator: " · "))
 
         case .networkIf:
+            // The kernel doesn't put the carrier (Wi-Fi / Ethernet / TB-IP /
+            // USB-Ethernet) on the interface itself, only the BSD name. We
+            // can't read the parent's class from here either. Surface a
+            // generic title and leave carrier-specific labelling to the
+            // per-port detail views (which can walk the subtree and decide).
             let bsd = props["BSD Name"]?.asString
-            let isThunderbolt = cls == "IOEthernetInterface" && (props["IOMediaIcon"] == nil)
-            let title = isThunderbolt ? "Thunderbolt Networking" : "Network Interface"
+            let builtIn = props["IOBuiltin"]?.asBool ?? false
+            let title = builtIn ? "Built-in Network Interface" : "Network Interface"
             return (title, bsd.map { "Interface \($0)" })
 
         case .appleFabric:

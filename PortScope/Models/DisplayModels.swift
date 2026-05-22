@@ -24,6 +24,50 @@ nonisolated struct DisplaySnapshot {
     var totalCount: Int { displays.count }
 }
 
+/// Loose heuristic for attributing external displays to physical ports.
+/// The IOService plane doesn't expose a clean port→display link on Apple
+/// Silicon, so we lean on runtime signals: DP alt-mode (`carriesDisplay`)
+/// for directly-attached panels, or the presence of a DisplayPort TB
+/// tunnel for displays carried through a dock. Rules:
+///
+/// * If exactly one port carries a display, all externals go to it.
+/// * If N ports = N externals, pair them 1:1 in (port-number ASC,
+///   dispext-name ASC) order.
+/// * Otherwise surface every external under every display-carrying port
+///   (better to repeat than to vanish — the user can mentally disambiguate).
+///
+/// Returns the displays that should be shown under `port` in the UI.
+/// Shared by the sidebar (per-port display rows) and the port detail view
+/// (Displays card) so both see the same attribution.
+nonisolated func displaysAttributed(to port: PhysicalPort,
+                                    allPorts: [PhysicalPort],
+                                    allDisplays: [DisplayInfo]) -> [DisplayInfo] {
+    guard portCarriesAnyDisplay(port) else { return [] }
+    let dpPorts = allPorts
+        .filter(portCarriesAnyDisplay)
+        .sorted { $0.number < $1.number }
+    let externals = allDisplays
+        .filter { !$0.isBuiltIn && $0.isConnected }
+        .sorted { $0.deviceTreeName < $1.deviceTreeName }
+    guard !externals.isEmpty, !dpPorts.isEmpty else { return [] }
+    if dpPorts.count == 1 { return externals }
+    if dpPorts.count == externals.count,
+       let idx = dpPorts.firstIndex(where: { $0.id == port.id }) {
+        return [externals[idx]]
+    }
+    return externals
+}
+
+/// A port "carries a display" if either DP alt-mode is active (direct
+/// monitor on USB-C / MagSafe) or a DisplayPort tunnel exists on the TB
+/// router (a display routed through a Thunderbolt dock). The kernel only
+/// publishes alt-mode flags for the former; the latter shows up purely as
+/// a tunnel on the lane.
+nonisolated func portCarriesAnyDisplay(_ port: PhysicalPort) -> Bool {
+    if port.accessory?.carriesDisplay == true { return true }
+    return port.tunnels.contains { $0.kind == .displayPort }
+}
+
 nonisolated struct DisplayInfo: Hashable, Identifiable {
     var id: TBNodeID { backingID }
 

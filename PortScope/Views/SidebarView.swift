@@ -174,6 +174,7 @@ struct SidebarView: View {
             PortsByConnector(ports: ports,
                              battery: batteryNode,
                              magsafe: hw.magsafe,
+                             allDisplays: vm.snapshot.displays.displays,
                              expanded: $expanded,
                              collapsedSubgroups: $collapsedSubgroups,
                              flattenHubs: flattenHubs)
@@ -371,6 +372,9 @@ private struct PortsByConnector: View {
     let battery: TBNode?
     /// MagSafe receptacle accessory, when the chassis ships one.
     let magsafe: PortAccessoryInfo?
+    /// Full display list — used to attribute externals to each port so the
+    /// sidebar can render a display row alongside the dock's USB devices.
+    let allDisplays: [DisplayInfo]
     @Binding var expanded: Set<TBNodeID>
     /// Shared subgroup-collapse state owned by `SidebarView`. Each subgroup
     /// uses a namespaced key (`"physical:Power"`, `"physical:USB-C"`, …) so
@@ -394,7 +398,10 @@ private struct PortsByConnector: View {
                     MagSafeRow(accessory: magsafe).tag(MagSafeSelector.id)
                 }
                 ForEach(powerPorts, id: \.id) { port in
-                    PortBranch(port: port, expanded: $expanded, flattenHubs: flattenHubs)
+                    PortBranch(port: port,
+                               displays: displaysFor(port),
+                               expanded: $expanded,
+                               flattenHubs: flattenHubs)
                 }
             }
         }
@@ -403,10 +410,17 @@ private struct PortsByConnector: View {
                                 title: group.title,
                                 collapsedSubgroups: $collapsedSubgroups) {
                 ForEach(group.ports, id: \.id) { port in
-                    PortBranch(port: port, expanded: $expanded, flattenHubs: flattenHubs)
+                    PortBranch(port: port,
+                               displays: displaysFor(port),
+                               expanded: $expanded,
+                               flattenHubs: flattenHubs)
                 }
             }
         }
+    }
+
+    private func displaysFor(_ port: PhysicalPort) -> [DisplayInfo] {
+        displaysAttributed(to: port, allPorts: ports, allDisplays: allDisplays)
     }
 
     private struct Group {
@@ -523,6 +537,11 @@ fileprivate func collapsibleSubgroup<Content: View>(
 
 private struct PortBranch: View {
     let port: PhysicalPort
+    /// External displays attributed to this port. Rendered as siblings of
+    /// the TB connected device and the USB device roots so the user can see
+    /// at a glance what's hanging off the receptacle without drilling into
+    /// the detail view.
+    let displays: [DisplayInfo]
     @Binding var expanded: Set<TBNodeID>
     let flattenHubs: Bool
 
@@ -534,7 +553,7 @@ private struct PortBranch: View {
         // dock internals don't appear as nested rows under the port.
         let roots = flattenedUSBRoots(port.usbDeviceRoots, flattenHubs: flattenHubs)
 
-        if device == nil && roots.isEmpty {
+        if device == nil && roots.isEmpty && displays.isEmpty {
             PortRow(port: port).tag(selectionID)
         } else {
             DisclosureGroup(
@@ -556,6 +575,9 @@ private struct PortBranch: View {
                 // immediately under them; nested hubs stay collapsed.
                 ForEach(roots, id: \.id) { dev in
                     USBBranch(node: dev, depth: 0, expanded: $expanded, flattenHubs: flattenHubs)
+                }
+                ForEach(displays, id: \.id) { d in
+                    DisplaySidebarRow(display: d).tag(d.id)
                 }
             } label: {
                 PortRow(port: port).tag(selectionID)
