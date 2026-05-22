@@ -26,6 +26,11 @@ struct SidebarView: View {
     /// Top-level sidebar sections that the user has collapsed. Each entry
     /// keys a section by its stable name; missing = expanded (the default).
     @State private var collapsedSections: Set<String> = []
+    /// Inline subgroups (POWER / USB-C / Buses / Connected …) that the
+    /// user has collapsed. Keyed by a namespaced string (e.g. "physical:Power",
+    /// "ih:Buses", "bt:Connected") to keep top-level and subgroup names from
+    /// colliding even if they happen to match.
+    @State private var collapsedSubgroups: Set<String> = []
     /// Persistent preference (Settings → Show Hardware Buses). When false
     /// the sidebar shows only the Physical Ports section. When true the
     /// raw Thunderbolt / USB / PCIe bus trees are surfaced too.
@@ -38,25 +43,36 @@ struct SidebarView: View {
     var body: some View {
         let ports = TopologyMapper.physicalPorts(from: vm.snapshot)
         let hw = vm.snapshot.internalHardware
-        // `AppleSmartBatteryManager` wraps the `AppleSmartBattery` child —
-        // we surface the battery node itself so the row reads "Battery"
-        // rather than "Battery Manager". Falls back to the manager when the
-        // child isn't classified (shouldn't happen in practice).
-        let batteryNode = hw.batteryManager?.children.first(where: { $0.kind == .battery })
-            ?? hw.batteryManager
+        // `AppleSmartBatteryManager` and `AppleSmartBattery` both show up on
+        // desktops too — the kernel uses the smart-battery service as a
+        // power-telemetry endpoint for `PowerTelemetryData` even when no
+        // pack is present. Gate on `BatteryInstalled` so the Mac mini /
+        // iMac / Studio / Pro don't grow a phantom 0% battery row in the
+        // Power subgroup.
+        let batteryNode: TBNode? = {
+            guard let battery = hw.batteryManager?.children
+                    .first(where: { $0.kind == .battery }),
+                  battery.properties["BatteryInstalled"]?.asBool == true
+            else { return nil }
+            return battery
+        }()
+        // When neither sidebar toggle is on, Physical Device is the only
+        // top-level section visible. Render its contents naked (no section
+        // header / chevron) so the sidebar isn't dominated by a single
+        // collapsible group that has nothing to be distinguished from.
+        let needsTopLevelHeader = showBuses || showAllDevices
 
         List(selection: $vm.selection) {
-            collapsibleSection("Physical Device", icon: "powerplug.fill") {
-                if ports.isEmpty && hw.magsafe == nil && batteryNode == nil {
-                    Text(vm.isScanning ? "Scanning…" : "No Thunderbolt controllers")
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
-                } else {
-                    PortsByConnector(ports: ports,
-                                     battery: batteryNode,
-                                     magsafe: hw.magsafe,
-                                     expanded: $expanded)
+            if needsTopLevelHeader {
+                collapsibleSection("Physical Device", icon: "powerplug.fill") {
+                    physicalDeviceContent(ports: ports,
+                                          hw: hw,
+                                          batteryNode: batteryNode)
                 }
+            } else {
+                physicalDeviceContent(ports: ports,
+                                      hw: hw,
+                                      batteryNode: batteryNode)
             }
 
             if showBuses {
@@ -130,6 +146,25 @@ struct SidebarView: View {
         }
     }
 
+    /// Content of the Physical Device section. Pulled out so the section
+    /// header can be conditionally wrapped (top-level toggle gating).
+    @ViewBuilder
+    private func physicalDeviceContent(ports: [PhysicalPort],
+                                       hw: InternalHardwareSnapshot,
+                                       batteryNode: TBNode?) -> some View {
+        if ports.isEmpty && hw.magsafe == nil && batteryNode == nil {
+            Text(vm.isScanning ? "Scanning…" : "No Thunderbolt controllers")
+                .foregroundStyle(.secondary)
+                .font(.callout)
+        } else {
+            PortsByConnector(ports: ports,
+                             battery: batteryNode,
+                             magsafe: hw.magsafe,
+                             expanded: $expanded,
+                             collapsedSubgroups: $collapsedSubgroups)
+        }
+    }
+
     /// Auto-open the rows the user almost certainly wants to see on first
     /// render, but only once per ID — so a manual collapse sticks.
     private func seedExpansion(ports: [PhysicalPort]) {
@@ -179,17 +214,23 @@ struct SidebarView: View {
                         .tag(BluetoothSelector.controllerID)
                 }
                 if !bt.connected.isEmpty {
-                    BluetoothSubgroupHeader(title: "Connected (\(bt.connected.count))")
-                    ForEach(bt.connected) { dev in
-                        BluetoothDeviceRow(device: dev)
-                            .tag(BluetoothSelector.id(for: dev))
+                    collapsibleSubgroup(key: "bt:Connected",
+                                        title: "Connected (\(bt.connected.count))",
+                                        collapsedSubgroups: $collapsedSubgroups) {
+                        ForEach(bt.connected) { dev in
+                            BluetoothDeviceRow(device: dev)
+                                .tag(BluetoothSelector.id(for: dev))
+                        }
                     }
                 }
                 if !bt.paired.isEmpty {
-                    BluetoothSubgroupHeader(title: "Paired (\(bt.paired.count))")
-                    ForEach(bt.paired) { dev in
-                        BluetoothDeviceRow(device: dev)
-                            .tag(BluetoothSelector.id(for: dev))
+                    collapsibleSubgroup(key: "bt:Paired",
+                                        title: "Paired (\(bt.paired.count))",
+                                        collapsedSubgroups: $collapsedSubgroups) {
+                        ForEach(bt.paired) { dev in
+                            BluetoothDeviceRow(device: dev)
+                                .tag(BluetoothSelector.id(for: dev))
+                        }
                     }
                 }
             }
@@ -220,7 +261,10 @@ struct SidebarView: View {
         if hasAny {
             collapsibleSection("Internal Hardware", icon: "cpu") {
                 if !hw.i2cBuses.isEmpty || !hw.spiBuses.isEmpty {
-                    coprocessorSubsection(title: "Buses", icon: "point.3.connected.trianglepath.dotted") {
+                    collapsibleSubgroup(key: "ih:Buses",
+                                        title: "Buses",
+                                        icon: "point.3.connected.trianglepath.dotted",
+                                        collapsedSubgroups: $collapsedSubgroups) {
                         ForEach(hw.i2cBuses, id: \.id) { bus in
                             FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
                         }
@@ -231,8 +275,10 @@ struct SidebarView: View {
                 }
 
                 ForEach(hw.coprocessorGroups) { group in
-                    coprocessorSubsection(title: group.category.title,
-                                          icon: group.category.symbol) {
+                    collapsibleSubgroup(key: "ih:\(group.category.title)",
+                                        title: group.category.title,
+                                        icon: group.category.symbol,
+                                        collapsedSubgroups: $collapsedSubgroups) {
                         ForEach(group.coprocessors, id: \.id) { block in
                             FullTopologyRow(node: block, depth: 0, expanded: $expanded)
                         }
@@ -242,34 +288,12 @@ struct SidebarView: View {
         }
     }
 
-    /// Render a labelled subsection inside the Internal Hardware section.
-    /// Stateless on collapse: these aren't expensive to render so we keep
-    /// them always-open for now. Visual grouping cuts the formerly-flat
-    /// list of 30+ coprocessors into bite-sized chunks.
-    @ViewBuilder
-    private func coprocessorSubsection<Content: View>(
-        title: String, icon: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .frame(width: 14)
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .textCase(.uppercase)
-            Spacer()
-        }
-        .padding(.top, 4)
-        content()
-    }
-
     /// A sidebar `Section` whose header is a clickable chevron that
-    /// hides/shows its body. Section name doubles as the collapse key, so
-    /// state persists across rescans (the body recomputes from `vm.snapshot`
-    /// every render but the header state lives on the view).
+    /// hides/shows its body. The chevron rotates smoothly between collapsed
+    /// (0°) and expanded (90°) so it matches macOS's native sidebar
+    /// disclosure idiom. Section name doubles as the collapse key, so state
+    /// persists across rescans (the body recomputes from `vm.snapshot` every
+    /// render but the header state lives on the view).
     @ViewBuilder
     private func collapsibleSection<Content: View>(
         _ name: String,
@@ -281,16 +305,17 @@ struct SidebarView: View {
             if !isCollapsed { content() }
         } header: {
             Button {
-                if isCollapsed { collapsedSections.remove(name) }
-                else { collapsedSections.insert(name) }
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isCollapsed { collapsedSections.remove(name) }
+                    else { collapsedSections.insert(name) }
+                }
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                        .font(.caption2.weight(.semibold))
-                        .frame(width: 10)
+                    DisclosureChevron(isExpanded: !isCollapsed, style: .section)
                     Image(systemName: icon)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .frame(width: 16, alignment: .center)
                     Text(name)
                     Spacer()
                 }
@@ -299,6 +324,7 @@ struct SidebarView: View {
             .buttonStyle(.plain)
         }
     }
+
 
     private func controllerHasAttachedHost(_ node: TBNode) -> Bool {
         var stack = node.children
@@ -331,6 +357,10 @@ private struct PortsByConnector: View {
     /// MagSafe receptacle accessory, when the chassis ships one.
     let magsafe: PortAccessoryInfo?
     @Binding var expanded: Set<TBNodeID>
+    /// Shared subgroup-collapse state owned by `SidebarView`. Each subgroup
+    /// uses a namespaced key (`"physical:Power"`, `"physical:USB-C"`, …) so
+    /// it doesn't collide with subgroup keys used by other sections.
+    @Binding var collapsedSubgroups: Set<String>
 
     var body: some View {
         let powerPorts = ports.filter { $0.connector == .acPower }
@@ -338,21 +368,27 @@ private struct PortsByConnector: View {
         let dataGroups = dataGroups()
 
         if hasPower {
-            SubcategoryHeader(title: "Power")
-            if let battery {
-                BatteryRow(node: battery).tag(battery.id)
-            }
-            if let magsafe {
-                MagSafeRow(accessory: magsafe).tag(MagSafeSelector.id)
-            }
-            ForEach(powerPorts, id: \.id) { port in
-                PortBranch(port: port, expanded: $expanded)
+            collapsibleSubgroup(key: "physical:Power",
+                                title: "Power",
+                                collapsedSubgroups: $collapsedSubgroups) {
+                if let battery {
+                    BatteryRow(node: battery).tag(battery.id)
+                }
+                if let magsafe {
+                    MagSafeRow(accessory: magsafe).tag(MagSafeSelector.id)
+                }
+                ForEach(powerPorts, id: \.id) { port in
+                    PortBranch(port: port, expanded: $expanded)
+                }
             }
         }
         ForEach(dataGroups, id: \.title) { group in
-            SubcategoryHeader(title: group.title)
-            ForEach(group.ports, id: \.id) { port in
-                PortBranch(port: port, expanded: $expanded)
+            collapsibleSubgroup(key: "physical:\(group.title)",
+                                title: group.title,
+                                collapsedSubgroups: $collapsedSubgroups) {
+                ForEach(group.ports, id: \.id) { port in
+                    PortBranch(port: port, expanded: $expanded)
+                }
             }
         }
     }
@@ -390,18 +426,83 @@ private struct PortsByConnector: View {
     }
 }
 
-/// Inline subgroup header used inside the Physical Device section. Matches
-/// the typography used by `coprocessorSubsection` headers so the visual
-/// language is consistent across the sidebar.
-private struct SubcategoryHeader: View {
-    let title: String
-    var body: some View {
-        Text(title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
-            .padding(.top, 4)
+// MARK: - Shared disclosure chevron + subgroup helper
+
+/// One rotating chevron used by every collapse affordance in the sidebar —
+/// the top-level section header and the inline subgroup header — so the
+/// affordance looks identical across all levels and you don't get the
+/// "two slightly different chevrons" feeling you used to. Rotates from
+/// 0° (collapsed) to 90° (expanded) with a short easing, matching macOS's
+/// own sidebar disclosure idiom.
+struct DisclosureChevron: View {
+    let isExpanded: Bool
+    let style: Style
+
+    enum Style {
+        case section   // bigger, more prominent
+        case subgroup  // small, matches uppercase tertiary header text
     }
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(font)
+            .foregroundStyle(.tertiary)
+            .frame(width: 12, alignment: .center)
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            .animation(.easeInOut(duration: 0.18), value: isExpanded)
+    }
+
+    private var font: Font {
+        switch style {
+        case .section: return .caption.weight(.semibold)
+        case .subgroup: return .caption2.weight(.semibold)
+        }
+    }
+}
+
+/// Inline collapsible subgroup. Used inside top-level sections to label
+/// related rows (POWER / USB-C / Buses / Connected …). Header is a clickable
+/// chevron + uppercase title; on collapse, the content closure is skipped
+/// entirely so the rows disappear from the List. Lives at file scope so
+/// both `SidebarView` and the nested `PortsByConnector` struct can call it
+/// against the shared `collapsedSubgroups` state owned by `SidebarView`.
+/// `key` is namespaced (e.g. `"physical:Power"`, `"ih:Buses"`) so subgroup
+/// titles that happen to match top-level section names don't share state.
+@ViewBuilder
+fileprivate func collapsibleSubgroup<Content: View>(
+    key: String,
+    title: String,
+    icon: String? = nil,
+    collapsedSubgroups: Binding<Set<String>>,
+    @ViewBuilder content: () -> Content
+) -> some View {
+    let isCollapsed = collapsedSubgroups.wrappedValue.contains(key)
+    Button {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if isCollapsed { collapsedSubgroups.wrappedValue.remove(key) }
+            else { collapsedSubgroups.wrappedValue.insert(key) }
+        }
+    } label: {
+        HStack(spacing: 6) {
+            DisclosureChevron(isExpanded: !isCollapsed, style: .subgroup)
+            if let icon {
+                Image(systemName: icon)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14, alignment: .center)
+            }
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+            Spacer()
+        }
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .padding(.top, 4)
+
+    if !isCollapsed { content() }
 }
 
 private struct PortBranch: View {
@@ -861,23 +962,6 @@ private struct BluetoothDeviceRow: View {
     }
 }
 
-private struct BluetoothSubgroupHeader: View {
-    let title: String
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "circle.fill")
-                .font(.system(size: 4))
-                .foregroundStyle(.tertiary)
-                .frame(width: 14)
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .textCase(.uppercase)
-            Spacer()
-        }
-        .padding(.top, 4)
-    }
-}
 
 // MARK: - Display row
 

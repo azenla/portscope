@@ -160,7 +160,21 @@ nonisolated struct TBNode: Identifiable, Hashable {
     /// IORegistry path for copy & debugging.
     let registryPath: String?
 
-    static func == (lhs: TBNode, rhs: TBNode) -> Bool { lhs.id == rhs.id }
+    /// Equality compares both the IORegistry entry id AND the current
+    /// `properties` dict. This is load-bearing for SwiftUI's view diffing:
+    /// the periodic power refresh produces a new `TBNode` with the same
+    /// id but updated properties (e.g. a refreshed battery `CurrentCapacity`),
+    /// and SwiftUI will skip re-evaluating a child view's body when its
+    /// inputs compare equal. Without the property check, a `BatteryView`
+    /// bound to the battery node would freeze on the values from the snapshot
+    /// it was first rendered with, while the sidebar row continues to update
+    /// because its enclosing List re-renders for other reasons.
+    /// `children` are intentionally excluded — including them would recurse
+    /// the entire IOKit tree on every diff, and SwiftUI compares child views
+    /// on their own merits when iterating, so per-node properties are enough.
+    static func == (lhs: TBNode, rhs: TBNode) -> Bool {
+        lhs.id == rhs.id && lhs.properties == rhs.properties
+    }
     func hash(into hasher: inout Hasher) { hasher.combine(id.raw) }
 }
 
