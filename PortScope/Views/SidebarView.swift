@@ -3,7 +3,10 @@
 //  PortScope
 //
 //  Three-tier navigation:
-//    1. Physical Ports — unified user view (TB / USB / Empty mode per port).
+//    1. Physical Device — unified user view organised into subcategories:
+//       Power (Internal Battery, MagSafe, AC PSU), then USB-C, USB-A, HDMI,
+//       SD Card, Ethernet, etc. Every connector kind is rendered under its
+//       own labelled subgroup so the chassis layout is legible at a glance.
 //    2. Thunderbolt — TB controllers and routers (raw IOKit tree, with
 //       `.other` wrapper kexts unwrapped and their meaningful descendants
 //       promoted up).
@@ -35,22 +38,24 @@ struct SidebarView: View {
     var body: some View {
         let ports = TopologyMapper.physicalPorts(from: vm.snapshot)
         let hw = vm.snapshot.internalHardware
+        // `AppleSmartBatteryManager` wraps the `AppleSmartBattery` child —
+        // we surface the battery node itself so the row reads "Battery"
+        // rather than "Battery Manager". Falls back to the manager when the
+        // child isn't classified (shouldn't happen in practice).
+        let batteryNode = hw.batteryManager?.children.first(where: { $0.kind == .battery })
+            ?? hw.batteryManager
 
         List(selection: $vm.selection) {
-            collapsibleSection("Physical Ports", icon: "powerplug.fill") {
-                // MagSafe lives at the very top of Physical Ports when present
-                // — it's a chassis receptacle just like the USB-C ports, even
-                // though it only carries power.
-                if let magsafe = hw.magsafe {
-                    MagSafeRow(accessory: magsafe)
-                        .tag(MagSafeSelector.id)
-                }
-                if ports.isEmpty && hw.magsafe == nil {
+            collapsibleSection("Physical Device", icon: "powerplug.fill") {
+                if ports.isEmpty && hw.magsafe == nil && batteryNode == nil {
                     Text(vm.isScanning ? "Scanning…" : "No Thunderbolt controllers")
                         .foregroundStyle(.secondary)
                         .font(.callout)
                 } else {
-                    PortsByConnector(ports: ports, expanded: $expanded)
+                    PortsByConnector(ports: ports,
+                                     battery: batteryNode,
+                                     magsafe: hw.magsafe,
+                                     expanded: $expanded)
                 }
             }
 
@@ -206,26 +211,14 @@ struct SidebarView: View {
     @ViewBuilder
     private var internalHardwareSection: some View {
         let hw = vm.snapshot.internalHardware
-        // MagSafe moved to Physical Ports; this section covers buses +
-        // battery + SoC coprocessors grouped thematically.
-        let hasAny = hw.batteryManager != nil
-            || !hw.i2cBuses.isEmpty
+        // MagSafe and the battery moved to the Physical Device → Power
+        // subgroup; this section now covers the remaining internal-fabric
+        // hardware (I²C / SPI buses + SoC coprocessors grouped thematically).
+        let hasAny = !hw.i2cBuses.isEmpty
             || !hw.spiBuses.isEmpty
             || !hw.coprocessorGroups.isEmpty
         if hasAny {
             collapsibleSection("Internal Hardware", icon: "cpu") {
-                if let bm = hw.batteryManager {
-                    // The manager wraps the battery — surface the battery
-                    // directly as the row, since the manager itself is
-                    // uninteresting.
-                    if let battery = bm.children.first(where: { $0.kind == .battery }) {
-                        BatteryRow(node: battery)
-                            .tag(battery.id)
-                    } else {
-                        BatteryRow(node: bm).tag(bm.id)
-                    }
-                }
-
                 if !hw.i2cBuses.isEmpty || !hw.spiBuses.isEmpty {
                     coprocessorSubsection(title: "Buses", icon: "point.3.connected.trianglepath.dotted") {
                         ForEach(hw.i2cBuses, id: \.id) { bus in
@@ -320,25 +313,44 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - Physical Ports section
+// MARK: - Physical Device section
 
-/// Render the physical ports list split into connector-family subsections
-/// (USB-C, USB-A, …). Subsection headers only appear when more than one
-/// family is present, so the common single-family case stays clean.
+/// Render the physical-device list split into labelled subcategories. The
+/// Power subgroup combines the Internal Battery, MagSafe, and the desktop
+/// AC PSU (whichever exist on this host) into one section above the data
+/// ports — those are all "how the Mac is fed power", which is conceptually
+/// separate from the data-connector grid below. Data subgroups (USB-C,
+/// USB-A, HDMI, SD Card, Ethernet, …) follow in chassis order. Subgroup
+/// headers always render, even when only one family is present — the
+/// consistent layout makes the chassis legible at a glance.
 private struct PortsByConnector: View {
     let ports: [PhysicalPort]
+    /// `AppleSmartBattery` node (classified as `.battery` by `NodeFormatter`).
+    /// Nil on desktops / VMs without a battery.
+    let battery: TBNode?
+    /// MagSafe receptacle accessory, when the chassis ships one.
+    let magsafe: PortAccessoryInfo?
     @Binding var expanded: Set<TBNodeID>
 
     var body: some View {
-        let groups = grouped()
-        ForEach(groups, id: \.title) { group in
-            if groups.count > 1 {
-                Text(group.title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .padding(.top, 4)
+        let powerPorts = ports.filter { $0.connector == .acPower }
+        let hasPower = battery != nil || magsafe != nil || !powerPorts.isEmpty
+        let dataGroups = dataGroups()
+
+        if hasPower {
+            SubcategoryHeader(title: "Power")
+            if let battery {
+                BatteryRow(node: battery).tag(battery.id)
             }
+            if let magsafe {
+                MagSafeRow(accessory: magsafe).tag(MagSafeSelector.id)
+            }
+            ForEach(powerPorts, id: \.id) { port in
+                PortBranch(port: port, expanded: $expanded)
+            }
+        }
+        ForEach(dataGroups, id: \.title) { group in
+            SubcategoryHeader(title: group.title)
             ForEach(group.ports, id: \.id) { port in
                 PortBranch(port: port, expanded: $expanded)
             }
@@ -350,12 +362,10 @@ private struct PortsByConnector: View {
         let ports: [PhysicalPort]
     }
 
-    private func grouped() -> [Group] {
-        // MagSafe is rendered separately by `MagSafeRow` at the top of the
-        // Physical Ports section, so omit it here to avoid duplicate rows.
-        // (`TopologyMapper.physicalPorts` includes it so the CLI dumper and
-        // any future unified view see a single port list.)
-        let power = ports.filter { $0.connector == .acPower }
+    /// Data-connector subgroups, in chassis order. AC PSU is excluded —
+    /// it's rendered in the Power subgroup alongside the battery and
+    /// MagSafe. MagSafe is excluded for the same reason.
+    private func dataGroups() -> [Group] {
         let usbC = ports.filter { $0.connector == .usbC }
         let usbA = ports.filter { $0.connector == .usbA }
         let hdmi = ports.filter { $0.connector == .hdmi }
@@ -370,7 +380,6 @@ private struct PortsByConnector: View {
             }
         }
         var out: [Group] = []
-        if !power.isEmpty { out.append(Group(title: "Power", ports: power)) }
         if !usbC.isEmpty { out.append(Group(title: "USB-C", ports: usbC)) }
         if !usbA.isEmpty { out.append(Group(title: "USB-A", ports: usbA)) }
         if !hdmi.isEmpty { out.append(Group(title: "HDMI", ports: hdmi)) }
@@ -378,6 +387,20 @@ private struct PortsByConnector: View {
         if !ethernet.isEmpty { out.append(Group(title: "Ethernet", ports: ethernet)) }
         if !other.isEmpty { out.append(Group(title: "Expanded Ports", ports: other)) }
         return out
+    }
+}
+
+/// Inline subgroup header used inside the Physical Device section. Matches
+/// the typography used by `coprocessorSubsection` headers so the visual
+/// language is consistent across the sidebar.
+private struct SubcategoryHeader: View {
+    let title: String
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .padding(.top, 4)
     }
 }
 
