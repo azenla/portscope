@@ -134,6 +134,16 @@ private struct StatusPill: View {
     private var state: (String, Color)? {
         switch node.kind {
         case .port:
+            // Lane adapters report Link Up/Inactive via Current Link Speed.
+            // Function adapters (DP / USB / PCIe) don't have a link speed —
+            // their "is this tunnel up?" signal is a non-empty Hop Table.
+            // Treating them with the lane heuristic shows "Inactive" on an
+            // active DP output, which is confusing.
+            let desc = node.properties["Description"]?.asString ?? ""
+            if isFunctionAdapterDescription(desc) {
+                return hasActiveHopTable(node) ? ("Active", .green) : ("Idle", .secondary)
+            }
+            if desc == "Port is inactive" { return ("Disabled", .secondary) }
             let speed = node.properties["Current Link Speed"]?.asUInt ?? 0
             if speed == 0 { return ("Inactive", .secondary) }
             return ("Link Up", .green)
@@ -146,6 +156,32 @@ private struct StatusPill: View {
             return nil
         }
     }
+}
+
+/// True when the kernel's adapter description points at a TB *function*
+/// adapter (carries a tunnel — DP/HDMI, USB, PCIe) rather than a lane
+/// adapter (the bidirectional TB link itself) or the NHI host interface.
+nonisolated private func isFunctionAdapterDescription(_ desc: String) -> Bool {
+    switch desc {
+    case "DP or HDMI Adapter",
+         "USB Adapter",
+         "USB Gen T Adapter",
+         "PCIe Adapter":
+        return true
+    default:
+        return false
+    }
+}
+
+/// Non-empty `Hop Table` is the kernel-authoritative signal that a tunnel
+/// is currently routed through a function adapter, regardless of whatever
+/// bandwidth value it reports (DP adapters in particular publish the
+/// placeholder Required=Max=1 on a live stream — see CLAUDE.md note).
+nonisolated private func hasActiveHopTable(_ node: TBNode) -> Bool {
+    if case .array(let entries) = node.properties["Hop Table"], !entries.isEmpty {
+        return true
+    }
+    return false
 }
 
 // MARK: - Controller
@@ -565,6 +601,19 @@ private struct PortView: View {
 
     var body: some View {
         let description = node.properties["Description"]?.asString ?? "Port"
+        if isFunctionAdapterDescription(description) {
+            FunctionAdapterPortView(node: node, description: description)
+        } else {
+            laneAdapterContent(description: description)
+        }
+    }
+
+    /// Lane-adapter / NHI / inactive-port view — the original PortView body.
+    /// Function adapters route through `FunctionAdapterPortView` instead
+    /// because Current Link Speed / Width / Link Negotiation are concepts
+    /// that don't apply to a DP / USB / PCIe tunnel adapter.
+    @ViewBuilder
+    private func laneAdapterContent(description: String) -> some View {
         let currentSpeed = node.properties["Current Link Speed"]?.asUInt ?? 0
         let targetSpeed = node.properties["Target Link Speed"]?.asUInt ?? 0
         let supportedSpeed = node.properties["Supported Link Speed"]?.asUInt ?? 0
@@ -663,6 +712,105 @@ private func iconFor(description: String) -> String {
     case "USB Adapter", "USB Gen T Adapter": return "cable.connector"
     case "PCIe Adapter": return "square.stack.3d.up"
     default: return "questionmark.circle"
+    }
+}
+
+/// Detail view for a TB function adapter (DP/HDMI, USB, PCIe). Function
+/// adapters don't have a physical link — their meaningful state is the
+/// hop table and whatever bandwidth the kernel reports allocated to the
+/// tunnels routed through them. The original `PortView` layout (current/
+/// target/supported link speed + width, full bandwidth bar) makes a live
+/// DP output read as "Inactive · 100 Mb/s" which is the opposite of
+/// what's happening.
+private struct FunctionAdapterPortView: View {
+    let node: TBNode
+    let description: String
+
+    var body: some View {
+        let portNum = node.properties["Port Number"]?.asUInt
+        let req = node.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
+        let maxAlloc = node.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
+        let linkBw = node.properties["Link Bandwidth"]?.asUInt ?? 0
+        let hopTable: [IORegValue] = {
+            if case let .array(arr) = node.properties["Hop Table"] { return arr }
+            return []
+        }()
+        let bestAlloc = max(req, maxAlloc)
+        // CLAUDE.md: DP adapters often publish Required=Max=1 (100 Mb/s)
+        // on an active tunnel — that's a placeholder, not the real
+        // allocation. Treat values <1 Gb/s as decorative.
+        let hasRealReservation = bestAlloc >= 10
+        let isActive = !hopTable.isEmpty
+
+        VStack(alignment: .leading, spacing: 16) {
+            StatGrid(stats: [
+                Stat(label: "Adapter",
+                     value: description,
+                     symbol: iconFor(description: description)),
+                Stat(label: "Port",
+                     value: portNum.map(String.init) ?? "—",
+                     symbol: "number"),
+                Stat(label: "Status",
+                     value: isActive ? "Active" : "Idle",
+                     symbol: isActive ? "checkmark.circle.fill" : "circle.dashed"),
+                Stat(label: "Active Tunnels",
+                     value: "\(hopTable.count)",
+                     symbol: "arrow.triangle.swap"),
+                Stat(label: "Link Capacity",
+                     value: linkBw > 0 ? tbBandwidthLabel(linkBw) : "—",
+                     symbol: "gauge.with.dots.needle.67percent"),
+                Stat(label: "Reserved Bandwidth",
+                     value: reservedBandwidthLabel(req: req,
+                                                   maxAlloc: maxAlloc,
+                                                   isActive: isActive),
+                     symbol: "speedometer")
+            ])
+
+            // Only show the bandwidth bar when there's a real reservation
+            // (≥1 Gb/s). The placeholder 100 Mb/s case is misleading —
+            // function adapters don't statically reserve the link.
+            if hasRealReservation && linkBw > 0 {
+                SectionCard(title: "Bandwidth Allocation", symbol: "speedometer") {
+                    BandwidthBar(linkBandwidth: linkBw,
+                                 required: req,
+                                 maximum: maxAlloc)
+                        .padding(.vertical, 4)
+                }
+            }
+
+            // Hop Table — the authoritative routing record. Each entry
+            // describes a stream this adapter is forwarding: which hop
+            // ID arrives here, which port + hop it goes to next.
+            if !hopTable.isEmpty {
+                SectionCard(title: "Active Tunnels (\(hopTable.count))",
+                            symbol: "arrow.triangle.swap") {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(hopTable.enumerated()), id: \.offset) { idx, v in
+                            if case .dictionary(let kv) = v {
+                                let dict = Dictionary(kv, uniquingKeysWith: { a, _ in a })
+                                HopRow(index: idx,
+                                       hopID: dict["Hop ID"]?.asUInt,
+                                       dstPort: dict["Dst Port"]?.asUInt,
+                                       dstHop: dict["Dst Hop ID"]?.asUInt,
+                                       counter: dict["Counter"]?.asUInt)
+                                if idx < hopTable.count - 1 { Divider() }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Text("This adapter has no active tunnels — nothing is currently routed through it.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func reservedBandwidthLabel(req: UInt64, maxAlloc: UInt64, isActive: Bool) -> String {
+        let best = max(req, maxAlloc)
+        if best >= 10 { return tbBandwidthLabel(best) }
+        if isActive { return "Negligible (no static reservation)" }
+        return "—"
     }
 }
 

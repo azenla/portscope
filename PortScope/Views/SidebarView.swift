@@ -185,13 +185,24 @@ struct SidebarView: View {
     /// render, but only once per ID — so a manual collapse sticks.
     private func seedExpansion(ports: [PhysicalPort]) {
         var toOpen: [TBNodeID] = []
+        let allDisplays = vm.snapshot.displays.displays
         for p in ports {
             let pid = PhysicalPortSelector.id(for: p)
-            if p.connectedDevice != nil || !p.usbDeviceRoots.isEmpty {
+            let outputs = displayOutputsAttributed(to: p,
+                                                   allPorts: ports,
+                                                   allDisplays: allDisplays)
+            if p.connectedDevice != nil
+                || !p.usbDeviceRoots.isEmpty
+                || !outputs.isEmpty {
                 toOpen.append(pid)
             }
             // Top-level USB hubs get their immediate children visible.
             for root in p.usbDeviceRoots { toOpen.append(root.id) }
+            // DP/HDMI adapter rows auto-open so the display is visible
+            // without an extra click.
+            for output in outputs {
+                if let id = output.adapter?.id { toOpen.append(id) }
+            }
         }
         // TB controllers with a downstream router auto-open in the
         // Thunderbolt section.
@@ -399,7 +410,7 @@ private struct PortsByConnector: View {
                 }
                 ForEach(powerPorts, id: \.id) { port in
                     PortBranch(port: port,
-                               displays: displaysFor(port),
+                               displayOutputs: displayOutputsFor(port),
                                expanded: $expanded,
                                flattenHubs: flattenHubs)
                 }
@@ -411,7 +422,7 @@ private struct PortsByConnector: View {
                                 collapsedSubgroups: $collapsedSubgroups) {
                 ForEach(group.ports, id: \.id) { port in
                     PortBranch(port: port,
-                               displays: displaysFor(port),
+                               displayOutputs: displayOutputsFor(port),
                                expanded: $expanded,
                                flattenHubs: flattenHubs)
                 }
@@ -419,8 +430,10 @@ private struct PortsByConnector: View {
         }
     }
 
-    private func displaysFor(_ port: PhysicalPort) -> [DisplayInfo] {
-        displaysAttributed(to: port, allPorts: ports, allDisplays: allDisplays)
+    private func displayOutputsFor(_ port: PhysicalPort) -> [PortDisplayOutput] {
+        displayOutputsAttributed(to: port,
+                                 allPorts: ports,
+                                 allDisplays: allDisplays)
     }
 
     private struct Group {
@@ -537,11 +550,10 @@ fileprivate func collapsibleSubgroup<Content: View>(
 
 private struct PortBranch: View {
     let port: PhysicalPort
-    /// External displays attributed to this port. Rendered as siblings of
-    /// the TB connected device and the USB device roots so the user can see
-    /// at a glance what's hanging off the receptacle without drilling into
-    /// the detail view.
-    let displays: [DisplayInfo]
+    /// Display outputs attributed to this port: one entry per active
+    /// DP/HDMI function adapter on the dock's router (with the display
+    /// nested under it), or a single adapter-less entry for direct-attach.
+    let displayOutputs: [PortDisplayOutput]
     @Binding var expanded: Set<TBNodeID>
     let flattenHubs: Bool
 
@@ -553,7 +565,7 @@ private struct PortBranch: View {
         // dock internals don't appear as nested rows under the port.
         let roots = flattenedUSBRoots(port.usbDeviceRoots, flattenHubs: flattenHubs)
 
-        if device == nil && roots.isEmpty && displays.isEmpty {
+        if device == nil && roots.isEmpty && displayOutputs.isEmpty {
             PortRow(port: port).tag(selectionID)
         } else {
             DisclosureGroup(
@@ -576,14 +588,84 @@ private struct PortBranch: View {
                 ForEach(roots, id: \.id) { dev in
                     USBBranch(node: dev, depth: 0, expanded: $expanded, flattenHubs: flattenHubs)
                 }
-                ForEach(displays, id: \.id) { d in
-                    DisplaySidebarRow(display: d).tag(d.id)
+                ForEach(displayOutputs) { output in
+                    DisplayOutputBranch(output: output, expanded: $expanded)
                 }
             } label: {
                 PortRow(port: port).tag(selectionID)
             }
             .tag(selectionID)
         }
+    }
+}
+
+/// One DP/HDMI output row. Adapter-backed outputs expand into the panel(s)
+/// attributed to them — the dock's HDMI / DP jack becomes a tangible row
+/// in the sidebar with the display nested below. Direct-attach outputs
+/// don't have an adapter to click into, so we just render the display
+/// row directly without an enclosing disclosure.
+private struct DisplayOutputBranch: View {
+    let output: PortDisplayOutput
+    @Binding var expanded: Set<TBNodeID>
+
+    var body: some View {
+        if let adapter = output.adapter {
+            DisclosureGroup(
+                isExpanded: Binding(
+                    get: { expanded.contains(adapter.id) },
+                    set: { isOn in
+                        if isOn { expanded.insert(adapter.id) }
+                        else { expanded.remove(adapter.id) }
+                    }
+                )
+            ) {
+                ForEach(output.displays, id: \.id) { d in
+                    DisplaySidebarRow(display: d).tag(d.id)
+                }
+            } label: {
+                DisplayOutputRow(output: output).tag(adapter.id)
+            }
+            .tag(adapter.id)
+        } else {
+            ForEach(output.displays, id: \.id) { d in
+                DisplaySidebarRow(display: d).tag(d.id)
+            }
+        }
+    }
+}
+
+/// Sidebar row for an active DP/HDMI function adapter. Reads as a chassis
+/// output (e.g. "Display Output 1") with a subtitle clarifying the source
+/// — the dock's adapter port number — and a "DP/HDMI" hint so the user
+/// knows the kernel can't tell which physical jack it is.
+private struct DisplayOutputRow: View {
+    let output: PortDisplayOutput
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "display")
+                .foregroundStyle(.pink)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Display Output \(output.ordinal)")
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var subtitle: String {
+        var parts: [String] = ["DP / HDMI"]
+        if let adapter = output.adapter,
+           let n = adapter.properties["Port Number"]?.asUInt {
+            parts.append("adapter port \(n)")
+        }
+        if output.displays.isEmpty {
+            parts.append("no display attributed")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

@@ -24,6 +24,33 @@ nonisolated struct DisplaySnapshot {
     var totalCount: Int { displays.count }
 }
 
+/// One DisplayPort / HDMI output rooted at a physical port, with the
+/// external displays attributed to it. When the display sits on a dock the
+/// dock's TB router exposes one `DP or HDMI Adapter` function adapter per
+/// physical jack (the Anker Prime has three; others have two HDMI + one
+/// DP, etc.). Adapters with a non-empty `Hop Table` are the ones actively
+/// carrying a stream — those become the rows we render. For directly-
+/// attached panels (USB-C alt-mode) there's no dock router to grab
+/// adapters off, so `adapter` is nil and the display nests straight under
+/// the port.
+nonisolated struct PortDisplayOutput: Hashable, Identifiable {
+    /// The DP/HDMI function adapter on the dock's router. Nil for
+    /// direct-attach where the display routes through the host's lane
+    /// adapter without an intermediate function adapter we can name.
+    let adapter: TBNode?
+    /// 1-based row label. Adapter-backed outputs are numbered in
+    /// adapter-port-number order so the labels are stable across rescans.
+    let ordinal: Int
+    /// Displays attributed to this output. Usually 1; can be 0 when a DP
+    /// adapter is active but no `DisplayInfo` lines up (rare — see
+    /// `displayOutputsAttributed` for the count-mismatch fallback).
+    let displays: [DisplayInfo]
+
+    var id: TBNodeID {
+        adapter?.id ?? TBNodeID(raw: 0xD15B_0000_0000_0000 | UInt64(ordinal))
+    }
+}
+
 /// Loose heuristic for attributing external displays to physical ports.
 /// The IOService plane doesn't expose a clean port→display link on Apple
 /// Silicon, so we lean on runtime signals: DP alt-mode (`carriesDisplay`)
@@ -56,6 +83,60 @@ nonisolated func displaysAttributed(to port: PhysicalPort,
         return [externals[idx]]
     }
     return externals
+}
+
+/// Per-output breakdown for the sidebar / detail view. Splits the displays
+/// already attributed to a port (`displaysAttributed`) across the active
+/// DP/HDMI function adapters on the dock's router. If the port has no
+/// dock (direct-attach), returns a single output with `adapter == nil`
+/// carrying all the attributed displays. Empty when the port carries no
+/// display at all.
+nonisolated func displayOutputsAttributed(to port: PhysicalPort,
+                                          allPorts: [PhysicalPort],
+                                          allDisplays: [DisplayInfo]) -> [PortDisplayOutput] {
+    let attributed = displaysAttributed(to: port,
+                                        allPorts: allPorts,
+                                        allDisplays: allDisplays)
+    guard !attributed.isEmpty else { return [] }
+    let adapters = activeDPOutputAdapters(in: port)
+    guard !adapters.isEmpty else {
+        return [PortDisplayOutput(adapter: nil, ordinal: 1, displays: attributed)]
+    }
+    if adapters.count == 1 {
+        return [PortDisplayOutput(adapter: adapters[0], ordinal: 1, displays: attributed)]
+    }
+    if adapters.count == attributed.count {
+        return adapters.enumerated().map { idx, a in
+            PortDisplayOutput(adapter: a, ordinal: idx + 1, displays: [attributed[idx]])
+        }
+    }
+    // Counts mismatch: render every adapter row but only attach a display
+    // where we can. Leftover adapters render empty (still useful — the
+    // user can see "this output is wired up but I don't know which panel").
+    return adapters.enumerated().map { idx, a in
+        let mine = idx < attributed.count ? [attributed[idx]] : []
+        return PortDisplayOutput(adapter: a, ordinal: idx + 1, displays: mine)
+    }
+}
+
+/// DP/HDMI function adapters on the port's connected router that have a
+/// non-empty `Hop Table` — the kernel's authoritative "this tunnel is
+/// up" signal for function adapters. Sorted by adapter port number so
+/// the resulting list is stable across rescans.
+nonisolated func activeDPOutputAdapters(in port: PhysicalPort) -> [TBNode] {
+    guard let connected = port.connectedDevice else { return [] }
+    var out: [TBNode] = []
+    for child in connected.routerNode.children where child.kind == .port {
+        let desc = child.properties["Description"]?.asString ?? ""
+        guard desc == "DP or HDMI Adapter" else { continue }
+        if case let .array(arr) = child.properties["Hop Table"], !arr.isEmpty {
+            out.append(child)
+        }
+    }
+    return out.sorted {
+        ($0.properties["Port Number"]?.asUInt ?? 0)
+            < ($1.properties["Port Number"]?.asUInt ?? 0)
+    }
 }
 
 /// A port "carries a display" if either DP alt-mode is active (direct
