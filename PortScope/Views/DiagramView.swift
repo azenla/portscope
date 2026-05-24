@@ -77,16 +77,46 @@ struct DiagramView: View {
     @ViewBuilder
     private var topology: some View {
         let ports = TopologyMapper.physicalPorts(from: snapshot)
-            .filter { $0.connector == .usbC || $0.connector == .magsafe }
+            .filter { $0.connector == .usbC }
             .sorted { $0.number < $1.number }
 
-        VStack(spacing: 24) {
+        VStack(spacing: 0) {
             MacBlock(controllerCount: snapshot.tb.controllers.count)
             if ports.isEmpty {
                 Text("No Thunderbolt-capable ports on this Mac.")
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 40)
             } else {
+                // Trunk descender from the Mac block.
+                Rectangle()
+                    .fill(Color.blue.opacity(0.45))
+                    .frame(width: 2, height: 14)
+                // Horizontal bus spanning the centres of the port columns
+                // below. Drawn as a thin background line behind a row of
+                // spacers sized identically to the columns, so the line
+                // endpoints land exactly on the first and last column
+                // centres regardless of port count.
+                ZStack {
+                    HStack(spacing: 32) {
+                        ForEach(0..<ports.count, id: \.self) { _ in
+                            Color.clear.frame(width: 300, height: 2)
+                        }
+                    }
+                    GeometryReader { geo in
+                        let columnW: CGFloat = 300
+                        let gap: CGFloat = 32
+                        let totalW = CGFloat(ports.count) * columnW
+                                   + CGFloat(max(ports.count - 1, 0)) * gap
+                        let startX = (geo.size.width - totalW) / 2 + columnW / 2
+                        let endX = startX + CGFloat(max(ports.count - 1, 0)) * (columnW + gap)
+                        Path { p in
+                            p.move(to: CGPoint(x: startX, y: 1))
+                            p.addLine(to: CGPoint(x: endX, y: 1))
+                        }
+                        .stroke(Color.blue.opacity(0.45), lineWidth: 2)
+                    }
+                }
+                .frame(height: 2)
                 HStack(alignment: .top, spacing: 32) {
                     ForEach(ports, id: \.id) { port in
                         PortColumn(port: port)
@@ -166,11 +196,7 @@ private struct PortBox: View {
 
     var body: some View {
         let connected = port.connectedDevice != nil
-        let speed = port.laneAdapter.properties["Current Link Speed"]?.asUInt ?? 0
-        let width = port.laneAdapter.properties["Current Link Width"]?.asUInt ?? 0
-        let gen = speed > 0 ? tbGenerationShortLabel(speed) : nil
-
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: connected
                       ? "bolt.horizontal.circle.fill"
@@ -179,23 +205,14 @@ private struct PortBox: View {
                     .foregroundStyle(connected ? Color.blue : .secondary)
                 Text(port.cliTitle).font(.subheadline.bold())
             }
-            if let loc = port.catalogLocation {
+            if let cap = port.catalogCapability {
+                Text(cap)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if let loc = port.catalogLocation {
                 Text(loc)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            }
-            if connected, let gen {
-                HStack(spacing: 4) {
-                    Text(gen).font(.caption2.bold())
-                    if width > 0 {
-                        Text("×\(width)").font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .foregroundStyle(.blue)
-                .padding(.horizontal, 6).padding(.vertical, 1)
-                .background(Color.blue.opacity(0.10))
-                .clipShape(Capsule())
             }
         }
         .padding(.vertical, 10).padding(.horizontal, 14)
@@ -226,38 +243,63 @@ private struct LinkSegment: View {
                 .fill(Color.blue.opacity(0.55))
                 .frame(width: 2, height: 14)
 
-            VStack(spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "bolt.horizontal")
                         .foregroundStyle(.blue)
                         .font(.caption2)
-                    Text(s.hasLink ? tbBandwidthLabel(s.linkBandwidth) + " link" : "Link state unknown")
-                        .font(.caption.monospacedDigit().weight(.medium))
-                    Spacer()
-                    if s.planExceedsCapacity {
-                        Image(systemName: "exclamationmark.triangle.fill")
+                    if s.hasLink {
+                        Text(tbBandwidthLabel(s.linkBandwidth))
+                            .font(.callout.monospacedDigit().bold())
+                        Text("negotiated link")
                             .font(.caption2)
-                            .foregroundStyle(.red)
-                            .help("Planned bandwidth exceeds link capacity. The scheduler relies on tunnels not peaking simultaneously.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Link state unknown")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    Text(linkSpeedDescriptor(port: port))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
                 if s.hasLink {
                     MiniBandwidthBar(summary: s)
-                    HStack(spacing: 8) {
-                        Text("Reserved \(tbBandwidthLabel(s.reserved))")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.orange)
-                        Text("Max \(tbBandwidthLabel(s.max))")
+                    HStack(spacing: 10) {
+                        // Reserved is the only number that reflects actual
+                        // commitment; surface it as the headline.
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.orange).frame(width: 6, height: 6)
+                            Text("Reserved \(tbBandwidthLabel(s.reserved))")
+                                .font(.caption2.monospacedDigit().weight(.medium))
+                        }
+                        Text("(\(String(format: "%.0f%%", s.reservedFraction * 100)) of link)")
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text(String(format: "%.0f%%", s.reservedFraction * 100))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.tertiary)
+                        if s.planExceedsCapacity {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.red)
+                                Text("Plan \(tbBandwidthLabel(s.max)) overbooks by \(tbBandwidthLabel(s.max - s.linkBandwidth))")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.red)
+                            }
+                            .help("TB tunnels are budgeted on peak, but the scheduler relies on them not peaking at once. This is informational, not an error.")
+                        } else {
+                            HStack(spacing: 4) {
+                                Circle().fill(Color.yellow.opacity(0.55)).frame(width: 6, height: 6)
+                                Text("Max planned \(tbBandwidthLabel(s.max))")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
             }
-            .padding(8)
+            .padding(10)
             .frame(maxWidth: .infinity)
             .background(.background.secondary)
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -273,31 +315,52 @@ private struct LinkSegment: View {
     }
 }
 
-/// Compact 3-layer bar: free (background), max planned (yellow), reserved
-/// (orange). Mirrors `BandwidthBar` but at footprint suited for the topology
-/// inline.
+/// Compact, *non-overlapping* segmented bar: reserved (orange), additional
+/// planned headroom (yellow), free (gray). When the planned ceiling exceeds
+/// link capacity, the bar still tops out at 100% — the overbooked figure is
+/// surfaced separately in the row's text so the visual stays honest about
+/// utilization. Painting yellow up to the clamped max-fraction would make
+/// every overbooked link look 100% full when in reality only `reserved`
+/// is committed.
 private struct MiniBandwidthBar: View {
     let summary: PortBandwidthSummary
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.gray.opacity(0.20))
-                Capsule()
-                    .fill(Color.yellow.opacity(0.55))
-                    .frame(width: w * summary.maxFraction)
-                Capsule()
+            let reqW = w * summary.reservedFraction
+            // Yellow ("max planned") only extends past reserved up to the
+            // link cap. Beyond that there is no honest pixel to give it.
+            let yellowW = max(0, w * summary.maxFraction - reqW)
+            HStack(spacing: 0) {
+                Rectangle()
                     .fill(Color.orange)
-                    .frame(width: w * summary.reservedFraction)
-                if summary.planExceedsCapacity {
-                    Capsule()
-                        .strokeBorder(Color.red, lineWidth: 1)
-                }
+                    .frame(width: reqW)
+                Rectangle()
+                    .fill(Color.yellow.opacity(0.55))
+                    .frame(width: yellowW)
+                Rectangle()
+                    .fill(Color.gray.opacity(0.20))
             }
+            .clipShape(Capsule())
+            .overlay(
+                Capsule().strokeBorder(
+                    summary.planExceedsCapacity ? Color.red.opacity(0.45) : Color.clear,
+                    lineWidth: 1
+                )
+            )
         }
         .frame(height: 8)
     }
+}
+
+/// Short descriptor for the negotiated link state — used in the LinkSegment
+/// header as a tertiary hint. Falls back gracefully when the kernel reports
+/// values that don't map cleanly to a marketing TB generation.
+nonisolated private func linkSpeedDescriptor(port: PhysicalPort) -> String {
+    let width = port.laneAdapter.properties["Current Link Width"]?.asUInt ?? 0
+    if width == 0 { return "" }
+    return "\(width) lanes"
 }
 
 // MARK: - Device card
@@ -320,8 +383,13 @@ private struct ConnectedDeviceCard: View {
                     .font(.subheadline.bold())
                     .lineLimit(2)
             }
-            if let sub = device.subtitle {
-                Text(sub).font(.caption2).foregroundStyle(.secondary)
+            // The kernel's `Thunderbolt Version` encoding ("Spec 4.0") is
+            // misleading on TB5 hardware (Apple maps the high nibble loosely),
+            // and the dock's marketing name in `device.title` already carries
+            // the generation. Show only the depth when meaningful.
+            if let depth = device.routerNode.properties["Depth"]?.asUInt, depth > 0 {
+                Text(depth == 1 ? "Directly attached" : "Daisy-chained · hop \(depth)")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
 
             if s.perTunnel.isEmpty {
@@ -357,17 +425,37 @@ private struct ConnectedDeviceCard: View {
     }
 }
 
-/// Single tunnel-class row inside the device card. Renders the reserved
-/// figure inline with a mini bar showing usage against the link capacity.
-/// DP often publishes placeholder reservations (req=max=1, < 1 Gb/s); when
-/// that happens we say "Active" instead of stamping "0.1 Gb/s" everywhere.
+/// Single tunnel-class row inside the device card.
+///
+/// Two distinct cases the kernel asks us to handle differently:
+///
+/// 1. **DP**: publishes a real `Required` (e.g. 31.2 Gb/s for two streams)
+///    and a `Maximum` slightly higher than that. Both numbers mean what
+///    they say.
+/// 2. **USB / PCIe**: publishes `Required = 1` (= 100 Mb/s, a placeholder)
+///    even on active tunnels. The meaningful number is `Maximum` (e.g.
+///    20 Gb/s peak budget). Reading the placeholder as "100 Mb/s reserved"
+///    would let the user think USB is barely doing anything when in fact
+///    20 Gb/s of headroom is held for it.
+///
+/// Headline picks whichever is meaningful; mini-bar fills the same way so
+/// the visual matches the number.
 private struct TunnelRowMini: View {
     let tunnel: PortTunnel
     let linkBandwidth: UInt64
 
     var body: some View {
-        let real = max(tunnel.reservedBandwidth, tunnel.maxBandwidth) >= 10
         let category = TunnelCategory(kind: tunnel.kind)
+        let reservedReal = tunnel.reservedBandwidth >= 10
+        let maxReal = tunnel.maxBandwidth >= 10
+        let anyReal = reservedReal || maxReal
+        // For the headline / bar: prefer the reserved figure when it's a
+        // real reservation, otherwise fall back to the planned maximum
+        // (so USB/PCIe show "20 Gb/s planned" instead of "100 Mb/s").
+        let headlineValue: UInt64 = reservedReal
+            ? tunnel.reservedBandwidth
+            : tunnel.maxBandwidth
+        let headlineLabel: String = reservedReal ? "Reserved" : "Planned"
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -379,8 +467,11 @@ private struct TunnelRowMini: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
                 Spacer()
-                if real {
-                    Text(tbBandwidthLabel(tunnel.reservedBandwidth))
+                if anyReal {
+                    Text("\(headlineLabel) ")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    + Text(tbBandwidthLabel(headlineValue))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(category.color)
                 } else {
@@ -389,19 +480,15 @@ private struct TunnelRowMini: View {
                         .foregroundStyle(category.color)
                 }
             }
-            if real && linkBandwidth > 0 {
+            if anyReal && linkBandwidth > 0 {
                 GeometryReader { geo in
                     let w = geo.size.width
-                    let reqFrac = min(Double(tunnel.reservedBandwidth) / Double(linkBandwidth), 1.0)
-                    let maxFrac = min(Double(tunnel.maxBandwidth) / Double(linkBandwidth), 1.0)
+                    let headlineFrac = min(Double(headlineValue) / Double(linkBandwidth), 1.0)
                     ZStack(alignment: .leading) {
                         Capsule().fill(Color.gray.opacity(0.18))
                         Capsule()
-                            .fill(category.color.opacity(0.30))
-                            .frame(width: w * maxFrac)
-                        Capsule()
                             .fill(category.color)
-                            .frame(width: w * reqFrac)
+                            .frame(width: w * headlineFrac)
                     }
                 }
                 .frame(height: 5)
