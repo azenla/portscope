@@ -43,16 +43,18 @@ struct BreadcrumbBar: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: node.kind.sfSymbol)
+                    .symbolRenderingMode(.hierarchical)
                     .font(.system(size: 10))
-                    .foregroundStyle(node.kind.accentColor)
+                    .foregroundStyle(.secondary)
                 Text(node.title)
                     .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(
-                Capsule().fill(Color.secondary.opacity(0.12))
+                Capsule().fill(Color(NSColor.quaternaryLabelColor).opacity(0.35))
             )
             .contentShape(Capsule())
         }

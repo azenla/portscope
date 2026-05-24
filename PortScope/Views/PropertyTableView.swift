@@ -24,23 +24,21 @@ struct PropertyTableView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Raw IORegistry Properties").font(.headline)
-                Spacer()
+        VStack(alignment: .leading, spacing: PSSpacing.s) {
+            HStack(spacing: PSSpacing.s) {
+                TextField("Filter…", text: $search)
+                    .textFieldStyle(.roundedBorder)
                 if let path = node.registryPath {
                     Button {
                         copyToPasteboard(path)
                     } label: {
-                        Label("Copy Path", systemImage: "doc.on.doc")
+                        Label("Copy IORegistry path", systemImage: "doc.on.doc")
+                            .labelStyle(.iconOnly)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.borderless)
                     .help(path)
                 }
             }
-
-            TextField("Filter…", text: $search)
-                .textFieldStyle(.roundedBorder)
 
             VStack(spacing: 0) {
                 ForEach(filteredKeys, id: \.self) { key in
@@ -52,22 +50,27 @@ struct PropertyTableView: View {
                                         if expandedRows.contains(key) { expandedRows.remove(key) }
                                         else { expandedRows.insert(key) }
                                     })
-                        Divider()
+                        if key != filteredKeys.last {
+                            Rectangle()
+                                .fill(PSColor.divider.opacity(0.7))
+                                .frame(height: 0.5)
+                        }
                     }
                 }
             }
-            .background(.background.secondary)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .background(PSColor.tile)
+            .clipShape(RoundedRectangle(cornerRadius: PSRadii.tile))
 
             if filteredKeys.isEmpty {
                 Text("No properties match \"\(search)\"")
+                    .font(PSFont.body)
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, PSSpacing.m)
             }
 
             Text("\(node.propertyOrder.count) propert\(node.propertyOrder.count == 1 ? "y" : "ies")")
+                .font(PSFont.caption)
                 .foregroundStyle(.tertiary)
-                .font(.caption)
         }
     }
 

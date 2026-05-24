@@ -25,52 +25,34 @@ struct USBControllerView: View {
         let pciDevice = node.properties["PCI Device ID"]?.asUInt
             ?? node.properties["idProduct"]?.asUInt
         let attached = countDevices(under: node)
-
         let chip = chipFamily(from: node)
         let protoLabel = node.properties["UsbHostControllerProtocolRevision"]?.asString
             ?? xhciVersion.map(usbBcdVersion)
-            ?? "—"
 
-        VStack(alignment: .leading, spacing: 16) {
-            StatGrid(stats: [
-                Stat(label: "Hardware",
-                     value: chip,
-                     symbol: "cpu"),
-                Stat(label: "USB Spec",
-                     value: protoLabel == "—" ? "—" : "xHCI \(protoLabel)",
-                     symbol: "memorychip"),
-                Stat(label: "Downstream Ports",
-                     value: portCount.map(String.init) ?? "—",
-                     symbol: "rectangle.3.group"),
-                Stat(label: "Attached Devices",
-                     value: "\(attached.devices)",
-                     symbol: "cable.connector"),
-                Stat(label: "PCI Vendor / Device",
-                     value: pciVendor.map { String(format: "0x%04X", $0) }
-                        .flatMap { v in pciDevice.map { "\(v):\(String(format: "0x%04X", $0))" } } ?? "—",
-                     symbol: "barcode"),
-                Stat(label: "Sleep Capable",
-                     value: (node.properties["kUSBSleepSupported"]?.asBool ?? false) ? "Yes" : "No",
-                     symbol: "moon.zzz")
-            ])
-
-            if let tb = tbContext {
-                TBLinkCard(label: "This USB host controller is tunneled over Thunderbolt.",
-                           tbSwitchID: tb,
-                           onNavigate: onNavigate)
-            }
-
-            USBDeviceTreeCard(root: node, onNavigate: onNavigate)
+        PropertyList {
+            PropertyRowSpec("Hardware", chip)
+            PropertyRowSpec("USB spec", protoLabel.map { "xHCI \($0)" })
+            PropertyRowSpec("Downstream ports", portCount.map(String.init))
+            PropertyRowSpec("Attached devices",
+                            attached.devices > 0 ? "\(attached.devices)" : nil)
+            PropertyRowSpec("PCI vendor / device", vidPidLabel(vid: pciVendor, pid: pciDevice), mono: true)
+            PropertyRowSpec(forcing: "Sleep capable",
+                            (node.properties["kUSBSleepSupported"]?.asBool ?? false) ? "Yes" : "No")
         }
+
+        if let tb = tbContext {
+            TBContextSection(text: "This USB host controller is tunneled over Thunderbolt.",
+                             tbSwitchID: tb,
+                             onNavigate: onNavigate)
+        }
+        USBChildrenSection(root: node, onNavigate: onNavigate)
     }
 
-    /// Translate IORegistry hints into a human chip-family label. Uses
-    /// `IONameMatch` tokens ("usb-drd,t8142", "usb-auss,t6050") instead of
-    /// raw class names so the user doesn't see "AppleT8142USBXHCI".
-    private func chipFamily(from node: TBNode) -> String {
+    private func chipFamily(from node: TBNode) -> String? {
         let nameMatch = node.properties["IONameMatch"]?.asString
             ?? node.properties["IONameMatched"]?.asString
             ?? ""
+        guard !nameMatch.isEmpty else { return nil }
         let kind: String
         if nameMatch.hasPrefix("usb-drd") {
             kind = "Thunderbolt-attached"
@@ -81,14 +63,11 @@ struct USBControllerView: View {
         } else {
             kind = "USB"
         }
-        // Pull the silicon token (e.g. "t8142") if present.
         if let comma = nameMatch.firstIndex(of: ",") {
             let silicon = String(nameMatch[nameMatch.index(after: comma)...]).uppercased()
-            if !silicon.isEmpty {
-                return "\(kind) (\(silicon))"
-            }
+            if !silicon.isEmpty { return "\(kind) (\(silicon))" }
         }
-        return kind == "USB" ? "USB Controller" : kind
+        return kind == "USB" ? "USB controller" : kind
     }
 }
 
@@ -106,47 +85,28 @@ struct USBHubView: View {
         let power = USBDevicePower(properties: node.properties)
         let attached = countDevices(under: node)
 
-        VStack(alignment: .leading, spacing: 16) {
-            StatGrid(stats: [
-                Stat(label: "Vendor",
-                     value: NodeFormatter.usbVendorName(node.properties) ?? "—",
-                     symbol: "building.2"),
-                Stat(label: "Model",
-                     value: NodeFormatter.usbProductName(node.properties) ?? "—",
-                     symbol: "shippingbox"),
-                Stat(label: "USB Spec",
-                     value: usbBcdVersion(node.properties["bcdUSB"]?.asUInt),
-                     symbol: "doc.text"),
-                Stat(label: "Negotiated Speed",
-                     value: usbSpeedLabel(speed),
-                     symbol: "antenna.radiowaves.left.and.right"),
-                Stat(label: "Downstream Ports",
-                     value: portCount.map(String.init) ?? "—",
-                     symbol: "rectangle.3.group"),
-                Stat(label: "Attached Devices",
-                     value: "\(attached.devices)",
-                     symbol: "cable.connector"),
-                Stat(label: "Power Output",
-                     value: power.allocationLabel,
-                     symbol: "bolt"),
-                Stat(label: "Built-In",
-                     value: (node.properties["Built-In"]?.asBool ?? false) ? "Yes" : "No",
-                     symbol: "macbook")
-            ])
-
-            if let speedVal = speed {
-                USBLinkRateCard(speed: speedVal)
-            }
-            if power.hasData {
-                USBSinkPowerCard(power: power)
-            }
-            if let tb = tbContext {
-                TBLinkCard(label: "Reached through a Thunderbolt-tunneled USB controller.",
-                           tbSwitchID: tb,
-                           onNavigate: onNavigate)
-            }
-            USBDeviceTreeCard(root: node, onNavigate: onNavigate)
+        PropertyList {
+            PropertyRowSpec("Vendor", NodeFormatter.usbVendorName(node.properties))
+            PropertyRowSpec("Model", NodeFormatter.usbProductName(node.properties))
+            PropertyRowSpec("USB spec", usbBcdVersion(node.properties["bcdUSB"]?.asUInt))
+            PropertyRowSpec("Negotiated speed", usbSpeedLabel(speed))
+            PropertyRowSpec("Downstream ports", portCount.map(String.init))
+            PropertyRowSpec("Attached devices",
+                            attached.devices > 0 ? "\(attached.devices)" : nil)
+            PropertyRowSpec("Power output", power.allocationLabel.isNilOrEmpty ? nil : power.allocationLabel)
+            PropertyRowSpec(forcing: "Built-in",
+                            (node.properties["Built-In"]?.asBool ?? false) ? "Yes" : "No")
         }
+
+        if power.hasData {
+            USBSinkPowerSection(power: power)
+        }
+        if let tb = tbContext {
+            TBContextSection(text: "Reached through a Thunderbolt-tunneled USB controller.",
+                             tbSwitchID: tb,
+                             onNavigate: onNavigate)
+        }
+        USBChildrenSection(root: node, onNavigate: onNavigate)
     }
 }
 
@@ -167,65 +127,36 @@ struct USBDeviceView: View {
         let cls = node.properties["bDeviceClass"]?.asUInt
         let serial = node.properties["kUSBSerialNumberString"]?.asString
 
-        VStack(alignment: .leading, spacing: 16) {
-            StatGrid(stats: [
-                Stat(label: "Vendor",
-                     value: NodeFormatter.usbVendorName(node.properties) ?? "—",
-                     symbol: "building.2"),
-                Stat(label: "Product",
-                     value: NodeFormatter.usbProductName(node.properties) ?? "—",
-                     symbol: "shippingbox"),
-                Stat(label: "USB Spec",
-                     value: usbBcdVersion(bcdUSB),
-                     symbol: "doc.text"),
-                Stat(label: "Negotiated Speed",
-                     value: usbSpeedLabel(speed),
-                     symbol: "antenna.radiowaves.left.and.right"),
-                Stat(label: "Device Class",
-                     value: usbDeviceClassLabel(cls),
-                     symbol: deviceClassSymbol(cls)),
-                Stat(label: "VID : PID",
-                     value: formatVidPid(vid: vid, pid: pid),
-                     symbol: "barcode"),
-                Stat(label: "Power Output",
-                     value: power.allocationLabel,
-                     symbol: "bolt"),
-                Stat(label: "Serial Number",
-                     value: serial?.isEmpty == false ? serial! : "—",
-                     symbol: "number",
-                     isSecret: serial?.isEmpty == false)
-            ])
-
-            if let speedVal = speed {
-                USBLinkRateCard(speed: speedVal)
-            }
-            if power.hasData {
-                USBSinkPowerCard(power: power)
-            }
-            if let tb = tbContext {
-                TBLinkCard(label: "Reached through a Thunderbolt-tunneled USB bus.",
-                           tbSwitchID: tb,
-                           onNavigate: onNavigate)
-            }
-            // USB-Ethernet adapters publish their BSD interface several
-            // levels below the IOUSBHostDevice. Surface a synthesized
-            // ethernet card here so the user doesn't have to dig down to
-            // the driver kext to see the MAC, link state, and link speed.
-            let ethernet = findUSBEthernetAdapters(in: [node])
-            if !ethernet.isEmpty {
-                USBEthernetCard(adapters: ethernet, onNavigate: onNavigate)
-            }
-            InterfacesCard(device: node, onNavigate: onNavigate)
+        PropertyList {
+            PropertyRowSpec("Vendor", NodeFormatter.usbVendorName(node.properties))
+            PropertyRowSpec("Product", NodeFormatter.usbProductName(node.properties))
+            PropertyRowSpec("USB spec", usbBcdVersion(bcdUSB))
+            PropertyRowSpec("Negotiated speed", usbSpeedLabel(speed))
+            PropertyRowSpec("Device class", usbDeviceClassLabel(cls))
+            PropertyRowSpec("VID : PID", formatVidPid(vid: vid, pid: pid), mono: true)
+            PropertyRowSpec("Serial",
+                            serial?.isEmpty == false ? serial : nil,
+                            mono: true,
+                            secret: true)
         }
+
+        if power.hasData {
+            USBSinkPowerSection(power: power)
+        }
+        if let tb = tbContext {
+            TBContextSection(text: "Reached through a Thunderbolt-tunneled USB bus.",
+                             tbSwitchID: tb,
+                             onNavigate: onNavigate)
+        }
+        let ethernet = findUSBEthernetAdapters(in: [node])
+        if !ethernet.isEmpty {
+            USBEthernetSection(adapters: ethernet, onNavigate: onNavigate)
+        }
+        InterfacesSection(device: node, onNavigate: onNavigate)
     }
 
-    private func deviceClassSymbol(_ raw: UInt64?) -> String {
-        guard let raw, let cls = USBDeviceClass(rawValue: raw) else { return "cable.connector" }
-        return cls.symbol
-    }
-
-    private func formatVidPid(vid: UInt64?, pid: UInt64?) -> String {
-        guard let vid, let pid else { return "—" }
+    private func formatVidPid(vid: UInt64?, pid: UInt64?) -> String? {
+        guard let vid, let pid else { return nil }
         return String(format: "0x%04X : 0x%04X", vid, pid)
     }
 }
@@ -242,40 +173,22 @@ struct USBInterfaceView: View {
         let num = node.properties["bInterfaceNumber"]?.asUInt
         let endpoints = node.properties["bNumEndpoints"]?.asUInt
 
-        VStack(alignment: .leading, spacing: 16) {
-            StatGrid(stats: [
-                Stat(label: "Interface #",
-                     value: num.map(String.init) ?? "—",
-                     symbol: "number"),
-                Stat(label: "Class",
-                     value: usbDeviceClassLabel(cls),
-                     symbol: "puzzlepiece.extension"),
-                Stat(label: "Subclass",
-                     value: sub.map { String(format: "0x%02X", $0) } ?? "—",
-                     symbol: "tag"),
-                Stat(label: "Protocol",
-                     value: proto.map { String(format: "0x%02X", $0) } ?? "—",
-                     symbol: "shippingbox"),
-                Stat(label: "Endpoints",
-                     value: endpoints.map(String.init) ?? "—",
-                     symbol: "arrow.left.arrow.right")
-            ])
+        PropertyList {
+            PropertyRowSpec("Interface #", num.map(String.init))
+            PropertyRowSpec("Class", usbDeviceClassLabel(cls))
+            PropertyRowSpec("Subclass",
+                            sub.map { String(format: "0x%02X", $0) },
+                            mono: true)
+            PropertyRowSpec("Protocol",
+                            proto.map { String(format: "0x%02X", $0) },
+                            mono: true)
+            PropertyRowSpec("Endpoints", endpoints.map(String.init))
         }
     }
 }
 
-// MARK: - USB device power
+// MARK: - USBDevicePower
 
-/// Power-sourcing summary for a USB device, derived from the Apple-specific
-/// IORegistry properties the kernel publishes on each `IOUSBHostDevice` when
-/// the Mac is the USB-PD source on a USB-C receptacle.
-///
-/// * `UsbPowerSinkAllocation` — current (mA) the Mac has *granted* the sink.
-/// * `UsbPowerSinkCapability` — peak (mA) the sink is willing to accept.
-/// * `kUSBConfigurationCurrentOverride` — per-active-config override that
-///   replaces the legacy `bMaxPower` field from the configuration descriptor.
-/// * `Bus Current` / `Operating Bus Current (mA)` — legacy bus-current fields
-///   present on USB-A / hub-attached devices (no PD negotiation).
 struct USBDevicePower {
     let allocationMA: UInt64?
     let capabilityMA: UInt64?
@@ -290,18 +203,10 @@ struct USBDevicePower {
             ?? properties["Operating Bus Current (mA)"]?.asUInt
     }
 
-    /// Best single-number "current the device is set up to draw" — used in
-    /// the stat grid. Prefers the PD-negotiated allocation, falls back to
-    /// the config override, then the legacy bus-current field, then the
-    /// raw capability.
     var primaryCurrentMA: UInt64? {
         allocationMA ?? configurationCurrentMA ?? legacyBusCurrentMA ?? capabilityMA
     }
 
-    /// Estimated wattage at the USB-C default voltage (5 V). When the Mac
-    /// negotiates a higher PD voltage with the device the actual figure is
-    /// higher, but that source-side info isn't exposed in IORegistry today,
-    /// so the card always says "@ 5 V" to keep the number honest.
     var estimatedPowerW: Double? {
         guard let mA = primaryCurrentMA, mA > 0 else { return nil }
         return Double(mA) / 1000.0 * 5.0
@@ -311,164 +216,99 @@ struct USBDevicePower {
         primaryCurrentMA != nil || capabilityMA != nil
     }
 
-    var allocationLabel: String {
-        guard let mA = primaryCurrentMA, mA > 0 else { return "—" }
+    var allocationLabel: String? {
+        guard let mA = primaryCurrentMA, mA > 0 else { return nil }
         return "\(mA) mA"
     }
 }
 
-/// Power card on a USB device. Surfaces the Apple sink-allocation and
-/// capability fields that drive USB-C charging on Apple Silicon, along with
-/// an estimated wattage at 5 V.
-struct USBSinkPowerCard: View {
+private extension Optional where Wrapped == String {
+    var isNilOrEmpty: Bool {
+        guard let s = self else { return true }
+        return s.isEmpty
+    }
+}
+
+/// Power section for a USB device. Highlights the Apple sink-allocation
+/// numbers that drive USB-C charging on Apple Silicon, plus the estimated
+/// wattage at 5 V.
+struct USBSinkPowerSection: View {
     let power: USBDevicePower
 
     var body: some View {
-        // Title is Mac-centric: from the host's POV this is power *output* —
-        // the Mac sources current to this attached USB device. The card shows
-        // the per-device sink-allocation properties published in IORegistry.
-        SectionCard(title: "Power Output", symbol: "bolt.fill") {
-            VStack(alignment: .leading, spacing: 10) {
-                if let mA = power.primaryCurrentMA, mA > 0, let watts = power.estimatedPowerW {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text(String(format: "%.1f W", watts))
-                            .font(.system(size: 30, weight: .semibold).monospacedDigit())
-                            .foregroundStyle(.yellow)
-                        Text("at 5 V · \(mA) mA")
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                }
-                Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
-                    if let alloc = power.allocationMA {
-                        GridRow {
-                            Text("Negotiated allowance").foregroundStyle(.secondary)
-                            Text("\(alloc) mA").monospacedDigit()
-                        }
-                    }
-                    if let cap = power.capabilityMA {
-                        GridRow {
-                            Text("Peak Capability").foregroundStyle(.secondary)
-                            Text("\(cap) mA").monospacedDigit()
-                        }
-                    }
-                    if let cfg = power.configurationCurrentMA, cfg != power.allocationMA {
-                        GridRow {
-                            Text("Active config override").foregroundStyle(.secondary)
-                            Text("\(cfg) mA").monospacedDigit()
-                        }
-                    }
-                    if let bus = power.legacyBusCurrentMA, bus != power.allocationMA {
-                        GridRow {
-                            Text("Bus current (legacy)").foregroundStyle(.secondary)
-                            Text("\(bus) mA").monospacedDigit()
-                        }
-                    }
-                }
-                .font(.callout)
-                Text("Power figures assume the USB-C default 5 V. Apple Silicon doesn't publish source-side PD profiles in IORegistry, so a device that negotiates a higher PD voltage may pull more than shown here.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: PSSpacing.m) {
+            SectionHeader("Power output (Mac sourcing this device)")
+            if let mA = power.primaryCurrentMA, mA > 0, let watts = power.estimatedPowerW {
+                CapacityBar(
+                    title: nil,
+                    value: watts,
+                    secondaryValue: nil,
+                    capacity: max(15, watts),
+                    headlineValue: String(format: "%.1f W at 5 V · %d mA", watts, mA),
+                    legend: "Apple Silicon doesn't publish source-side PD profiles. A PD-fast-charge device may pull more than shown.",
+                    tint: PSColor.powerOut
+                )
+            }
+            PropertyList {
+                PropertyRowSpec("Negotiated allowance",
+                                power.allocationMA.map { "\($0) mA" })
+                PropertyRowSpec("Peak capability",
+                                power.capabilityMA.map { "\($0) mA" })
+                PropertyRowSpec("Active config override",
+                                power.configurationCurrentMA.map { "\($0) mA" })
+                PropertyRowSpec("Bus current (legacy)",
+                                power.legacyBusCurrentMA.map { "\($0) mA" })
             }
         }
     }
 }
 
-// MARK: - Shared building blocks
+// MARK: - Cross-link to TB context
 
-/// Visual indicator of the USB link rate for the negotiated speed.
-struct USBLinkRateCard: View {
-    let speed: UInt64
-
-    var body: some View {
-        if let s = USBSpeed(rawValue: Int(speed)) {
-            SectionCard(title: "Link Rate", symbol: "speedometer") {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text(s.shortLabel).font(.callout.weight(.medium))
-                        Spacer()
-                        Text(s.rateLabel).font(.callout.bold().monospaced())
-                    }
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.quaternary).frame(height: 14)
-                            Capsule()
-                                .fill(s.accentColor)
-                                .frame(width: geo.size.width * rateFraction(s), height: 14)
-                        }
-                    }
-                    .frame(height: 14)
-                    HStack(spacing: 12) {
-                        ForEach(USBSpeed.allRates, id: \.label) { name, rate in
-                            HStack(spacing: 4) {
-                                Circle()
-                                    .fill(rate == s.rateMbps ? s.accentColor : Color.secondary.opacity(0.3))
-                                    .frame(width: 6, height: 6)
-                                Text(name).font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-        }
-    }
-
-    /// Logarithmic fraction so 1.5 Mb/s isn't invisible against 20 Gb/s.
-    private func rateFraction(_ s: USBSpeed) -> Double {
-        let log = log10(s.rateMbps + 1)
-        let logMax = log10(USBSpeed.superPlusBy2.rateMbps + 1)
-        return min(max(log / logMax, 0.04), 1.0)
-    }
-}
-
-private extension USBSpeed {
-    static let allRates: [(label: String, rate: Double)] = [
-        ("USB 2.0", 480),
-        ("USB 3.0", 5_000),
-        ("USB 3.1", 10_000),
-        ("USB 3.2×2", 20_000)
-    ]
-}
-
-/// Card that cross-links to a TB switch entry.
-struct TBLinkCard: View {
-    let label: String
+struct TBContextSection: View {
+    let text: String
     let tbSwitchID: TBNodeID
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
-        SectionCard(title: "Thunderbolt Context", symbol: "bolt.horizontal.circle") {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: PSSpacing.s) {
+            SectionHeader("Thunderbolt context")
+            HStack(spacing: PSSpacing.s) {
                 Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")
-                    .foregroundStyle(.blue)
-                Text(label).foregroundStyle(.secondary)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+                Text(text).font(PSFont.body).foregroundStyle(.secondary)
                 Spacer()
                 Button {
                     onNavigate(tbSwitchID)
                 } label: {
                     Label("Show in Thunderbolt", systemImage: "arrow.up.right.square")
-                        .font(.callout)
+                        .font(PSFont.body)
                 }
             }
         }
     }
 }
 
-/// Section listing the immediate USB-device children below a hub/controller.
-struct USBDeviceTreeCard: View {
+// MARK: - Attached devices
+
+struct USBChildrenSection: View {
     let root: TBNode
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
         let kids = root.children.filter { $0.kind == .usbDevice || $0.kind == .usbHub }
         if !kids.isEmpty {
-            SectionCard(title: "Attached USB Devices", symbol: "cable.connector") {
+            VStack(alignment: .leading, spacing: PSSpacing.m) {
+                SectionHeader("Attached USB devices")
                 VStack(spacing: 0) {
                     ForEach(kids, id: \.id) { kid in
+                        if kid.id != kids.first?.id {
+                            Rectangle()
+                                .fill(PSColor.divider.opacity(0.7))
+                                .frame(height: 0.5)
+                        }
                         USBDeviceRow(node: kid, onNavigate: onNavigate)
-                        if kid.id != kids.last?.id { Divider() }
                     }
                 }
             }
@@ -485,71 +325,82 @@ struct USBDeviceRow: View {
             ?? node.properties["kUSBCurrentSpeed"]?.asUInt
         let cls = node.properties["bDeviceClass"]?.asUInt
         let symbol = USBDeviceClass(rawValue: cls ?? 0)?.symbol ?? "cable.connector"
+        let hasChildren = !node.children.filter({ $0.kind == .usbDevice || $0.kind == .usbHub }).isEmpty
 
         Button {
             onNavigate(node.id)
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: PSSpacing.s + 4) {
                 Image(systemName: symbol)
-                    .foregroundStyle(node.kind.accentColor)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
                     .frame(width: 22)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(node.title).lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(node.title).font(PSFont.body).lineLimit(1)
                     HStack(spacing: 6) {
                         if let s = speed, s > 0 {
                             Text(usbSpeedShortLabel(s))
-                                .font(.caption2)
+                                .font(PSFont.caption)
                                 .foregroundStyle(.secondary)
                         }
                         if let cls {
                             Text(usbDeviceClassLabel(cls))
-                                .font(.caption2)
+                                .font(PSFont.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
                 Spacer()
-                if !node.children.filter({ $0.kind == .usbDevice || $0.kind == .usbHub }).isEmpty {
-                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                if hasChildren {
+                    Image(systemName: "chevron.right")
+                        .font(PSFont.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.vertical, 8).padding(.horizontal, 4)
+            .padding(.vertical, PSSpacing.s)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 }
 
-struct InterfacesCard: View {
+struct InterfacesSection: View {
     let device: TBNode
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
         let interfaces = device.children.filter { $0.kind == .usbInterface }
         if !interfaces.isEmpty {
-            SectionCard(title: "USB Interfaces (\(interfaces.count))",
-                        symbol: "puzzlepiece.extension") {
+            VStack(alignment: .leading, spacing: PSSpacing.m) {
+                SectionHeader("USB interfaces (\(interfaces.count))")
                 VStack(spacing: 0) {
                     ForEach(interfaces, id: \.id) { iface in
+                        if iface.id != interfaces.first?.id {
+                            Rectangle()
+                                .fill(PSColor.divider.opacity(0.7))
+                                .frame(height: 0.5)
+                        }
                         Button { onNavigate(iface.id) } label: {
-                            HStack(spacing: 10) {
+                            HStack(spacing: PSSpacing.s + 4) {
                                 Image(systemName: "puzzlepiece.extension")
-                                    .foregroundStyle(.mint)
+                                    .symbolRenderingMode(.hierarchical)
+                                    .foregroundStyle(.secondary)
                                     .frame(width: 22)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(iface.title).font(.callout).lineLimit(1)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(iface.title).font(PSFont.body).lineLimit(1)
                                     if let s = iface.subtitle {
-                                        Text(s).font(.caption2).foregroundStyle(.secondary)
+                                        Text(s).font(PSFont.caption).foregroundStyle(.secondary)
                                     }
                                 }
                                 Spacer()
-                                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                                Image(systemName: "chevron.right")
+                                    .font(PSFont.caption)
+                                    .foregroundStyle(.tertiary)
                             }
-                            .padding(.vertical, 6).padding(.horizontal, 4)
+                            .padding(.vertical, PSSpacing.s)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        if iface.id != interfaces.last?.id { Divider() }
                     }
                 }
             }
@@ -557,121 +408,98 @@ struct InterfacesCard: View {
     }
 }
 
-/// Rich Ethernet card shown on the `USBDeviceView` for USB-Ethernet adapters.
-/// Pulled out of the surrounding stat grid because BSD name / MAC / link
-/// status / negotiated speed are the *operating state* of the adapter and
-/// deserve a focused section instead of getting buried among VID / PID /
-/// power numbers. Each adapter renders as a card row that navigates to the
-/// IOEthernetInterface entry when clicked (matches the InterfacesCard
-/// pattern), so the user can still drill down into raw IORegistry.
-struct USBEthernetCard: View {
+// MARK: - USB-Ethernet adapter
+
+struct USBEthernetSection: View {
     let adapters: [USBEthernetAdapterInfo]
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
-        SectionCard(title: title, symbol: "network") {
+        VStack(alignment: .leading, spacing: PSSpacing.m) {
+            SectionHeader(adapters.count == 1 ? "Ethernet" : "Ethernet (\(adapters.count))")
             VStack(spacing: 0) {
                 ForEach(adapters, id: \.interfaceID) { info in
-                    AdapterDetailRow(info: info, onNavigate: onNavigate)
-                    if info.interfaceID != adapters.last?.interfaceID { Divider() }
+                    if info.interfaceID != adapters.first?.interfaceID {
+                        Rectangle()
+                            .fill(PSColor.divider.opacity(0.7))
+                            .frame(height: 0.5)
+                    }
+                    USBEthernetRow(info: info, onNavigate: onNavigate)
                 }
             }
         }
     }
+}
 
-    private var title: String {
-        adapters.count == 1 ? "Ethernet" : "Ethernet (\(adapters.count))"
-    }
+private struct USBEthernetRow: View {
+    let info: USBEthernetAdapterInfo
+    let onNavigate: (TBNodeID) -> Void
 
-    private struct AdapterDetailRow: View {
-        let info: USBEthernetAdapterInfo
-        let onNavigate: (TBNodeID) -> Void
-
-        var body: some View {
-            Button { onNavigate(info.interfaceID) } label: {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: info.linkActive ? "network" : "network.slash")
-                        .foregroundStyle(info.linkActive ? .green : .secondary)
-                        .frame(width: 22)
-                    VStack(alignment: .leading, spacing: 6) {
-                        // Headline: BSD name + link state, with negotiated
-                        // speed as a chip on the right.
-                        HStack(spacing: 8) {
-                            Text(info.bsdName ?? "Network Interface")
-                                .font(.callout.weight(.semibold).monospaced())
-                            statusChip
-                            if let mbps = info.linkSpeedMbps {
-                                speedChip(mbps: mbps)
-                            }
+    var body: some View {
+        Button { onNavigate(info.interfaceID) } label: {
+            HStack(alignment: .top, spacing: PSSpacing.s + 4) {
+                Image(systemName: "network")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: PSSpacing.s) {
+                        Text(info.bsdName ?? "Network interface")
+                            .font(PSFont.bodyEmph.monospaced())
+                        if info.linkActive {
+                            StatusPill(status: .active)
+                        } else {
+                            StatusPill(status: .idle)
                         }
-                        // Property grid: MAC, controller, source.
-                        if !rows.isEmpty {
-                            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 3) {
-                                ForEach(rows, id: \.label) { row in
-                                    GridRow {
-                                        Text(row.label)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .gridColumnAlignment(.leading)
-                                        Text(row.value)
-                                            .font(.caption.monospacedDigit())
-                                            .textSelection(.enabled)
-                                            .gridColumnAlignment(.leading)
-                                    }
-                                }
+                        if let mbps = info.linkSpeedMbps {
+                            Chip(label: ethernetSpeedLabel(mbps),
+                                 symbol: "speedometer",
+                                 tint: PSColor.powerOut,
+                                 emphasized: true,
+                                 monospaced: true)
+                        }
+                    }
+                    if !rows.isEmpty {
+                        PropertyList {
+                            for r in rows {
+                                PropertyRowSpec(r.label, r.value, mono: r.mono)
                             }
                         }
                     }
-                    Spacer()
-                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
                 }
-                .padding(.vertical, 8).padding(.horizontal, 4)
-                .contentShape(Rectangle())
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(PSFont.caption)
+                    .foregroundStyle(.tertiary)
             }
-            .buttonStyle(.plain)
+            .padding(.vertical, PSSpacing.s)
+            .contentShape(Rectangle())
         }
-
-        private var statusChip: some View {
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(info.linkActive ? Color.green : Color.secondary)
-                    .frame(width: 7, height: 7)
-                Text(info.linkActive ? "Link Up" : "Link Down")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(info.linkActive ? .green : .secondary)
-            }
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background((info.linkActive ? Color.green : Color.secondary).opacity(0.12))
-            .clipShape(Capsule())
-        }
-
-        private func speedChip(mbps: UInt64) -> some View {
-            HStack(spacing: 4) {
-                Image(systemName: "speedometer").font(.caption2)
-                Text(ethernetSpeedLabel(mbps)).font(.caption.weight(.medium))
-            }
-            .foregroundStyle(.blue)
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Color.blue.opacity(0.12))
-            .clipShape(Capsule())
-        }
-
-        private struct Row { let label: String; let value: String }
-
-        private var rows: [Row] {
-            var out: [Row] = []
-            if let mac = info.macAddress {
-                out.append(Row(label: "MAC Address", value: mac.uppercased()))
-            }
-            if let speed = info.linkSpeedMbps {
-                out.append(Row(label: "Negotiated Speed", value: ethernetSpeedLabel(speed)))
-            }
-            if let ctrl = info.controllerClassName, !ctrl.isEmpty {
-                out.append(Row(label: "Driver", value: ctrl))
-            }
-            return out
-        }
+        .buttonStyle(.plain)
     }
+
+    private struct Row { let label: String; let value: String; let mono: Bool }
+
+    private var rows: [Row] {
+        var out: [Row] = []
+        if let mac = info.macAddress {
+            out.append(Row(label: "MAC address", value: mac.uppercased(), mono: true))
+        }
+        if let speed = info.linkSpeedMbps {
+            out.append(Row(label: "Negotiated speed", value: ethernetSpeedLabel(speed), mono: false))
+        }
+        if let ctrl = info.controllerClassName, !ctrl.isEmpty {
+            out.append(Row(label: "Driver", value: ctrl, mono: true))
+        }
+        return out
+    }
+}
+
+// MARK: - Helpers
+
+private func vidPidLabel(vid: UInt64?, pid: UInt64?) -> String? {
+    guard let v = vid, let p = pid else { return nil }
+    return String(format: "0x%04X : 0x%04X", v, p)
 }
 
 private func countDevices(under node: TBNode) -> (devices: Int, hubs: Int) {

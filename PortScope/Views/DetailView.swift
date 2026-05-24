@@ -2,8 +2,10 @@
 //  DetailView.swift
 //  PortScope
 //
-//  Curated, human-readable presentation of a TB entity. Internals are tucked
-//  away behind a single "Developer details" disclosure at the bottom.
+//  Curated, human-readable presentation of a TB / USB / SoC entity. Each
+//  detail view is composed from the design-system primitives — Hero,
+//  PropertyList, CapacityBar, TileGrid, DisclosureCard. No bespoke heroes,
+//  no per-kind tile grids of icon-and-value cells.
 //
 
 import SwiftUI
@@ -19,18 +21,46 @@ struct DetailView: View {
     let ancestors: [TBNode]
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                BreadcrumbBar(ancestors: ancestors, onNavigate: onNavigate)
-                HeroHeader(node: node)
-                summary(for: node)
-                DeveloperDisclosure(node: node)
+        DetailContainer {
+            BreadcrumbBar(ancestors: ancestors, onNavigate: onNavigate)
+            Hero(symbol: node.kind.sfSymbol,
+                 title: node.title,
+                 subtitle: heroSubtitle,
+                 status: heroStatus)
+            summary(for: node)
+            DisclosureCard("Developer details (raw IORegistry)",
+                           icon: "wrench.and.screwdriver") {
+                PropertyTableView(node: node)
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 620)
-        .background(.background)
+    }
+
+    private var heroSubtitle: String? {
+        node.subtitle?.isEmpty == false ? node.subtitle : nil
+    }
+
+    /// Pill alongside the hero title. Derived from the node's kind and a
+    /// couple of key properties; only present for entities that genuinely
+    /// have a status (port / router / controller). USB devices / generic
+    /// nodes drop the pill and rely on their subtitle text.
+    private var heroStatus: PSStatus? {
+        switch node.kind {
+        case .port:
+            let desc = node.properties["Description"]?.asString ?? ""
+            if isFunctionAdapterDescription(desc) {
+                return hasActiveHopTable(node) ? .active : .idle
+            }
+            if desc == "Port is inactive" { return .disabled }
+            let speed = node.properties["Current Link Speed"]?.asUInt ?? 0
+            return speed > 0 ? .active : .idle
+        case .switch:
+            let depth = node.properties["Depth"]?.asUInt ?? 0
+            return depth == 0 ? .builtIn : .active
+        case .controller:
+            return .active
+        default:
+            return nil
+        }
     }
 
     @ViewBuilder
@@ -59,8 +89,6 @@ struct DetailView: View {
         case .battery:
             BatteryView(node: node)
         case .batteryManager:
-            // The manager is just a thin wrapper around the battery; surface
-            // the battery directly when we can.
             if let battery = node.children.first(where: { $0.kind == .battery }) {
                 BatteryView(node: battery)
             } else {
@@ -89,79 +117,10 @@ struct DetailView: View {
     }
 }
 
-// MARK: - Hero header
-
-private struct HeroHeader: View {
-    let node: TBNode
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(node.kind.accentColor.opacity(0.15))
-                    .frame(width: 64, height: 64)
-                Image(systemName: node.kind.sfSymbol)
-                    .font(.system(size: 30, weight: .regular))
-                    .foregroundStyle(node.kind.accentColor)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(node.title).font(.title2).bold().textSelection(.enabled)
-                if let s = node.subtitle, !s.isEmpty {
-                    Text(s).foregroundStyle(.secondary)
-                }
-                StatusPill(node: node)
-            }
-            Spacer()
-        }
-    }
-}
-
-private struct StatusPill: View {
-    let node: TBNode
-
-    var body: some View {
-        if let (label, color) = state {
-            HStack(spacing: 6) {
-                Circle().fill(color).frame(width: 8, height: 8)
-                Text(label).font(.caption.weight(.medium)).foregroundStyle(color)
-            }
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(color.opacity(0.12))
-            .clipShape(Capsule())
-        }
-    }
-
-    private var state: (String, Color)? {
-        switch node.kind {
-        case .port:
-            // Lane adapters report Link Up/Inactive via Current Link Speed.
-            // Function adapters (DP / USB / PCIe) don't have a link speed —
-            // their "is this tunnel up?" signal is a non-empty Hop Table.
-            // Treating them with the lane heuristic shows "Inactive" on an
-            // active DP output, which is confusing.
-            let desc = node.properties["Description"]?.asString ?? ""
-            if isFunctionAdapterDescription(desc) {
-                return hasActiveHopTable(node) ? ("Active", .green) : ("Idle", .secondary)
-            }
-            if desc == "Port is inactive" { return ("Disabled", .secondary) }
-            let speed = node.properties["Current Link Speed"]?.asUInt ?? 0
-            if speed == 0 { return ("Inactive", .secondary) }
-            return ("Link Up", .green)
-        case .switch:
-            let depth = node.properties["Depth"]?.asUInt ?? 0
-            return depth == 0 ? ("Built-in", .blue) : ("Connected", .green)
-        case .controller:
-            return ("Online", .green)
-        default:
-            return nil
-        }
-    }
-}
-
 /// True when the kernel's adapter description points at a TB *function*
 /// adapter (carries a tunnel — DP/HDMI, USB, PCIe) rather than a lane
 /// adapter (the bidirectional TB link itself) or the NHI host interface.
-nonisolated private func isFunctionAdapterDescription(_ desc: String) -> Bool {
+nonisolated func isFunctionAdapterDescription(_ desc: String) -> Bool {
     switch desc {
     case "DP or HDMI Adapter",
          "USB Adapter",
@@ -177,57 +136,42 @@ nonisolated private func isFunctionAdapterDescription(_ desc: String) -> Bool {
 /// is currently routed through a function adapter, regardless of whatever
 /// bandwidth value it reports (DP adapters in particular publish the
 /// placeholder Required=Max=1 on a live stream — see CLAUDE.md note).
-nonisolated private func hasActiveHopTable(_ node: TBNode) -> Bool {
+nonisolated func hasActiveHopTable(_ node: TBNode) -> Bool {
     if case .array(let entries) = node.properties["Hop Table"], !entries.isEmpty {
         return true
     }
     return false
 }
 
-// MARK: - Controller
+// MARK: - TB controller
 
 private struct ControllerView: View {
     let node: TBNode
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Find the controller's root router (depth 0) to show port summary.
-            let rootRouter = node.children.compactMap { findRoot($0) }.first
-            let externalDevice = firstExternalDeviceName(in: node)
-            let externalCount = countExternalRouters(in: node)
+        let rootRouter = node.children.compactMap { findRoot($0) }.first
+        let externalDevice = firstExternalDeviceName(in: node)
+        let externalCount = countExternalRouters(in: node)
 
-            StatGrid(stats: [
-                Stat(label: "Connected Device",
-                     value: externalDevice ?? "None",
-                     symbol: externalDevice == nil ? "circle.dashed" : "shippingbox"),
-                Stat(label: "Time Sync (TMU)",
-                     value: tmuLabel(node.properties["TMU Mode"]?.asUInt),
-                     symbol: "clock"),
-                Stat(label: "Bus Power",
-                     value: (node.properties["Using Bus Power"]?.asBool ?? false) ? "Active" : "Idle",
-                     symbol: "bolt"),
-                Stat(label: "Total Adapters",
-                     value: rootRouter.map { "\($0.children.count)" } ?? "—",
-                     symbol: "rectangle.connected.to.line.below"),
-                Stat(label: "Routers in Chain",
-                     value: "\(externalCount)",
-                     symbol: "link"),
-                Stat(label: "Domain UUID",
-                     value: domainUUID() ?? "—",
-                     symbol: "number")
-            ])
+        PropertyList {
+            PropertyRowSpec("Connected device", externalDevice)
+            PropertyRowSpec("Time sync (TMU)", tmuLabel(node.properties["TMU Mode"]?.asUInt))
+            PropertyRowSpec("Bus power",
+                            (node.properties["Using Bus Power"]?.asBool ?? false) ? "Active" : "Idle")
+            PropertyRowSpec("Total adapters", rootRouter.map { "\($0.children.count)" })
+            PropertyRowSpec("Routers in chain", externalCount > 0 ? "\(externalCount)" : nil)
+            PropertyRowSpec("Domain UUID", domainUUID(), mono: true)
+        }
 
-            if let root = rootRouter {
-                AdapterBreakdown(router: root,
-                                 title: "Built-in Router Adapters",
-                                 onNavigate: onNavigate)
+        if let root = rootRouter {
+            VStack(alignment: .leading, spacing: PSSpacing.m) {
+                SectionHeader("Built-in router adapters")
+                AdapterBreakdown(router: root, onNavigate: onNavigate)
             }
         }
     }
 
-    /// Walk the controller's tree to find the first external (depth > 0)
-    /// router and pull a humanised vendor/model label off it.
     private func firstExternalDeviceName(in n: TBNode) -> String? {
         var stack = n.children
         while !stack.isEmpty {
@@ -244,7 +188,6 @@ private struct ControllerView: View {
         return nil
     }
 
-    /// Pull the local node's domain UUID. Lives one level under the controller.
     private func domainUUID() -> String? {
         for c in node.children where c.kind == .localNode {
             if let u = c.properties["Domain UUID"]?.asString { return u }
@@ -270,18 +213,18 @@ private struct ControllerView: View {
         return c
     }
 
-    private func tmuLabel(_ v: UInt64?) -> String {
+    private func tmuLabel(_ v: UInt64?) -> String? {
         switch v {
         case 0: return "Disabled"
         case 1: return "Low resolution"
         case 2: return "High res, unidirectional"
         case 3: return "High res, bidirectional"
-        default: return v.map(String.init) ?? "—"
+        default: return v.map(String.init)
         }
     }
 }
 
-// MARK: - Router (switch)
+// MARK: - TB router (switch)
 
 private struct RouterView: View {
     let node: TBNode
@@ -292,42 +235,29 @@ private struct RouterView: View {
         let depth = node.properties["Depth"]?.asUInt ?? 0
         let firmware = shortFirmware(node.properties["Firmware Version"]?.asString)
 
-        VStack(alignment: .leading, spacing: 16) {
-            StatGrid(stats: [
-                Stat(label: "Vendor",
-                     value: node.properties["Device Vendor Name"]?.asString ?? "—",
-                     symbol: "building.2"),
-                Stat(label: "Model",
-                     value: node.properties["Device Model Name"]?.asString ?? "—",
-                     symbol: "shippingbox"),
-                Stat(label: "Thunderbolt Generation",
-                     value: tbVersionLabel(node.properties["Thunderbolt Version"]?.asUInt),
-                     symbol: "bolt.horizontal.circle"),
-                Stat(label: "Depth in Chain",
-                     value: depth == 0 ? "0 (host)" : "\(depth)",
-                     symbol: "arrow.triangle.branch"),
-                Stat(label: "Firmware",
-                     value: firmware ?? "Not reported",
-                     symbol: "memorychip"),
-                Stat(label: "Unique ID",
-                     value: hex(node.properties["UID"]?.asUInt, width: 16),
-                     symbol: "barcode",
-                     isSecret: true)
-            ])
+        PropertyList {
+            PropertyRowSpec("Vendor", node.properties["Device Vendor Name"]?.asString)
+            PropertyRowSpec("Model", node.properties["Device Model Name"]?.asString)
+            PropertyRowSpec("Thunderbolt",
+                            tbVersionLabel(node.properties["Thunderbolt Version"]?.asUInt))
+            PropertyRowSpec("Depth", depth == 0 ? "Built-in" : "\(depth)")
+            PropertyRowSpec("Firmware", firmware)
+            PropertyRowSpec("Unique ID",
+                            hex(node.properties["UID"]?.asUInt, width: 16),
+                            mono: true,
+                            secret: true)
+        }
 
-            if depth > 0, let uplink = findUpstreamLane() {
-                UpstreamLinkCard(uplink: uplink)
-            }
-            AdapterBreakdown(router: node,
-                             title: depth == 0 ? "Built-in Adapters" : "Adapters",
-                             onNavigate: onNavigate)
+        if depth > 0, let uplink = findUpstreamLane() {
+            UpstreamLinkSection(uplink: uplink)
+        }
+
+        VStack(alignment: .leading, spacing: PSSpacing.m) {
+            SectionHeader(depth == 0 ? "Built-in adapters" : "Adapters")
+            AdapterBreakdown(router: node, onNavigate: onNavigate)
         }
     }
 
-    /// Walk up the IOService tree to find the lane adapter feeding this router.
-    /// On Apple Silicon the chain is `lane → peer port → switch`, so the
-    /// upstream lane lives two parents up. We climb until we find a `port`
-    /// whose Adapter Type description is "Thunderbolt Port".
     private func findUpstreamLane() -> TBNode? {
         var current: TBNode? = node
         for _ in 0..<8 {
@@ -350,33 +280,82 @@ private struct RouterView: View {
         return v
     }
 
-    private func hex(_ v: UInt64?, width: Int) -> String {
-        guard let v else { return "—" }
+    private func hex(_ v: UInt64?, width: Int) -> String? {
+        guard let v else { return nil }
         return String(format: "0x%0\(width)llX", v)
     }
 
-    private func tbVersionLabel(_ v: UInt64?) -> String {
-        guard let v else { return "—" }
+    private func tbVersionLabel(_ v: UInt64?) -> String? {
+        guard let v else { return nil }
         let major = (v >> 4) & 0xF
         let minor = v & 0xF
         return "Spec \(major).\(minor)"
     }
 }
 
-/// Categorised count of port adapters in a router.
+// MARK: - Upstream link
+
+private struct UpstreamLinkSection: View {
+    let uplink: TBNode
+
+    var body: some View {
+        let bw = uplink.properties["Link Bandwidth"]?.asUInt ?? 0
+        let req = uplink.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
+        let maxAlloc = uplink.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
+        let currentSpeed = uplink.properties["Current Link Speed"]?.asUInt ?? 0
+        let width = uplink.properties["Current Link Width"]?.asUInt ?? 0
+
+        VStack(alignment: .leading, spacing: PSSpacing.m) {
+            SectionHeader("Uplink to host")
+
+            PropertyList {
+                PropertyRowSpec("Generation",
+                                currentSpeed > 0 ? tbLinkSpeedLabel(currentSpeed) : nil)
+                PropertyRowSpec("Width", width > 0 ? "\(width) lanes" : nil)
+                PropertyRowSpec("Link capacity",
+                                bw > 0 ? tbBandwidthLabel(bw) : nil)
+            }
+
+            if bw > 0 {
+                let primaryUsage = Double(req)
+                let secondaryUsage = Double(maxAlloc)
+                CapacityBar(
+                    title: "Bandwidth",
+                    value: primaryUsage,
+                    secondaryValue: secondaryUsage > primaryUsage ? secondaryUsage : nil,
+                    capacity: Double(bw),
+                    headlineValue: "\(tbBandwidthLabel(req)) of \(tbBandwidthLabel(bw))",
+                    legend: legend(req: req, maxAlloc: maxAlloc, bw: bw),
+                    tint: PSColor.active
+                )
+            }
+        }
+    }
+
+    private func legend(req: UInt64, maxAlloc: UInt64, bw: UInt64) -> String {
+        var parts: [String] = []
+        if req > 0 { parts.append("\(tbBandwidthLabel(req)) reserved") }
+        if maxAlloc > req {
+            parts.append("\(tbBandwidthLabel(maxAlloc)) max planned")
+        }
+        if maxAlloc > bw {
+            parts.append("exceeds link by \(tbBandwidthLabel(maxAlloc - bw))")
+        }
+        return parts.isEmpty ? "" : parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Adapter breakdown
+
 private struct AdapterBreakdown: View {
     let router: TBNode
-    let title: String
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
         let cats = categorise(router.children)
-        SectionCard(title: title, symbol: "rectangle.grid.2x2") {
-            VStack(spacing: 0) {
-                ForEach(cats, id: \.0) { kind, ports in
-                    AdapterCategoryRow(category: kind, ports: ports, onNavigate: onNavigate)
-                    if cats.last?.0 != kind { Divider() }
-                }
+        VStack(alignment: .leading, spacing: PSSpacing.m) {
+            ForEach(cats, id: \.0) { kind, ports in
+                AdapterCategoryRow(category: kind, ports: ports, onNavigate: onNavigate)
             }
         }
     }
@@ -390,7 +369,8 @@ private struct AdapterBreakdown: View {
         }
         return AdapterCategory.allCases.compactMap { cat in
             guard let arr = buckets[cat], !arr.isEmpty else { return nil }
-            return (cat, arr.sorted { ($0.properties["Port Number"]?.asUInt ?? 0) < ($1.properties["Port Number"]?.asUInt ?? 0) })
+            return (cat, arr.sorted { ($0.properties["Port Number"]?.asUInt ?? 0)
+                                       < ($1.properties["Port Number"]?.asUInt ?? 0) })
         }
     }
 }
@@ -398,9 +378,6 @@ private struct AdapterBreakdown: View {
 private enum AdapterCategory: String, CaseIterable, Hashable {
     case lane, hostInterface, displayPort, usb, pcie, inactive, other
 
-    /// Categorise by the kernel's authoritative `Description` string.
-    /// Adapter Type integer codes differ between Apple's controllers and
-    /// third-party chips (e.g. Intel JHL9580), so we don't trust them.
     init(description: String) {
         switch description {
         case "Thunderbolt Port": self = .lane
@@ -415,37 +392,25 @@ private enum AdapterCategory: String, CaseIterable, Hashable {
 
     var title: String {
         switch self {
-        case .lane: return "Thunderbolt Lane Adapters"
-        case .hostInterface: return "Native Host Interface"
-        case .displayPort: return "DisplayPort / HDMI Adapters"
-        case .usb: return "USB Adapters"
-        case .pcie: return "PCIe Adapters"
-        case .inactive: return "Inactive Ports"
-        case .other: return "Other Adapters"
+        case .lane:          return "Thunderbolt lane adapters"
+        case .hostInterface: return "Native host interface"
+        case .displayPort:   return "DisplayPort / HDMI adapters"
+        case .usb:           return "USB adapters"
+        case .pcie:          return "PCIe adapters"
+        case .inactive:      return "Inactive ports"
+        case .other:         return "Other adapters"
         }
     }
 
     var symbol: String {
         switch self {
-        case .lane: return "bolt.horizontal"
+        case .lane:          return "bolt.horizontal"
         case .hostInterface: return "cpu"
-        case .displayPort: return "display"
-        case .usb: return "cable.connector"
-        case .pcie: return "square.stack.3d.up"
-        case .inactive: return "circle.dashed"
-        case .other: return "questionmark.circle"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .lane: return .blue
-        case .hostInterface: return .indigo
-        case .displayPort: return .pink
-        case .usb: return .teal
-        case .pcie: return .green
-        case .inactive: return .secondary
-        case .other: return .gray
+        case .displayPort:   return "display"
+        case .usb:           return "cable.connector"
+        case .pcie:          return "square.stack.3d.up"
+        case .inactive:      return "circle.dashed"
+        case .other:         return "questionmark.circle"
         }
     }
 }
@@ -456,39 +421,36 @@ private struct AdapterCategoryRow: View {
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: PSSpacing.s) {
+            HStack(spacing: PSSpacing.s) {
                 Image(systemName: category.symbol)
-                    .foregroundStyle(category.color)
-                    .frame(width: 22)
-                Text(category.title).font(.callout.weight(.medium))
-                Text("\(ports.count)")
-                    .font(.caption.monospacedDigit())
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(category.color.opacity(0.12))
-                    .clipShape(Capsule())
+                    .frame(width: 18)
+                Text(category.title)
+                    .font(PSFont.bodyEmph)
+                Text("\(ports.count)")
+                    .font(PSFont.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
-            FlowChips {
+            ChipFlow {
                 ForEach(ports, id: \.id) { p in
                     Button {
                         onNavigate(p.id)
                     } label: {
-                        AdapterChip(port: p, color: category.color)
+                        AdapterChip(port: p)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.leading, 30)
+            .padding(.leading, 26)
         }
-        .padding(.vertical, 8)
     }
 }
 
 private struct AdapterChip: View {
     let port: TBNode
-    let color: Color
 
     var body: some View {
         let n = port.properties["Port Number"]?.asUInt ?? 0
@@ -499,102 +461,42 @@ private struct AdapterChip: View {
         let required = port.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
         let maxAlloc = port.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
         let hopActive = hasActiveHopTable(port)
-        let highlight = isLane ? (speed > 0) : (required > 0 || maxAlloc > 0 || hopActive)
+        let active = isLane ? (speed > 0) : (required > 0 || maxAlloc > 0 || hopActive)
 
-        HStack(spacing: 5) {
-            Text("Port \(n)").font(.caption2.monospacedDigit())
-            if let trailing = trailingLabel(isLane: isLane,
-                                            isInactive: isInactive,
-                                            speed: speed,
-                                            required: required,
-                                            maxAlloc: maxAlloc,
-                                            hopActive: hopActive) {
-                Text(trailing)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 7).padding(.vertical, 3)
-        .background((highlight ? color : .secondary).opacity(0.12))
-        .overlay(
-            Capsule().strokeBorder((highlight ? color : .secondary).opacity(0.35), lineWidth: 0.5)
+        Chip(
+            label: chipLabel(port: n,
+                             isLane: isLane,
+                             isInactive: isInactive,
+                             speed: speed,
+                             required: required,
+                             maxAlloc: maxAlloc,
+                             hopActive: hopActive),
+            tint: active ? PSColor.active : Color(NSColor.tertiaryLabelColor),
+            emphasized: active,
+            monospaced: true
         )
-        .clipShape(Capsule())
     }
 
-    /// True if the port's `Hop Table` has at least one entry — the kernel-
-    /// authoritative signal that a tunnel is currently routed through this
-    /// adapter, regardless of whatever bandwidth value it reports.
-    private func hasActiveHopTable(_ port: TBNode) -> Bool {
-        if case .array(let entries) = port.properties["Hop Table"], !entries.isEmpty {
-            return true
-        }
-        return false
-    }
-
-    private func trailingLabel(isLane: Bool,
-                               isInactive: Bool,
-                               speed: UInt64,
-                               required: UInt64,
-                               maxAlloc: UInt64,
-                               hopActive: Bool) -> String? {
-        if isInactive { return nil }
+    private func chipLabel(port: UInt64,
+                           isLane: Bool,
+                           isInactive: Bool,
+                           speed: UInt64,
+                           required: UInt64,
+                           maxAlloc: UInt64,
+                           hopActive: Bool) -> String {
+        let head = "Port \(port)"
+        if isInactive { return head }
         if isLane {
-            return speed > 0 ? tbGenerationShortLabel(speed) : "Idle"
+            return speed > 0 ? "\(head) · \(tbGenerationShortLabel(speed))" : "\(head) · Idle"
         }
-        // Function adapter (DP / USB / PCIe). The kernel sometimes reports a
-        // placeholder `Required Bandwidth Allocated = 1` (= 100 Mb/s) on an
-        // active tunnel — DP streams in particular reserve almost nothing on
-        // the TB link. Prefer the planned `Maximum Bandwidth Allocated` when
-        // it's larger; fall back to "Active" when the tunnel is up but the
-        // bandwidth fields are unreliable.
-        let meaningful: UInt64 = 10 // ≥1 Gb/s = a real reservation, not a token
-        let bestValue = max(required, maxAlloc)
-        if bestValue >= meaningful {
-            return tbBandwidthLabel(bestValue)
-        }
-        if hopActive || bestValue > 0 {
-            return "Active"
-        }
-        return "Unused"
+        let best = max(required, maxAlloc)
+        if best >= 10 { return "\(head) · \(tbBandwidthLabel(best))" }
+        if hopActive || best > 0 { return "\(head) · Active" }
+        return "\(head) · Unused"
     }
 }
 
-// MARK: - Upstream link card
-
-private struct UpstreamLinkCard: View {
-    /// The upstream lane adapter on the host side feeding this router.
-    let uplink: TBNode
-
-    var body: some View {
-        let bw = uplink.properties["Link Bandwidth"]?.asUInt ?? 0
-        let req = uplink.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
-        let maxAlloc = uplink.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
-        let currentSpeed = uplink.properties["Current Link Speed"]?.asUInt ?? 0
-        let width = uplink.properties["Current Link Width"]?.asUInt ?? 0
-
-        SectionCard(title: "Uplink to Host", symbol: "arrow.up.right.circle") {
-            VStack(alignment: .leading, spacing: 12) {
-                if currentSpeed > 0 {
-                    HStack(spacing: 14) {
-                        Label(tbLinkSpeedLabel(currentSpeed), systemImage: "antenna.radiowaves.left.and.right")
-                        if width > 0 {
-                            Label("\(width) lanes", systemImage: "arrow.left.and.right")
-                        }
-                    }
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                }
-                if bw > 0 {
-                    BandwidthBar(linkBandwidth: bw, required: req, maximum: maxAlloc)
-                }
-            }
-            .padding(.vertical, 2)
-        }
-    }
-}
-
-// MARK: - Port
+// MARK: - TB port (lane / NHI / function adapter)
 
 private struct PortView: View {
     let node: TBNode
@@ -604,124 +506,51 @@ private struct PortView: View {
         if isFunctionAdapterDescription(description) {
             FunctionAdapterPortView(node: node, description: description)
         } else {
-            laneAdapterContent(description: description)
+            LaneAdapterPortView(node: node, description: description)
         }
     }
+}
 
-    /// Lane-adapter / NHI / inactive-port view — the original PortView body.
-    /// Function adapters route through `FunctionAdapterPortView` instead
-    /// because Current Link Speed / Width / Link Negotiation are concepts
-    /// that don't apply to a DP / USB / PCIe tunnel adapter.
-    @ViewBuilder
-    private func laneAdapterContent(description: String) -> some View {
+private struct LaneAdapterPortView: View {
+    let node: TBNode
+    let description: String
+
+    var body: some View {
         let currentSpeed = node.properties["Current Link Speed"]?.asUInt ?? 0
-        let targetSpeed = node.properties["Target Link Speed"]?.asUInt ?? 0
-        let supportedSpeed = node.properties["Supported Link Speed"]?.asUInt ?? 0
         let currentWidth = node.properties["Current Link Width"]?.asUInt ?? 0
-        let targetWidth = node.properties["Target Link Width"]?.asUInt ?? 0
-        let supportedWidth = node.properties["Supported Link Width"]?.asUInt ?? 0
-        let bw = node.properties["Link Bandwidth"]?.asUInt ?? 0
+        let bw = currentSpeed > 0 ? (node.properties["Link Bandwidth"]?.asUInt ?? 0) : 0
         let req = node.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
         let maxAlloc = node.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
 
-        VStack(alignment: .leading, spacing: 16) {
-            StatGrid(stats: [
-                Stat(label: "Adapter", value: description,
-                     symbol: iconFor(description: description)),
-                Stat(label: "Port", value: node.properties["Port Number"]?.display ?? "—",
-                     symbol: "number"),
-                Stat(label: "Active Generation",
-                     value: currentSpeed > 0 ? tbLinkSpeedLabel(currentSpeed) : "Inactive",
-                     symbol: "antenna.radiowaves.left.and.right"),
-                Stat(label: "Active Width",
-                     value: currentWidth > 0 ? "\(currentWidth) lanes" : "—",
-                     symbol: "arrow.left.and.right"),
-                Stat(label: "Lane",
-                     value: node.properties["Lane"]?.display ?? "—",
-                     symbol: "bolt"),
-                Stat(label: "Bus Power Drawn",
-                     value: node.properties["Bus Power"]?.display ?? "—",
-                     symbol: "bolt.fill")
-            ])
+        PropertyList {
+            PropertyRowSpec("Adapter", description)
+            PropertyRowSpec("Port", node.properties["Port Number"]?.display)
+            PropertyRowSpec("Generation",
+                            currentSpeed > 0 ? tbLinkSpeedLabel(currentSpeed) : nil)
+            PropertyRowSpec("Width",
+                            currentWidth > 0 ? "\(currentWidth) lanes" : nil)
+            PropertyRowSpec("Lane", node.properties["Lane"]?.display)
+            PropertyRowSpec("Bus power drawn", node.properties["Bus Power"]?.display)
+        }
 
-            // Bandwidth bar (only when link is up).
-            if bw > 0 {
-                SectionCard(title: "Bandwidth Allocation", symbol: "speedometer") {
-                    BandwidthBar(linkBandwidth: bw, required: req, maximum: maxAlloc)
-                        .padding(.vertical, 4)
-                }
-            }
+        if bw > 0 {
+            CapacityBar(
+                title: "Bandwidth",
+                value: Double(req),
+                secondaryValue: maxAlloc > req ? Double(maxAlloc) : nil,
+                capacity: Double(bw),
+                headlineValue: "\(tbBandwidthLabel(req)) of \(tbBandwidthLabel(bw))",
+                legend: maxAlloc > req ? "\(tbBandwidthLabel(maxAlloc)) max planned" : nil,
+                tint: PSColor.active
+            )
+        }
 
-            // Negotiation card.
-            SectionCard(title: "Link Negotiation", symbol: "waveform.path.ecg") {
-                Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
-                    GridRow {
-                        Text("").gridColumnAlignment(.trailing)
-                        Text("Speed").foregroundStyle(.secondary).font(.caption)
-                        Text("Width").foregroundStyle(.secondary).font(.caption)
-                    }
-                    Divider()
-                    GridRow {
-                        Text("Current").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        Text(currentSpeed > 0 ? tbLinkSpeedLabel(currentSpeed) : "—")
-                        Text(currentWidth > 0 ? "\(currentWidth) lanes" : "—")
-                    }
-                    GridRow {
-                        Text("Target").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        Text(targetSpeed > 0 ? tbLinkSpeedLabel(targetSpeed) : "—")
-                        Text(targetWidth > 0 ? "\(targetWidth) lanes" : "—")
-                    }
-                    GridRow {
-                        Text("Supported").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        Text(supportedSpeed > 0 ? tbLinkSpeedLabel(supportedSpeed) : "—")
-                        Text(supportedWidth > 0 ? "\(supportedWidth) lanes" : "—")
-                    }
-                }
-                .font(.callout)
-                .padding(.vertical, 4)
-            }
-
-            // Active paths (Hop Table) rendered cleanly.
-            if let hops = node.properties["Hop Table"], case .array(let arr) = hops, !arr.isEmpty {
-                SectionCard(title: "Active Tunnels (\(arr.count))", symbol: "arrow.triangle.swap") {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(arr.enumerated()), id: \.offset) { idx, v in
-                            if case .dictionary(let kv) = v {
-                                let dict = Dictionary(kv, uniquingKeysWith: { a, _ in a })
-                                HopRow(index: idx,
-                                       hopID: dict["Hop ID"]?.asUInt,
-                                       dstPort: dict["Dst Port"]?.asUInt,
-                                       dstHop: dict["Dst Hop ID"]?.asUInt,
-                                       counter: dict["Counter"]?.asUInt)
-                                if idx < arr.count - 1 { Divider() }
-                            }
-                        }
-                    }
-                }
-            }
+        if let hops = node.properties["Hop Table"], case .array(let arr) = hops, !arr.isEmpty {
+            HopTableSection(hops: arr)
         }
     }
 }
 
-private func iconFor(description: String) -> String {
-    switch description {
-    case "Thunderbolt Port": return "bolt.horizontal"
-    case "Port is inactive": return "circle.dashed"
-    case "Thunderbolt Native Host Interface Adapter": return "cpu"
-    case "DP or HDMI Adapter": return "display"
-    case "USB Adapter", "USB Gen T Adapter": return "cable.connector"
-    case "PCIe Adapter": return "square.stack.3d.up"
-    default: return "questionmark.circle"
-    }
-}
-
-/// Detail view for a TB function adapter (DP/HDMI, USB, PCIe). Function
-/// adapters don't have a physical link — their meaningful state is the
-/// hop table and whatever bandwidth the kernel reports allocated to the
-/// tunnels routed through them. The original `PortView` layout (current/
-/// target/supported link speed + width, full bandwidth bar) makes a live
-/// DP output read as "Inactive · 100 Mb/s" which is the opposite of
-/// what's happening.
 private struct FunctionAdapterPortView: View {
     let node: TBNode
     let description: String
@@ -730,187 +559,126 @@ private struct FunctionAdapterPortView: View {
         let portNum = node.properties["Port Number"]?.asUInt
         let req = node.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
         let maxAlloc = node.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
-        let linkBw = node.properties["Link Bandwidth"]?.asUInt ?? 0
         let hopTable: [IORegValue] = {
             if case let .array(arr) = node.properties["Hop Table"] { return arr }
             return []
         }()
-        let bestAlloc = max(req, maxAlloc)
-        // CLAUDE.md: DP adapters often publish Required=Max=1 (100 Mb/s)
-        // on an active tunnel — that's a placeholder, not the real
-        // allocation. Treat values <1 Gb/s as decorative.
-        let hasRealReservation = bestAlloc >= 10
+        let best = max(req, maxAlloc)
+        let hasRealReservation = best >= 10
         let isActive = !hopTable.isEmpty
 
-        VStack(alignment: .leading, spacing: 16) {
-            StatGrid(stats: [
-                Stat(label: "Adapter",
-                     value: description,
-                     symbol: iconFor(description: description)),
-                Stat(label: "Port",
-                     value: portNum.map(String.init) ?? "—",
-                     symbol: "number"),
-                Stat(label: "Status",
-                     value: isActive ? "Active" : "Idle",
-                     symbol: isActive ? "checkmark.circle.fill" : "circle.dashed"),
-                Stat(label: "Active Tunnels",
-                     value: "\(hopTable.count)",
-                     symbol: "arrow.triangle.swap"),
-                Stat(label: "Link Capacity",
-                     value: linkBw > 0 ? tbBandwidthLabel(linkBw) : "—",
-                     symbol: "gauge.with.dots.needle.67percent"),
-                Stat(label: "Reserved Bandwidth",
-                     value: reservedBandwidthLabel(req: req,
-                                                   maxAlloc: maxAlloc,
-                                                   isActive: isActive),
-                     symbol: "speedometer")
-            ])
+        PropertyList {
+            PropertyRowSpec("Adapter", description)
+            PropertyRowSpec("Port", portNum.map(String.init))
+            PropertyRowSpec(forcing: "Status", isActive ? "Active" : "Idle")
+            PropertyRowSpec(forcing: "Active tunnels", "\(hopTable.count)")
+            PropertyRowSpec("Reservation",
+                            hasRealReservation
+                                ? tbBandwidthLabel(best)
+                                : (isActive ? "Negligible (no static reservation)" : nil))
+        }
 
-            // Only show the bandwidth bar when there's a real reservation
-            // (≥1 Gb/s). The placeholder 100 Mb/s case is misleading —
-            // function adapters don't statically reserve the link.
-            if hasRealReservation && linkBw > 0 {
-                SectionCard(title: "Bandwidth Allocation", symbol: "speedometer") {
-                    BandwidthBar(linkBandwidth: linkBw,
-                                 required: req,
-                                 maximum: maxAlloc)
-                        .padding(.vertical, 4)
+        if !hopTable.isEmpty {
+            HopTableSection(hops: hopTable)
+        } else {
+            EmptyStateNote(text: "No active tunnels — nothing is currently routed through this adapter.")
+        }
+    }
+}
+
+// MARK: - Hop table table
+
+private struct HopTableSection: View {
+    let hops: [IORegValue]
+
+    private struct Row: Identifiable {
+        let id: Int
+        let tunnel: Int
+        let hopID: String
+        let dstPort: String
+        let dstHop: String
+        let counter: String
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PSSpacing.m) {
+            SectionHeader("Active tunnels (\(hops.count))")
+            Table(of: Row.self) {
+                TableColumn("Tunnel") { Text("\($0.tunnel)").monospacedDigit() }
+                    .width(min: 60, ideal: 70)
+                TableColumn("Hop in") { Text($0.hopID).monospacedDigit() }
+                    .width(min: 60, ideal: 70)
+                TableColumn("→ Port") { Text($0.dstPort).monospacedDigit() }
+                    .width(min: 60, ideal: 70)
+                TableColumn("→ Hop") { Text($0.dstHop).monospacedDigit() }
+                    .width(min: 60, ideal: 70)
+                TableColumn("Counter") { Text($0.counter).monospacedDigit() }
+                    .width(min: 80, ideal: 100)
+            } rows: {
+                ForEach(rows) { row in
+                    TableRow(row)
                 }
             }
-
-            // Hop Table — the authoritative routing record. Each entry
-            // describes a stream this adapter is forwarding: which hop
-            // ID arrives here, which port + hop it goes to next.
-            if !hopTable.isEmpty {
-                SectionCard(title: "Active Tunnels (\(hopTable.count))",
-                            symbol: "arrow.triangle.swap") {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(hopTable.enumerated()), id: \.offset) { idx, v in
-                            if case .dictionary(let kv) = v {
-                                let dict = Dictionary(kv, uniquingKeysWith: { a, _ in a })
-                                HopRow(index: idx,
-                                       hopID: dict["Hop ID"]?.asUInt,
-                                       dstPort: dict["Dst Port"]?.asUInt,
-                                       dstHop: dict["Dst Hop ID"]?.asUInt,
-                                       counter: dict["Counter"]?.asUInt)
-                                if idx < hopTable.count - 1 { Divider() }
-                            }
-                        }
-                    }
-                }
-            } else {
-                Text("This adapter has no active tunnels — nothing is currently routed through it.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
+            .frame(minHeight: CGFloat(min(hops.count + 1, 8)) * 26)
         }
     }
 
-    private func reservedBandwidthLabel(req: UInt64, maxAlloc: UInt64, isActive: Bool) -> String {
-        let best = max(req, maxAlloc)
-        if best >= 10 { return tbBandwidthLabel(best) }
-        if isActive { return "Negligible (no static reservation)" }
-        return "—"
-    }
-}
-
-private struct HopRow: View {
-    let index: Int
-    let hopID: UInt64?
-    let dstPort: UInt64?
-    let dstHop: UInt64?
-    let counter: UInt64?
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Text("Tunnel \(index + 1)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 80, alignment: .leading)
-            HStack(spacing: 8) {
-                Tag(label: "hop \(hopID.map(String.init) ?? "—")", color: .blue)
-                Image(systemName: "arrow.right").foregroundStyle(.tertiary)
-                Tag(label: "port \(dstPort.map(String.init) ?? "—")", color: .orange)
-                Tag(label: "hop \(dstHop.map(String.init) ?? "—")", color: .blue)
-            }
-            Spacer()
-            if let c = counter {
-                Text("counter \(c)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
+    private var rows: [Row] {
+        hops.enumerated().compactMap { idx, v in
+            guard case let .dictionary(kv) = v else { return nil }
+            let d = Dictionary(kv, uniquingKeysWith: { a, _ in a })
+            return Row(
+                id: idx,
+                tunnel: idx + 1,
+                hopID: d["Hop ID"]?.asUInt.map(String.init) ?? "—",
+                dstPort: d["Dst Port"]?.asUInt.map(String.init) ?? "—",
+                dstHop: d["Dst Hop ID"]?.asUInt.map(String.init) ?? "—",
+                counter: d["Counter"]?.asUInt.map { "\($0)" } ?? "—"
+            )
         }
-        .padding(.vertical, 6).padding(.horizontal, 4)
     }
 }
 
-private struct Tag: View {
-    let label: String
-    let color: Color
-    var body: some View {
-        Text(label)
-            .font(.caption.monospacedDigit())
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(color.opacity(0.15))
-            .foregroundStyle(color)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-}
-
-// MARK: - Local node & generic devices
+// MARK: - Local node / generic / SoC
 
 private struct LocalNodeView: View {
     let node: TBNode
     var body: some View {
-        StatGrid(stats: [
-            Stat(label: "Domain UUID",
-                 value: node.properties["Domain UUID"]?.asString ?? "—",
-                 symbol: "number"),
-            Stat(label: "This Mac",
-                 value: "Local TB endpoint",
-                 symbol: "macbook")
-        ])
+        PropertyList {
+            PropertyRowSpec("Domain UUID",
+                            node.properties["Domain UUID"]?.asString,
+                            mono: true)
+            PropertyRowSpec(forcing: "Role", "Local TB endpoint")
+        }
     }
 }
 
-private struct GenericDeviceView: View {
+struct GenericDeviceView: View {
     let node: TBNode
     var body: some View {
-        Text("Connected device. Open Developer details below for the raw IORegistry entry.")
-            .foregroundStyle(.secondary)
+        EmptyStateNote(text: "Connected device. Open Developer details below for the raw IORegistry entry.")
     }
 }
 
-/// Read-only summary of a named SoC block (Secure Enclave, Always-On
-/// Processor, Apple Neural Engine, display / video coprocessors, NAND
-/// controller, SMC, etc.). The Developer-details disclosure below carries
-/// the raw IORegistry properties for the block — clock / power gates,
-/// MMIO regions, IOMMU parent, and so on.
-private struct SoCCoprocessorView: View {
+struct SoCCoprocessorView: View {
     let node: TBNode
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: PSSpacing.m) {
             Text(description)
+                .font(PSFont.body)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if let mmio = mmio {
-                LabeledContent("MMIO base", value: mmio)
-            }
-            if let provider = node.properties["IOProviderClass"]?.asString {
-                LabeledContent("Provider", value: provider)
-            }
-            if let compat = compatibleString {
-                LabeledContent("Compatible", value: compat)
+
+            PropertyList {
+                PropertyRowSpec("MMIO base", mmio, mono: true)
+                PropertyRowSpec("Provider", node.properties["IOProviderClass"]?.asString)
+                PropertyRowSpec("Compatible", compatibleString)
             }
         }
-        .font(.callout)
     }
 
     private var description: String {
-        // Keep the prose short. The aim is to remind a curious user what
-        // each block actually does on Apple Silicon, not to fully document
-        // them — anyone who wants deep info can read Asahi Linux's notes.
         let name = stringValue(node.properties["name"]) ?? node.title
         switch name {
         case "sep":        return "Secure Enclave processor — handles biometrics, key wrapping, sealed storage."
@@ -958,11 +726,6 @@ private struct SoCCoprocessorView: View {
     }
 
     private var compatibleString: String? {
-        // `compatible` is an array of device-tree match strings — the
-        // primary name + a chain of older-silicon aliases the kext also
-        // binds against. Render the full chain (e.g. "jpeg,t8110jpeg ·
-        // s5l8920x") so the user sees the bus name *and* knows the kext
-        // is a long-lived design with backwards compatibility built in.
         if let val = node.properties["compatible"] {
             return prettyCompatibleString(val)
         }
@@ -978,221 +741,6 @@ private struct SoCCoprocessorView: View {
             }
         }
         return nil
-    }
-}
-
-// MARK: - Bandwidth bar (shared)
-
-struct BandwidthBar: View {
-    let linkBandwidth: UInt64
-    let required: UInt64
-    let maximum: UInt64
-
-    var body: some View {
-        let total = Double(linkBandwidth)
-        let req = Double(required)
-        let maxD = Double(maximum)
-        let reqFrac = total > 0 ? min(req / total, 1.0) : 0
-        let maxFrac = total > 0 ? min(maxD / total, 1.0) : 0
-        let overage = maximum > linkBandwidth
-        let overFrac = overage ? Double(maximum - linkBandwidth) / Double(maximum) : 0
-
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Link capacity")
-                Spacer()
-                Text(tbBandwidthLabel(linkBandwidth))
-                    .font(.callout.bold().monospaced())
-            }
-            .font(.callout)
-
-            ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary).frame(height: 22)
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.yellow.opacity(0.55))
-                            .frame(width: geo.size.width * maxFrac)
-                        Capsule()
-                            .fill(Color.orange)
-                            .frame(width: geo.size.width * reqFrac)
-                        if overage {
-                            // Hatched red overlay on the right edge to indicate the
-                            // planned ceiling exceeds capacity.
-                            Capsule()
-                                .stroke(Color.red, lineWidth: 1.5)
-                                .frame(width: max(geo.size.width * overFrac, 16))
-                                .offset(x: geo.size.width - max(geo.size.width * overFrac, 16))
-                        }
-                    }
-                }
-                .frame(height: 22)
-            }
-
-            HStack(spacing: 16) {
-                BWLegend(color: .orange, label: "Reserved", value: tbBandwidthLabel(required))
-                BWLegend(color: Color.yellow.opacity(0.55), label: "Max planned",
-                         value: tbBandwidthLabel(maximum),
-                         tint: overage ? .red : nil)
-                Spacer()
-                Text(total > 0 ? String(format: "%.0f%% reserved", reqFrac * 100) : "")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.caption)
-
-            if overage {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text("Planned bandwidth (\(tbBandwidthLabel(maximum))) exceeds link capacity by \(tbBandwidthLabel(maximum - linkBandwidth)).")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.caption)
-            }
-        }
-    }
-}
-
-private struct BWLegend: View {
-    let color: Color
-    let label: String
-    let value: String
-    var tint: Color? = nil
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 8, height: 8)
-            Text(label).foregroundStyle(.secondary)
-            Text(value).monospaced().foregroundStyle(tint ?? .primary)
-        }
-    }
-}
-
-// MARK: - Developer details disclosure
-
-private struct DeveloperDisclosure: View {
-    let node: TBNode
-    @State private var open = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { open.toggle() }
-            } label: {
-                HStack {
-                    Image(systemName: open ? "chevron.down" : "chevron.right")
-                        .font(.caption.bold())
-                        .frame(width: 12)
-                    Image(systemName: "wrench.and.screwdriver")
-                        .foregroundStyle(.secondary)
-                    Text("Developer details (raw IORegistry)")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if open {
-                PropertyTableView(node: node)
-                    .padding(.top, 8)
-            }
-        }
-    }
-}
-
-// MARK: - Reusable building blocks
-
-struct Stat: Hashable {
-    let label: String
-    let value: String
-    let symbol: String
-    var isSecret: Bool = false
-}
-
-struct StatGrid: View {
-    let stats: [Stat]
-    private let columns = [GridItem(.adaptive(minimum: 220), spacing: 12)]
-
-    var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-            ForEach(stats, id: \.self) { s in
-                StatCell(stat: s)
-            }
-        }
-    }
-}
-
-private struct StatCell: View {
-    let stat: Stat
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: stat.symbol)
-                .foregroundStyle(.tint)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(stat.label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 4) {
-                    Text(displayValue)
-                        .font(.callout.monospaced(stat.isSecret))
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                    if stat.isSecret && !hovering {
-                        Image(systemName: "eye.slash")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(10)
-        .background(.background.secondary)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .onHover { hovering = $0 }
-        .help(stat.isSecret ? "Hover to reveal" : "")
-    }
-
-    private var displayValue: String {
-        if !stat.isSecret || hovering { return stat.value }
-        return mask(of: stat.value)
-    }
-
-    private func mask(of value: String) -> String {
-        if value.hasPrefix("0x") {
-            return "0x" + String(repeating: "\u{2022}", count: max(value.count - 2, 4))
-        }
-        if value == "—" { return value }
-        return String(repeating: "\u{2022}", count: min(max(value.count, 4), 24))
-    }
-}
-
-private extension Font {
-    func monospaced(_ on: Bool) -> Font { on ? self.monospaced() : self }
-}
-
-struct SectionCard<Content: View>: View {
-    let title: String
-    let symbol: String
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol).foregroundStyle(.secondary)
-                Text(title).font(.headline)
-                Spacer()
-            }
-            content()
-        }
-        .padding(14)
-        .background(.background.secondary)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 

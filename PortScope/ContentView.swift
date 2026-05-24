@@ -13,6 +13,7 @@ struct ContentView: View {
             SidebarView(vm: vm)
         } detail: {
             detail
+                .animation(.linear(duration: 0.12), value: vm.selection)
         }
         .frame(minWidth: 980, minHeight: 600)
     }
@@ -54,33 +55,15 @@ struct ContentView: View {
                 }
             } else if MagSafeSelector.isMagSafeID(sel),
                       let magsafe = vm.snapshot.internalHardware.magsafe {
-                ScrollView {
-                    MagSafeView(accessory: magsafe)
-                        .padding(24)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minWidth: 620)
-                .id(sel)
+                MagSafeView(accessory: magsafe).id(sel)
             } else if BluetoothSelector.isControllerID(sel),
                       let controller = vm.snapshot.bluetooth.controller {
-                ScrollView {
-                    BluetoothControllerView(controller: controller,
-                                            snapshot: vm.snapshot.bluetooth,
-                                            onNavigate: { vm.select($0) })
-                        .padding(24)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minWidth: 620)
-                .id(sel)
+                BluetoothControllerView(controller: controller,
+                                        snapshot: vm.snapshot.bluetooth,
+                                        onNavigate: { vm.select($0) }).id(sel)
             } else if BluetoothSelector.isDeviceID(sel),
                       let device = findBluetoothDevice(id: sel) {
-                ScrollView {
-                    BluetoothDeviceView(device: device)
-                        .padding(24)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minWidth: 620)
-                .id(sel)
+                BluetoothDeviceView(device: device).id(sel)
             } else if let display = vm.snapshot.displays.displays.first(where: { $0.id == sel }) {
                 DisplayDetailView(display: display).id(sel)
             } else if let pciNode = findPCINode(id: sel, in: vm.snapshot.pcie.roots) {

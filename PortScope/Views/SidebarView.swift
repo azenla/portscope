@@ -333,11 +333,9 @@ struct SidebarView: View {
     }
 
     /// A sidebar `Section` whose header is a clickable chevron that
-    /// hides/shows its body. The chevron rotates smoothly between collapsed
-    /// (0°) and expanded (90°) so it matches macOS's native sidebar
-    /// disclosure idiom. Section name doubles as the collapse key, so state
-    /// persists across rescans (the body recomputes from `vm.snapshot` every
-    /// render but the header state lives on the view).
+    /// hides/shows its body. Sentence-case 11 pt Semibold tracking +0.3 —
+    /// the same style as inline subgroups, so the sidebar reads as a
+    /// single calm typographic system rather than nested banners.
     @ViewBuilder
     private func collapsibleSection<Content: View>(
         _ name: String,
@@ -349,18 +347,15 @@ struct SidebarView: View {
             if !isCollapsed { content() }
         } header: {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(.easeInOut(duration: 0.2)) {
                     if isCollapsed { collapsedSections.remove(name) }
                     else { collapsedSections.insert(name) }
                 }
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: PSSpacing.s - 2) {
                     DisclosureChevron(isExpanded: !isCollapsed, style: .section)
-                    Image(systemName: icon)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16, alignment: .center)
                     Text(name)
+                        .psSectionHeader()
                     Spacer()
                 }
                 .contentShape(Rectangle())
@@ -521,13 +516,13 @@ struct DisclosureChevron: View {
             .foregroundStyle(.tertiary)
             .frame(width: 12, alignment: .center)
             .rotationEffect(.degrees(isExpanded ? 90 : 0))
-            .animation(.easeInOut(duration: 0.18), value: isExpanded)
+            .animation(.easeInOut(duration: 0.2), value: isExpanded)
     }
 
     private var font: Font {
         switch style {
-        case .section: return .caption.weight(.semibold)
-        case .subgroup: return .caption2.weight(.semibold)
+        case .section: return .system(size: 10, weight: .semibold)
+        case .subgroup: return .system(size: 9, weight: .semibold)
         }
     }
 }
@@ -555,24 +550,16 @@ fileprivate func collapsibleSubgroup<Content: View>(
             else { collapsedSubgroups.wrappedValue.insert(key) }
         }
     } label: {
-        HStack(spacing: 6) {
+        HStack(spacing: PSSpacing.s - 2) {
             DisclosureChevron(isExpanded: !isCollapsed, style: .subgroup)
-            if let icon {
-                Image(systemName: icon)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 14, alignment: .center)
-            }
             Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .textCase(.uppercase)
+                .psSectionHeader()
             Spacer()
         }
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .padding(.top, 4)
+    .padding(.top, 6)
 
     if !isCollapsed { content() }
 }
@@ -671,17 +658,21 @@ private struct DisplayOutputRow: View {
     let output: PortDisplayOutput
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: PSSpacing.s) {
             Image(systemName: "display")
-                .foregroundStyle(.pink)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Display Output \(output.ordinal)")
+                Text("Display output \(output.ordinal)").lineLimit(1)
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(PSFont.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            Spacer(minLength: PSSpacing.xs)
+            StatusDot(status: !output.displays.isEmpty ? .active : nil)
+                .padding(.trailing, 2)
         }
     }
 
@@ -690,9 +681,6 @@ private struct DisplayOutputRow: View {
         if let adapter = output.adapter,
            let n = adapter.properties["Port Number"]?.asUInt {
             parts.append("adapter port \(n)")
-        }
-        if output.displays.isEmpty {
-            parts.append("no display attributed")
         }
         return parts.joined(separator: " · ")
     }
@@ -726,28 +714,47 @@ private struct DeviceBranch: View {
     }
 }
 
+/// One physical receptacle row. Empty / charging-only ports stay one-line
+/// and visually subdued (no subtitle, the status dot does the talking);
+/// data ports keep the title-only treatment too — the receptacle name is
+/// enough, and the actual attached devices nest below as their own rows.
 private struct PortRow: View {
     let port: PhysicalPort
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: PSSpacing.s) {
             Image(systemName: port.mode.symbol)
-                .foregroundStyle(port.mode.color)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(port.cliTitle)
-                Text(port.statusLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if let loc = port.locationLabel {
-                    Text(loc)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
+            Text(port.cliTitle)
+                .lineLimit(1)
+            Spacer(minLength: PSSpacing.xs)
+            StatusDot(status: portSidebarStatus(port))
+                .padding(.trailing, 2)
         }
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        var parts: [String] = [port.cliTitle, port.statusLabel]
+        if let loc = port.locationLabel { parts.append(loc) }
+        return parts.joined(separator: ", ")
+    }
+}
+
+/// Right-edge status dot signal for a physical port. Green = active data
+/// path (TB / USB / display). Yellow = charging. Nil = empty (the absence
+/// of a dot is the empty signal).
+func portSidebarStatus(_ port: PhysicalPort) -> PSStatus? {
+    switch port.mode {
+    case .empty:        return nil
+    case .charging:     return .powerIn(port.statusLabel)
+    case .thunderbolt,
+         .usbOnly,
+         .displayOnly,
+         .unknown:
+        return .active
     }
 }
 
@@ -755,19 +762,23 @@ private struct DeviceRow: View {
     let device: ConnectedDevice
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "shippingbox.fill")
-                .foregroundStyle(.purple)
+        HStack(spacing: PSSpacing.s) {
+            Image(systemName: "shippingbox")
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(device.title).lineLimit(1)
                 if let s = device.subtitle, !s.isEmpty {
                     Text(s)
-                        .font(.caption2)
+                        .font(PSFont.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
+            Spacer(minLength: PSSpacing.xs)
+            StatusDot(status: .active)
+                .padding(.trailing, 2)
         }
     }
 }
@@ -796,34 +807,27 @@ private struct ControllerBranch: View {
                 FullTopologyRow(node: child, depth: 1, expanded: $expanded, flattenHubs: flattenHubs)
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: PSSpacing.s) {
                 Image(systemName: node.kind.sfSymbol)
-                    .foregroundStyle(node.kind.accentColor)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(node.title).lineLimit(1).font(.callout)
-                    Text(enrichedSubtitle).font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    Text(node.title).lineLimit(1)
+                    if let dev = connectedDeviceTitle {
+                        Text(dev)
+                            .font(PSFont.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: PSSpacing.xs)
+                if connectedDeviceTitle != nil {
+                    StatusDot(status: .active).padding(.trailing, 2)
                 }
             }
         }
         .tag(node.id)
-    }
-
-    /// True when a downstream router with depth > 0 lives under this controller.
-    private var isAttachedHost: Bool {
-        return connectedDeviceTitle != nil
-    }
-
-    /// Pull a meaningful subtitle from the tree: the name of the external device
-    /// downstream, or "No external device" if the controller is idle. Falls
-    /// back to the formatter-generated subtitle when nothing useful is found.
-    private var enrichedSubtitle: String {
-        if let dev = connectedDeviceTitle {
-            return "Connected · \(dev)"
-        }
-        return "No external device"
     }
 
     /// Search the controller's subtree for the first external router (depth > 0).
@@ -881,14 +885,18 @@ private struct USBBranch: View {
     }
 
     private var label: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: PSSpacing.s) {
             Image(systemName: node.kind.sfSymbol)
-                .foregroundStyle(node.kind.accentColor)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(node.title).lineLimit(1).font(.callout)
+                Text(node.title).lineLimit(1)
                 if let s = node.subtitle, !s.isEmpty {
-                    Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(s)
+                        .font(PSFont.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
         }
@@ -983,17 +991,16 @@ private struct FullTopologyRow: View {
     }
 
     private var label: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: PSSpacing.s) {
             Image(systemName: node.kind.sfSymbol)
-                .foregroundStyle(node.kind.accentColor)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(node.title)
-                    .lineLimit(1)
-                    .font(.callout)
+                Text(node.title).lineLimit(1)
                 if let s = node.subtitle, !s.isEmpty {
                     Text(s)
-                        .font(.caption2)
+                        .font(PSFont.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -1008,31 +1015,42 @@ private struct MagSafeRow: View {
     let accessory: PortAccessoryInfo
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "powerplug.fill")
-                .foregroundStyle(accessory.connectionActive ? .green : .secondary)
+        HStack(spacing: PSSpacing.s) {
+            Image(systemName: "powerplug")
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text("MagSafe 3 Port")
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Text("MagSafe 3 Port").lineLimit(1)
+                if let s = subtitle {
+                    Text(s)
+                        .font(PSFont.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
+            Spacer(minLength: PSSpacing.xs)
+            StatusDot(status: status).padding(.trailing, 2)
         }
     }
 
-    private var subtitle: String {
-        // When unplugged, lead with "Disconnected" plus the lifetime plug
-        // count; when live, surface the negotiated wattage.
-        if accessory.connectionActive {
-            if let win = accessory.usbPD?.winning {
-                return "Charging · \(win.powerLabel)"
-            }
-            return "Connected"
+    /// Subtitle is *only* present when there's a real story — a negotiated
+    /// charging wattage. The "0 plug events" + "Idle" filler that used to
+    /// always render is gone (render presence, not absence).
+    private var subtitle: String? {
+        if accessory.connectionActive, let win = accessory.usbPD?.winning {
+            return "Charging · \(win.powerLabel)"
         }
-        let plugs = accessory.plugEventCount
-        return plugs == 0 ? "Idle" : "Idle · \(plugs) plug events"
+        if accessory.connectionActive { return "Connected" }
+        return nil
+    }
+
+    private var status: PSStatus? {
+        guard accessory.connectionActive else { return nil }
+        if let win = accessory.usbPD?.winning, win.maxPowerMW > 0 {
+            return .powerIn(win.powerLabel)
+        }
+        return .active
     }
 }
 
@@ -1040,17 +1058,20 @@ private struct BatteryRow: View {
     let node: TBNode
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: PSSpacing.s) {
             Image(systemName: symbol)
-                .foregroundStyle(node.kind.accentColor)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(node.title)
+                Text(node.title).lineLimit(1)
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(PSFont.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            Spacer(minLength: PSSpacing.xs)
+            StatusDot(status: status).padding(.trailing, 2)
         }
     }
 
@@ -1069,11 +1090,19 @@ private struct BatteryRow: View {
         let pct = node.properties["CurrentCapacity"]?.asUInt ?? 0
         let charging = node.properties["IsCharging"]?.asBool ?? false
         let external = node.properties["ExternalConnected"]?.asBool ?? false
-        var parts: [String] = ["\(pct)%"]
+        var parts: [String] = ["\(pct) %"]
         if charging { parts.append("Charging") }
         else if external { parts.append("On AC") }
         else { parts.append("On battery") }
         return parts.joined(separator: " · ")
+    }
+
+    private var status: PSStatus? {
+        let charging = node.properties["IsCharging"]?.asBool ?? false
+        let pct = node.properties["CurrentCapacity"]?.asUInt ?? 0
+        if charging { return .powerIn("Charging") }
+        if pct > 0 { return .active }
+        return nil
     }
 }
 
@@ -1094,26 +1123,17 @@ private struct BluetoothControllerRow: View {
     let snapshot: BluetoothSnapshot
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: PSSpacing.s) {
             Image(systemName: "dot.radiowaves.left.and.right")
-                .foregroundStyle(snapshot.controller?.isOn == true ? .blue : .secondary)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Bluetooth Controller")
-                Text(subtitle)
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            Text("Bluetooth").lineLimit(1)
+            Spacer(minLength: PSSpacing.xs)
+            if let c = snapshot.controller {
+                StatusDot(status: c.isOn ? .active : nil).padding(.trailing, 2)
             }
         }
-    }
-
-    private var subtitle: String {
-        guard let c = snapshot.controller else { return "—" }
-        var parts: [String] = []
-        if c.isOn { parts.append("On") } else { parts.append("Off") }
-        if !c.displayChipset.isEmpty && c.displayChipset != "Unknown" {
-            parts.append(c.displayChipset)
-        }
-        return parts.joined(separator: " · ")
     }
 }
 
@@ -1121,23 +1141,27 @@ private struct BluetoothDeviceRow: View {
     let device: BluetoothDevice
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: PSSpacing.s) {
             Image(systemName: device.category.symbol)
-                .foregroundStyle(device.isConnected ? device.category.color : .secondary)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(device.name).lineLimit(1)
-                if let s = subtitle, !s.isEmpty {
+                if let s = subtitle {
                     Text(s)
-                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        .font(PSFont.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
+            Spacer(minLength: PSSpacing.xs)
+            StatusDot(status: device.isConnected ? .active : nil).padding(.trailing, 2)
         }
     }
 
     private var subtitle: String? {
         var parts: [String] = []
-        if device.isConnected { parts.append("Connected") }
         if let m = device.minorType, !m.isEmpty { parts.append(m) }
         if let rssi = device.rssi { parts.append("\(rssi) dBm") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
@@ -1151,18 +1175,22 @@ private struct DisplaySidebarRow: View {
     let display: DisplayInfo
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: PSSpacing.s) {
             Image(systemName: display.iconSymbol)
-                .foregroundStyle(display.isConnected ? .blue : .secondary)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(display.title).lineLimit(1)
                 if let s = display.subtitle, !s.isEmpty {
-                    Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                } else {
-                    Text("Idle").font(.caption2).foregroundStyle(.secondary)
+                    Text(s)
+                        .font(PSFont.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
+            Spacer(minLength: PSSpacing.xs)
+            StatusDot(status: display.isConnected ? .active : nil).padding(.trailing, 2)
         }
     }
 }
@@ -1196,14 +1224,18 @@ struct PCIBranch: View {
     }
 
     private var label: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: PSSpacing.s) {
             Image(systemName: node.kind.symbol)
-                .foregroundStyle(node.kind.color)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(node.title).lineLimit(1).font(.callout)
+                Text(node.title).lineLimit(1)
                 if let s = node.subtitle, !s.isEmpty {
-                    Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(s)
+                        .font(PSFont.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
         }
