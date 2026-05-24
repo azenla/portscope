@@ -158,6 +158,20 @@ private struct StatusPill: View {
     }
 }
 
+/// Find the first switch (router) reachable under this lane port, walking
+/// through intermediate port wrappers. Returns nil when nothing is plugged
+/// in. Mirrors `TopologyMapper.findDownstreamLink` but stays in the view
+/// layer so we don't have to thread the topology mapper into every PortView.
+nonisolated private func findDownstreamSwitch(under node: TBNode) -> TBNode? {
+    var stack = node.children
+    while !stack.isEmpty {
+        let n = stack.removeFirst()
+        if n.kind == .switch { return n }
+        if n.kind == .port { stack.append(contentsOf: n.children) }
+    }
+    return nil
+}
+
 /// True when the kernel's adapter description points at a TB *function*
 /// adapter (carries a tunnel — DP/HDMI, USB, PCIe) rather than a lane
 /// adapter (the bidirectional TB link itself) or the NHI host interface.
@@ -316,7 +330,7 @@ private struct RouterView: View {
             ])
 
             if depth > 0, let uplink = findUpstreamLane() {
-                UpstreamLinkCard(uplink: uplink)
+                UpstreamLinkCard(uplink: uplink, router: node)
             }
             AdapterBreakdown(router: node,
                              title: depth == 0 ? "Built-in Adapters" : "Adapters",
@@ -565,13 +579,18 @@ private struct AdapterChip: View {
 private struct UpstreamLinkCard: View {
     /// The upstream lane adapter on the host side feeding this router.
     let uplink: TBNode
+    /// This router (the dock or daisy-chained device) — used to sum
+    /// reservations from its own function adapters, which is the only
+    /// source the kernel publishes consistently.
+    let router: TBNode
 
     var body: some View {
         let bw = uplink.properties["Link Bandwidth"]?.asUInt ?? 0
-        let req = uplink.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
-        let maxAlloc = uplink.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
         let currentSpeed = uplink.properties["Current Link Speed"]?.asUInt ?? 0
         let width = uplink.properties["Current Link Width"]?.asUInt ?? 0
+        let tunnels = TopologyMapper.summariseTunnels(in: router)
+        let reserved = tunnels.reduce(UInt64(0)) { $0 + $1.reservedBandwidth }
+        let maxAlloc = tunnels.reduce(UInt64(0)) { $0 + $1.maxBandwidth }
 
         SectionCard(title: "Uplink to Host", symbol: "arrow.up.right.circle") {
             VStack(alignment: .leading, spacing: 12) {
@@ -586,11 +605,78 @@ private struct UpstreamLinkCard: View {
                     .foregroundStyle(.secondary)
                 }
                 if bw > 0 {
-                    BandwidthBar(linkBandwidth: bw, required: req, maximum: maxAlloc)
+                    BandwidthBar(linkBandwidth: bw,
+                                 required: reserved,
+                                 maximum: maxAlloc)
+                }
+                if !tunnels.isEmpty {
+                    TunnelBreakdownList(tunnels: tunnels, linkBandwidth: bw)
                 }
             }
             .padding(.vertical, 2)
         }
+    }
+}
+
+/// Per-category breakdown (DP / USB / PCIe rows) below the aggregate
+/// bandwidth bar — lets the user see which class of traffic is eating the
+/// reservation. Renders nothing when no class has a real reservation.
+private struct TunnelBreakdownList: View {
+    let tunnels: [PortTunnel]
+    let linkBandwidth: UInt64
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("By tunnel class")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            ForEach(tunnels, id: \.self) { t in
+                TunnelBreakdownRow(tunnel: t, linkBandwidth: linkBandwidth)
+            }
+        }
+    }
+}
+
+private struct TunnelBreakdownRow: View {
+    let tunnel: PortTunnel
+    let linkBandwidth: UInt64
+
+    var body: some View {
+        let cat = tunnelCategoryColor(tunnel.kind)
+        let real = max(tunnel.reservedBandwidth, tunnel.maxBandwidth) >= 10
+        HStack(spacing: 10) {
+            Image(systemName: tunnel.symbol)
+                .foregroundStyle(cat)
+                .frame(width: 18)
+            Text(tunnel.label).font(.caption.weight(.medium))
+            Text("× \(tunnel.adapterCount)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+            Spacer()
+            if real {
+                Text("Reserved \(tbBandwidthLabel(tunnel.reservedBandwidth))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Text("· max \(tbBandwidthLabel(tunnel.maxBandwidth))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text("Active (negligible reservation)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+nonisolated private func tunnelCategoryColor(_ kind: PortTunnel.Kind) -> Color {
+    switch kind {
+    case .displayPort: return .pink
+    case .usb: return .teal
+    case .pcie: return .green
     }
 }
 
@@ -621,8 +707,21 @@ private struct PortView: View {
         let targetWidth = node.properties["Target Link Width"]?.asUInt ?? 0
         let supportedWidth = node.properties["Supported Link Width"]?.asUInt ?? 0
         let bw = node.properties["Link Bandwidth"]?.asUInt ?? 0
-        let req = node.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
-        let maxAlloc = node.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
+        // Per-lane Required / Maximum is an outer-wrapper partial aggregate
+        // that disagrees with the actual sum across the link's tunnels.
+        // When this lane has a switch downstream, prefer summing the
+        // switch's function adapters — that's what `port.bandwidthSummary`
+        // exposes for the physical-port view, and the same source the
+        // dock's own Uplink card reads. Fall back to the lane's published
+        // numbers when nothing is connected (no switch underneath).
+        let downstream = findDownstreamSwitch(under: node)
+        let tunnels = downstream.map { TopologyMapper.summariseTunnels(in: $0) } ?? []
+        let summedReserved = tunnels.reduce(UInt64(0)) { $0 + $1.reservedBandwidth }
+        let summedMax = tunnels.reduce(UInt64(0)) { $0 + $1.maxBandwidth }
+        let req = downstream != nil ? summedReserved
+            : (node.properties["Required Bandwidth Allocated"]?.asUInt ?? 0)
+        let maxAlloc = downstream != nil ? summedMax
+            : (node.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0)
 
         VStack(alignment: .leading, spacing: 16) {
             StatGrid(stats: [
@@ -647,8 +746,14 @@ private struct PortView: View {
             // Bandwidth bar (only when link is up).
             if bw > 0 {
                 SectionCard(title: "Bandwidth Allocation", symbol: "speedometer") {
-                    BandwidthBar(linkBandwidth: bw, required: req, maximum: maxAlloc)
-                        .padding(.vertical, 4)
+                    VStack(alignment: .leading, spacing: 10) {
+                        BandwidthBar(linkBandwidth: bw, required: req, maximum: maxAlloc)
+                            .padding(.vertical, 4)
+                        if !tunnels.isEmpty {
+                            Divider()
+                            TunnelBreakdownList(tunnels: tunnels, linkBandwidth: bw)
+                        }
+                    }
                 }
             }
 

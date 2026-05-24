@@ -54,10 +54,73 @@ struct PhysicalPort {
     /// matching xHCI port wrapper for the receptacle.
     let sourcePower: PortSourcePower?
 
-    /// The lane node to query for bandwidth allocations. Prefers `linkLane`
-    /// (sees all tunnels through the link) and falls back to `laneAdapter`
-    /// (host-side, used when nothing is connected).
-    var bandwidthLane: TBNode { linkLane ?? laneAdapter }
+    /// The lane node whose `Link Bandwidth` to read for this port's link
+    /// capacity. On Apple Silicon TB5 hardware the dock-side peer lane
+    /// (`linkLane`) often reports `Link Bandwidth = 0` while the host-side
+    /// lane (`laneAdapter`) carries the canonical 800 / 1200 (100 Mb/s
+    /// units). Prefer whichever endpoint actually publishes the number; fall
+    /// back to the host side when both are zero.
+    ///
+    /// **Don't read `Required/Maximum Bandwidth Allocated` from this lane.**
+    /// The lane port publishes an outer-wrapper partial aggregate that
+    /// disagrees with the function-adapter sum (e.g. lane shows `4 / 402`
+    /// while the dock's actual reservations sum to `314 / 922`). Use
+    /// `bandwidthSummary` instead — it sums from `tunnels`, which is the
+    /// kernel-authoritative source.
+    var bandwidthLane: TBNode {
+        if let link = linkLane, (link.properties["Link Bandwidth"]?.asUInt ?? 0) > 0 {
+            return link
+        }
+        if (laneAdapter.properties["Link Bandwidth"]?.asUInt ?? 0) > 0 {
+            return laneAdapter
+        }
+        return linkLane ?? laneAdapter
+    }
+
+    /// Canonical bandwidth picture for this port. `linkBandwidth` is the
+    /// negotiated link capacity (100 Mb/s units, full-duplex aggregate);
+    /// `reserved` / `max` are summed from the per-category `tunnels`
+    /// entries, which themselves come from the connected router's function
+    /// adapters — the only kernel field that's actually consistent across
+    /// TB controller generations.
+    var bandwidthSummary: PortBandwidthSummary {
+        let cap = bandwidthLane.properties["Link Bandwidth"]?.asUInt ?? 0
+        let reserved = tunnels.reduce(UInt64(0)) { $0 + $1.reservedBandwidth }
+        let maxBw = tunnels.reduce(UInt64(0)) { $0 + $1.maxBandwidth }
+        return PortBandwidthSummary(linkBandwidth: cap,
+                                    reserved: reserved,
+                                    max: maxBw,
+                                    perTunnel: tunnels)
+    }
+}
+
+/// Bandwidth roll-up for one physical port. Capacity from the lane, reserved
+/// / max from the connected router's function adapters.
+struct PortBandwidthSummary {
+    let linkBandwidth: UInt64       // 100 Mb/s units; 0 if link is down
+    let reserved: UInt64            // Σ Required Bandwidth Allocated
+    let max: UInt64                 // Σ Maximum Bandwidth Allocated
+    let perTunnel: [PortTunnel]
+
+    var hasLink: Bool { linkBandwidth > 0 }
+    var hasReservation: Bool { reserved > 0 || max > 0 }
+    /// True when the kernel's planned ceiling exceeds the link's capacity
+    /// — the bandwidth bar marks this in red. The TB scheduler relies on
+    /// tunnels not peaking simultaneously, so this is informational, not
+    /// a failure.
+    var planExceedsCapacity: Bool { linkBandwidth > 0 && max > linkBandwidth }
+
+    /// Fraction (0...1) of link capacity actively reserved.
+    var reservedFraction: Double {
+        guard linkBandwidth > 0 else { return 0 }
+        return min(Double(reserved) / Double(linkBandwidth), 1.0)
+    }
+
+    /// Fraction (0...1) of link capacity planned at peak.
+    var maxFraction: Double {
+        guard linkBandwidth > 0 else { return 0 }
+        return min(Double(max) / Double(linkBandwidth), 1.0)
+    }
 }
 
 nonisolated struct PortTunnel: Hashable {
@@ -801,7 +864,16 @@ nonisolated enum TopologyMapper {
 
         let connected = dockSwitch.map { describe(device: $0) }
         let usbDevices = connected.map { collectUSBDevices(under: $0.routerNode) } ?? []
-        let tunnels = connected.map { summariseTunnels(in: $0.routerNode) } ?? []
+        // Tunnel reservations are published on the *host-side* function
+        // adapters — the ones sitting on this controller's root switch.
+        // The dock-side function adapters in the connected router carry
+        // placeholder values (DP: req=max=1) for the same logical tunnel,
+        // so summing from the dock under-reports DP bandwidth by ~30 Gb/s
+        // on an active setup. Read from the host root.
+        let rootSwitch = findRootSwitch(in: controller)
+        let tunnels: [PortTunnel] = connected != nil
+            ? (rootSwitch.map { summariseTunnels(in: $0) } ?? [])
+            : []
         let mode = inferMode(lane: lane, connectedDevice: connected, usbDevices: usbDevices)
 
         return PhysicalPort(
@@ -853,14 +925,29 @@ nonisolated enum TopologyMapper {
         return out
     }
 
-    /// Summarise the active tunnels on a router by adapter class.
-    private static func summariseTunnels(in router: TBNode) -> [PortTunnel] {
+    /// Summarise the active tunnels on a router by adapter class. Public
+    /// because the detail views need it to render the Uplink card for an
+    /// arbitrary router (whichever router the user navigated to) — the
+    /// kernel publishes reliable per-tunnel reservations only on the
+    /// router's own function adapters, not on either endpoint of the lane.
+    static func summariseTunnels(in router: TBNode) -> [PortTunnel] {
         var totals: [PortTunnel.Kind: (reserved: UInt64, max: UInt64, count: Int)] = [:]
         for child in router.children where child.kind == .port {
             let desc = child.properties["Description"]?.asString ?? ""
             guard let kind = tunnelKind(for: desc) else { continue }
             let reserved = child.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
             let maxBw = child.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
+            // Only count active adapters — ones with a populated hop table
+            // or a non-zero reservation. An idle DP adapter (no hops, req=0)
+            // doesn't carry a tunnel and shouldn't inflate "× 4 adapters".
+            let active: Bool = {
+                if reserved > 0 || maxBw > 0 { return true }
+                if case let .array(arr) = child.properties["Hop Table"], !arr.isEmpty {
+                    return true
+                }
+                return false
+            }()
+            guard active else { continue }
             var entry = totals[kind] ?? (0, 0, 0)
             entry.reserved += reserved
             entry.max += maxBw

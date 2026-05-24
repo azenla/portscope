@@ -115,11 +115,10 @@ struct PhysicalPortDetailView: View {
     }
 
     private func buildStats() -> [Stat] {
-        // Link speed / width / capacity all describe the negotiated link and
-        // are present on both ends of it. Read them from `bandwidthLane`
-        // (peer side when connected) so the numbers match the dock's
-        // Uplink-to-Host card; fall back to `laneAdapter` (host side) when
-        // nothing is plugged in.
+        // Speed / width are negotiated link parameters published on both
+        // endpoints. Capacity comes from whichever endpoint actually
+        // publishes a non-zero `Link Bandwidth` (TB5 host-side on Apple
+        // Silicon). `bandwidthSummary` already picked the right lane.
         let lane = port.bandwidthLane
         let speed = lane.properties["Current Link Speed"]?.asUInt
             ?? port.laneAdapter.properties["Current Link Speed"]?.asUInt
@@ -127,7 +126,7 @@ struct PhysicalPortDetailView: View {
         let width = lane.properties["Current Link Width"]?.asUInt
             ?? port.laneAdapter.properties["Current Link Width"]?.asUInt
             ?? 0
-        let bw = speed > 0 ? (lane.properties["Link Bandwidth"]?.asUInt ?? 0) : 0
+        let bw = port.bandwidthSummary.linkBandwidth
         let acc = port.accessory
 
         var stats: [Stat] = [
@@ -181,15 +180,17 @@ struct PhysicalPortDetailView: View {
                     .foregroundStyle(.secondary)
                     .font(.callout)
                 if case .thunderbolt = port.mode {
-                    // Use the peer lane (just above the connected switch) so
-                    // the bandwidth bar shows the tunnel reservations for the
-                    // full link to the dock, not the host's local share.
-                    let lane = port.bandwidthLane
-                    let bw = lane.properties["Link Bandwidth"]?.asUInt ?? 0
-                    let req = lane.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
-                    let maxBw = lane.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
-                    if bw > 0 {
-                        BandwidthBar(linkBandwidth: bw, required: req, maximum: maxBw)
+                    // Link capacity comes from the lane, but the kernel's
+                    // outer-wrapper aggregate on the lane is unreliable
+                    // (publishes a partial view that disagrees with the
+                    // function-adapter sums). Read reserved/max from the
+                    // connected router's function adapters instead — that's
+                    // what `bandwidthSummary` does.
+                    let s = port.bandwidthSummary
+                    if s.hasLink {
+                        BandwidthBar(linkBandwidth: s.linkBandwidth,
+                                     required: s.reserved,
+                                     maximum: s.max)
                             .padding(.top, 6)
                     }
                 }
@@ -493,7 +494,7 @@ struct PhysicalPortDetailView: View {
                 if let dp = dpTunnel {
                     Divider()
                     DPBandwidthRow(tunnel: dp,
-                                   linkBandwidth: port.bandwidthLane.properties["Link Bandwidth"]?.asUInt)
+                                   linkBandwidth: port.bandwidthSummary.linkBandwidth)
                 }
             }
         }
