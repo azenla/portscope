@@ -111,6 +111,18 @@ struct SidebarView: View {
         }()
 
         List(selection: $vm.selection) {
+            // System Overview is the canonical "About this Mac" landing
+            // row — always visible at the very top of the sidebar so the
+            // user can confirm what host they're inspecting without
+            // toggling Show All Devices.
+            if hw.systemInfo.hasAnyData {
+                collapsibleSubgroup(key: "physical:System",
+                                    title: "System",
+                                    collapsedSubgroups: $collapsedSubgroups) {
+                    SystemInfoSidebarRow(info: hw.systemInfo)
+                        .tag(SystemInfoSelector.id)
+                }
+            }
             physicalDeviceContent(ports: ports,
                                   hw: hw,
                                   batteryNode: batteryNode,
@@ -344,13 +356,8 @@ struct SidebarView: View {
         let hasAny = !hw.i2cBuses.isEmpty
             || !hw.spiBuses.isEmpty
             || !hw.coprocessorGroups.isEmpty
-            || hw.systemInfo.hasAnyData
         if hasAny {
             collapsibleSection("Internal Hardware", icon: "cpu") {
-                if hw.systemInfo.hasAnyData {
-                    SystemInfoSidebarRow(info: hw.systemInfo)
-                        .tag(SystemInfoSelector.id)
-                }
                 if !hw.i2cBuses.isEmpty || !hw.spiBuses.isEmpty {
                     collapsibleSubgroup(key: "ih:Buses",
                                         title: "Buses",

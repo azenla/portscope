@@ -41,6 +41,9 @@ nonisolated enum SystemInfoScanner {
         let memoryInfo = parseMemoryInfo()
         let storageInfo = parseStorageInfo()
         let firmware = parseHardwareInfo()
+        let wifi = parseWiFiInfo()
+        let cameras = parseCameras()
+        let audioDevices = parseAudio()
         let marketingName = hwModel.flatMap { MacPortCatalog.all[$0]?.marketingName }
 
         return SystemInfoSnapshot(
@@ -54,6 +57,9 @@ nonisolated enum SystemInfoScanner {
             memoryType: memoryInfo.type,
             memoryManufacturer: memoryInfo.manufacturer,
             internalStorage: storageInfo,
+            wifi: wifi,
+            cameras: cameras,
+            audioDevices: audioDevices,
             macOSVersion: macOSVersion,
             macOSBuild: macOSBuild,
             kernelVersion: kernelRelease,
@@ -198,6 +204,219 @@ nonisolated enum SystemInfoScanner {
             trimSupported: trim,
             smartStatus: smart
         )
+    }
+
+    /// Parse `SPAirPortDataType`. The output is heavily nested — interface
+    /// stanzas are indented under the top-level Wi-Fi block, and the
+    /// connected-network section is indented again. We walk the lines,
+    /// tracking section headers, and only commit fields when we're inside
+    /// the right scope. Best-effort: SP can render slightly differently
+    /// across macOS revs (kept the parsing forgiving).
+    private static func parseWiFiInfo() -> WiFiInfo? {
+        let raw = runSystemProfiler("SPAirPortDataType") ?? ""
+        guard !raw.isEmpty else { return nil }
+        var iface: String?
+        var cardType: String?
+        var mac: String?
+        var locale: String?
+        var country: String?
+        var phys: String?
+        var status: String?
+        var supportedChannels: String?
+        var inCurrentNetwork = false
+        var ssid: String?
+        var currentPHY: String?
+        var currentChannel: String?
+
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let raw = String(line)
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            // Interface name is "en0:" at the deepest indentation we care
+            // about — grab the first one.
+            if iface == nil, trimmed.hasSuffix(":"),
+               trimmed.hasPrefix("en"), !trimmed.contains(" ") {
+                iface = String(trimmed.dropLast())
+                continue
+            }
+            // "Current Network Information:" opens a nested block. Inside
+            // it, the very next "<SSID>:" line is the joined network; the
+            // following PHY Mode / Channel rows are about it.
+            if trimmed == "Current Network Information:" {
+                inCurrentNetwork = true
+                continue
+            }
+            if inCurrentNetwork {
+                if ssid == nil, trimmed.hasSuffix(":"), !trimmed.contains(" ") {
+                    ssid = String(trimmed.dropLast())
+                    continue
+                }
+                if trimmed.hasPrefix("PHY Mode:") {
+                    currentPHY = stripPrefix(trimmed, "PHY Mode:")
+                } else if trimmed.hasPrefix("Channel:") {
+                    currentChannel = stripPrefix(trimmed, "Channel:")
+                } else if !trimmed.contains(":") {
+                    // Blank or a section we don't care about — keep going.
+                }
+            }
+            if trimmed.hasPrefix("Card Type:") {
+                cardType = stripPrefix(trimmed, "Card Type:")
+            } else if trimmed.hasPrefix("MAC Address:") {
+                mac = stripPrefix(trimmed, "MAC Address:")
+            } else if trimmed.hasPrefix("Locale:") {
+                locale = stripPrefix(trimmed, "Locale:")
+            } else if trimmed.hasPrefix("Country Code:") {
+                country = stripPrefix(trimmed, "Country Code:")
+            } else if trimmed.hasPrefix("Supported PHY Modes:") {
+                phys = stripPrefix(trimmed, "Supported PHY Modes:")
+            } else if trimmed.hasPrefix("Supported Channels:") {
+                supportedChannels = stripPrefix(trimmed, "Supported Channels:")
+            } else if trimmed.hasPrefix("Status:") {
+                status = stripPrefix(trimmed, "Status:")
+            }
+        }
+
+        // Boil "Card Type" down to something human ("Apple N1" / "BCM4387"
+        // / etc.). The kernel string is a sequence of `key: value` tokens
+        // separated by commas; the interesting one is "chip id" or the
+        // family token immediately after the chipset rev. We don't have a
+        // clean mapping, so we surface the whole line in `firmwareRevision`
+        // and try a couple of heuristics for the short label.
+        let chipset = shortWiFiChipset(cardType: cardType)
+        let regulatory: String? = {
+            switch (locale, country) {
+            case (let l?, let c?): return "\(l) / \(c)"
+            case (let l?, nil):    return l
+            case (nil, let c?):    return c
+            default:               return nil
+            }
+        }()
+        return WiFiInfo(
+            interface: iface,
+            chipset: chipset,
+            firmwareRevision: cardType,
+            macAddress: mac,
+            regulatoryRegion: regulatory,
+            supportedPHYs: phys,
+            status: status,
+            currentSSID: ssid,
+            currentPHY: currentPHY,
+            currentChannel: currentChannel,
+            supports6GHz: supportedChannels?.contains("6GHz") == true
+        )
+    }
+
+    /// Apple's `Card Type` line packs "chip id: 0x11 api 1.2 firmware
+    /// [Rev …] N1B1 …". The "N1B1" / "BCM4387" token is the recognisable
+    /// chipset shorthand. We do a best-effort extraction and fall back to
+    /// "Wi-Fi Adapter" when we can't pin it down.
+    private static func shortWiFiChipset(cardType: String?) -> String? {
+        guard let s = cardType else { return nil }
+        // Apple silicon-integrated radio.
+        if s.contains("N1B1") || s.contains("N1_silicon") { return "Apple N1" }
+        if s.contains("BCM4387") { return "Broadcom BCM4387" }
+        if s.contains("BCM4378") { return "Broadcom BCM4378" }
+        if s.contains("BCM4377") { return "Broadcom BCM4377" }
+        if let range = s.range(of: #"BCM\d+"#, options: .regularExpression) {
+            return "Broadcom \(s[range])"
+        }
+        return "Wi-Fi Adapter"
+    }
+
+    private static func parseCameras() -> [CameraInfo] {
+        let raw = runSystemProfiler("SPCameraDataType") ?? ""
+        var out: [CameraInfo] = []
+        var name: String?
+        var modelID: String?
+        var uniqueID: String?
+
+        let commit = {
+            if let n = name {
+                out.append(CameraInfo(name: n, modelID: modelID, uniqueID: uniqueID))
+            }
+            name = nil; modelID = nil; uniqueID = nil
+        }
+
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = String(line).trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            if trimmed == "Camera:" { continue }
+            // Top-level entries inside the Camera: block end in ":" with
+            // no whitespace and no preceding key — that's the device name.
+            if trimmed.hasSuffix(":"), !trimmed.contains(": ") {
+                commit()
+                name = String(trimmed.dropLast())
+                continue
+            }
+            if trimmed.hasPrefix("Model ID:") {
+                modelID = stripPrefix(trimmed, "Model ID:")
+            } else if trimmed.hasPrefix("Unique ID:") {
+                uniqueID = stripPrefix(trimmed, "Unique ID:")
+            }
+        }
+        commit()
+        return out
+    }
+
+    private static func parseAudio() -> [AudioDeviceInfo] {
+        let raw = runSystemProfiler("SPAudioDataType") ?? ""
+        var out: [AudioDeviceInfo] = []
+        var name: String?
+        var manufacturer: String?
+        var transport: String?
+        var outChannels: Int?
+        var inChannels: Int?
+        var sampleRate: Int?
+        var isDefaultOut = false
+        var isDefaultIn = false
+
+        let commit = {
+            if let n = name {
+                out.append(AudioDeviceInfo(
+                    name: n,
+                    manufacturer: manufacturer,
+                    transport: transport,
+                    outputChannels: outChannels,
+                    inputChannels: inChannels,
+                    sampleRateHz: sampleRate,
+                    isDefaultOutput: isDefaultOut,
+                    isDefaultInput: isDefaultIn
+                ))
+            }
+            name = nil; manufacturer = nil; transport = nil
+            outChannels = nil; inChannels = nil; sampleRate = nil
+            isDefaultOut = false; isDefaultIn = false
+        }
+
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = String(line).trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            if trimmed == "Audio:" || trimmed == "Devices:" { continue }
+            if trimmed.hasSuffix(":"), !trimmed.contains(": ") {
+                commit()
+                name = String(trimmed.dropLast())
+                continue
+            }
+            if trimmed.hasPrefix("Manufacturer:") {
+                manufacturer = stripPrefix(trimmed, "Manufacturer:")
+            } else if trimmed.hasPrefix("Transport:") {
+                transport = stripPrefix(trimmed, "Transport:")
+            } else if trimmed.hasPrefix("Output Channels:") {
+                outChannels = Int(stripPrefix(trimmed, "Output Channels:"))
+            } else if trimmed.hasPrefix("Input Channels:") {
+                inChannels = Int(stripPrefix(trimmed, "Input Channels:"))
+            } else if trimmed.hasPrefix("Current SampleRate:") {
+                sampleRate = Int(stripPrefix(trimmed, "Current SampleRate:"))
+            } else if trimmed.hasPrefix("Default Output Device:") {
+                isDefaultOut = stripPrefix(trimmed, "Default Output Device:")
+                    .lowercased() == "yes"
+            } else if trimmed.hasPrefix("Default Input Device:") {
+                isDefaultIn = stripPrefix(trimmed, "Default Input Device:")
+                    .lowercased() == "yes"
+            }
+        }
+        commit()
+        return out
     }
 
     /// Parse "System Firmware Version" out of SPHardwareDataType. The full

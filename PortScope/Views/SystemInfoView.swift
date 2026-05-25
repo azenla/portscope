@@ -25,6 +25,33 @@ struct SystemInfoView: View {
                         StatGrid(stats: storageStats(storage))
                     }
                 }
+                if let wifi = info.wifi {
+                    SectionCard(title: "Wi-Fi", symbol: "wifi") {
+                        StatGrid(stats: wifiStats(wifi))
+                    }
+                }
+                if !info.cameras.isEmpty {
+                    SectionCard(title: "Cameras (\(info.cameras.count))",
+                                symbol: "camera") {
+                        VStack(spacing: 0) {
+                            ForEach(info.cameras) { cam in
+                                CameraRow(camera: cam)
+                                if cam.id != info.cameras.last?.id { Divider() }
+                            }
+                        }
+                    }
+                }
+                if !info.audioDevices.isEmpty {
+                    SectionCard(title: "Audio (\(info.audioDevices.count))",
+                                symbol: "speaker.wave.2") {
+                        VStack(spacing: 0) {
+                            ForEach(info.audioDevices) { dev in
+                                AudioRow(device: dev)
+                                if dev.id != info.audioDevices.last?.id { Divider() }
+                            }
+                        }
+                    }
+                }
                 SectionCard(title: "Software", symbol: "apple.logo") {
                     StatGrid(stats: softwareStats)
                 }
@@ -166,6 +193,64 @@ struct SystemInfoView: View {
         return out
     }
 
+    private func wifiStats(_ w: WiFiInfo) -> [Stat] {
+        var out: [Stat] = []
+        if let chipset = w.chipset {
+            out.append(Stat(label: "Chipset", value: chipset, symbol: "antenna.radiowaves.left.and.right"))
+        }
+        if let iface = w.interface {
+            out.append(Stat(label: "Interface", value: iface, symbol: "terminal"))
+        }
+        if let phys = w.supportedPHYs {
+            let tier = highestPHYTier(phys)
+            out.append(Stat(label: "Supported PHYs",
+                            value: tier.map { "\(phys) (\($0))" } ?? phys,
+                            symbol: "waveform.path"))
+        }
+        out.append(Stat(label: "6 GHz Band",
+                        value: w.supports6GHz ? "Supported" : "Not Supported",
+                        symbol: "wave.3.right"))
+        if let region = w.regulatoryRegion {
+            out.append(Stat(label: "Regulatory", value: region, symbol: "globe"))
+        }
+        if let mac = w.macAddress {
+            out.append(Stat(label: "MAC Address",
+                            value: mac.uppercased(),
+                            symbol: "barcode",
+                            isSecret: true))
+        }
+        if let status = w.status {
+            out.append(Stat(label: "Status", value: status,
+                            symbol: w.currentSSID != nil ? "checkmark.circle.fill" : "circle.dashed"))
+        }
+        if let ssid = w.currentSSID {
+            out.append(Stat(label: "Network", value: ssid,
+                            symbol: "wifi",
+                            isSecret: true))
+        }
+        if let phy = w.currentPHY {
+            out.append(Stat(label: "Active PHY", value: phy,
+                            symbol: "waveform"))
+        }
+        if let chan = w.currentChannel {
+            out.append(Stat(label: "Channel", value: chan,
+                            symbol: "dial.medium"))
+        }
+        return out
+    }
+
+    /// Map the SP "Supported PHY Modes" list ("a/b/g/n/ac/ax/be") to the
+    /// Wi-Fi marketing generation that the highest mode unlocks. "be" is
+    /// Wi-Fi 7; "ax" is Wi-Fi 6 / 6E; "ac" is Wi-Fi 5.
+    private func highestPHYTier(_ phys: String) -> String? {
+        let lower = phys.lowercased()
+        if lower.contains("/be") || lower.hasSuffix("be") { return "Wi-Fi 7" }
+        if lower.contains("/ax") || lower.hasSuffix("ax") { return "Wi-Fi 6/6E" }
+        if lower.contains("/ac") || lower.hasSuffix("ac") { return "Wi-Fi 5" }
+        if lower.contains("/n") || lower.hasSuffix("n") { return "Wi-Fi 4" }
+        return nil
+    }
+
     private var softwareStats: [Stat] {
         var out: [Stat] = []
         if let v = info.macOSVersion {
@@ -212,6 +297,95 @@ struct SystemInfoView: View {
         fmt.countStyle = .decimal
         fmt.includesActualByteCount = false
         return fmt.string(fromByteCount: Int64(bytes))
+    }
+}
+
+/// One camera row inside the Cameras section. Built-in FaceTime cameras
+/// land here alongside any active Continuity / DriverKit cameras the
+/// kernel reports.
+private struct CameraRow: View {
+    let camera: CameraInfo
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "camera")
+                .foregroundStyle(.blue)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(camera.name).font(.callout.weight(.medium))
+                if let m = camera.modelID {
+                    Text(m).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+/// One audio device row. We tag the default input + output with badges so
+/// the user can spot at a glance which device the system is currently
+/// routing through.
+private struct AudioRow: View {
+    let device: AudioDeviceInfo
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: device.transport == "Built-in"
+                  ? "macbook"
+                  : iconForTransport(device.transport))
+                .foregroundStyle(.orange)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(device.name).font(.callout.weight(.medium))
+                    if device.isDefaultOutput {
+                        badge("Default Out", color: .green)
+                    }
+                    if device.isDefaultInput {
+                        badge("Default In", color: .indigo)
+                    }
+                }
+                if let s = audioSubtitle {
+                    Text(s).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var audioSubtitle: String? {
+        var parts: [String] = []
+        if let m = device.manufacturer, !m.isEmpty { parts.append(m) }
+        if let t = device.transport, !t.isEmpty { parts.append(t) }
+        if let oc = device.outputChannels, oc > 0 {
+            parts.append("\(oc) out")
+        }
+        if let ic = device.inputChannels, ic > 0 {
+            parts.append("\(ic) in")
+        }
+        if let r = device.sampleRateHz, r > 0 {
+            parts.append("\(r / 1000) kHz")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func badge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func iconForTransport(_ t: String?) -> String {
+        switch t {
+        case "HDMI": return "tv"
+        case "USB": return "cable.connector"
+        case "Bluetooth": return "dot.radiowaves.left.and.right"
+        case "AirPlay": return "airplayaudio"
+        default: return "speaker.wave.2"
+        }
     }
 }
 
