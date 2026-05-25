@@ -344,8 +344,13 @@ struct SidebarView: View {
         let hasAny = !hw.i2cBuses.isEmpty
             || !hw.spiBuses.isEmpty
             || !hw.coprocessorGroups.isEmpty
+            || hw.systemInfo.hasAnyData
         if hasAny {
             collapsibleSection("Internal Hardware", icon: "cpu") {
+                if hw.systemInfo.hasAnyData {
+                    SystemInfoSidebarRow(info: hw.systemInfo)
+                        .tag(SystemInfoSelector.id)
+                }
                 if !hw.i2cBuses.isEmpty || !hw.spiBuses.isEmpty {
                     collapsibleSubgroup(key: "ih:Buses",
                                         title: "Buses",
@@ -1315,6 +1320,54 @@ private struct BatteryRow: View {
         else if external { parts.append("On AC") }
         else { parts.append("On battery") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// One-row chip summary for the System Overview entry in Internal Hardware.
+/// The detail view is `SystemInfoView`; this sidebar row just gives the user
+/// a recognisable hook (chip name + memory + GPU) so they don't have to
+/// open the full page to confirm what host they're inspecting.
+private struct SystemInfoSidebarRow: View {
+    let info: SystemInfoSnapshot
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "laptopcomputer")
+                .foregroundStyle(.tint)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).lineLimit(1)
+                if let s = subtitle, !s.isEmpty {
+                    Text(s)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private var title: String {
+        info.chipName ?? info.marketingName ?? "This Mac"
+    }
+
+    private var subtitle: String? {
+        var parts: [String] = []
+        if let mem = info.memoryBytes {
+            let fmt = ByteCountFormatter()
+            fmt.allowedUnits = [.useGB, .useTB]
+            fmt.countStyle = .decimal
+            fmt.includesActualByteCount = false
+            parts.append(fmt.string(fromByteCount: Int64(mem)))
+        }
+        if let storage = info.internalStorage?.capacityBytes {
+            let fmt = ByteCountFormatter()
+            fmt.allowedUnits = [.useGB, .useTB]
+            fmt.countStyle = .decimal
+            fmt.includesActualByteCount = false
+            parts.append("SSD \(fmt.string(fromByteCount: Int64(storage)))")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 

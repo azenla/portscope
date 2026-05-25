@@ -20,7 +20,9 @@ nonisolated enum InternalHardwareScanner {
             return false
         }
         let groups = groupCoprocessors(arm.coprocessors)
+        let systemInfo = SystemInfoScanner.scan()
         return InternalHardwareSnapshot(
+            systemInfo: systemInfo,
             i2cBuses: arm.i2c,
             spiBuses: arm.spi,
             batteryManager: battery,

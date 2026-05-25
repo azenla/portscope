@@ -15,6 +15,13 @@ import Foundation
 /// Static snapshot of the internal-fabric hardware. Built once per rescan by
 /// `InternalHardwareScanner`. Anything the user can't unplug lives here.
 nonisolated struct InternalHardwareSnapshot {
+    /// Chassis-wide "About this Mac" overview (chip, cores, RAM, internal
+    /// SSD, OS / firmware versions). Populated by `SystemInfoScanner` —
+    /// the data combines `sysctl`, `IOPlatformExpertDevice`, and a handful
+    /// of `system_profiler` calls. Always present (with mostly-nil fields)
+    /// even on the empty snapshot so the view code can render it
+    /// unconditionally.
+    let systemInfo: SystemInfoSnapshot
     /// I²C controllers (one per physical bus). Children are the slaves on the
     /// bus and their attached drivers.
     let i2cBuses: [TBNode]
@@ -41,6 +48,7 @@ nonisolated struct InternalHardwareSnapshot {
     }
 
     static let empty = InternalHardwareSnapshot(
+        systemInfo: .empty,
         i2cBuses: [], spiBuses: [], batteryManager: nil, magsafe: nil,
         coprocessorGroups: []
     )

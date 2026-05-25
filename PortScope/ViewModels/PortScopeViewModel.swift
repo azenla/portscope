@@ -124,6 +124,7 @@ final class PortScopeViewModel: ObservableObject {
             return false
         }
         let internalHardware = InternalHardwareSnapshot(
+            systemInfo: prev.internalHardware.systemInfo,
             i2cBuses: prev.internalHardware.i2cBuses,
             spiBuses: prev.internalHardware.spiBuses,
             batteryManager: battery ?? prev.internalHardware.batteryManager,
@@ -230,6 +231,7 @@ final class PortScopeViewModel: ObservableObject {
 
     private func exists(id: TBNodeID) -> Bool {
         if PhysicalPortSelector.isPortID(id) { return true }
+        if SystemInfoSelector.isSystemID(id) { return snapshot.internalHardware.systemInfo.hasAnyData }
         if MagSafeSelector.isMagSafeID(id) { return snapshot.internalHardware.magsafe != nil }
         if BluetoothSelector.isControllerID(id) { return snapshot.bluetooth.controller != nil }
         if BluetoothSelector.isDeviceID(id) {

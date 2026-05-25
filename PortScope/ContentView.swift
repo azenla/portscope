@@ -52,6 +52,9 @@ struct ContentView: View {
                                            onNavigate: { vm.select($0) })
                         .id(sel)
                 }
+            } else if SystemInfoSelector.isSystemID(sel) {
+                SystemInfoView(info: vm.snapshot.internalHardware.systemInfo)
+                    .id(sel)
             } else if MagSafeSelector.isMagSafeID(sel),
                       let magsafe = vm.snapshot.internalHardware.magsafe {
                 ScrollView {
