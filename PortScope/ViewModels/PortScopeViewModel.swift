@@ -60,33 +60,81 @@ final class PortScopeViewModel: ObservableObject {
         powerRefreshTask?.cancel()
     }
 
+    /// Kick off a full rescan whose results stream into the snapshot one
+    /// slice at a time. Each scanner runs in its own task on a global
+    /// concurrent queue; when it finishes it hops back to the main actor
+    /// and writes only its own field of `snapshot`. The sidebar's bindings
+    /// re-render incrementally — Physical Device + Thunderbolt + USB show
+    /// up first (those scanners finish in tens of milliseconds), then
+    /// PCIe, then Internal Hardware, with the slow `BluetoothScanner`
+    /// (SPBluetoothDataType) and the heavy half of SystemInfo coming in
+    /// last. Total wall-clock matches the previous serial implementation
+    /// (capped by the slowest scanner), but first-paint is dramatically
+    /// faster — the user starts navigating the device tree while the
+    /// background tasks fill in.
     func rescan() {
         isScanning = true
-        Task.detached(priority: .userInitiated) {
-            let tb = ThunderboltScanner.scan()
-            let usb = USBScanner.scan()
-            let accessories = AccessoryScanner.scan()
-                + SDCardScanner.scan()
-                + PowerInputScanner.scan()
-                + EthernetScanner.scan()
-            let internalHardware = InternalHardwareScanner.scan(accessories: accessories)
-            let bluetooth = BluetoothScanner.scan()
-            let displays = DisplayScanner.scan()
-            let pcie = PCIScanner.scan()
-            let snap = SystemSnapshot(
-                tb: tb, usb: usb, accessories: accessories,
-                internalHardware: internalHardware,
-                bluetooth: bluetooth, displays: displays, pcie: pcie,
-                capturedAt: Date()
-            )
-            await MainActor.run {
-                self.snapshot = snap
-                self.isScanning = false
-                if let sel = self.selection, !self.exists(id: sel) {
-                    self.selection = self.firstSelectable()
-                } else if self.selection == nil {
-                    self.selection = self.firstSelectable()
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                // Thunderbolt — fast, IORegistry walk. Drives the sidebar
+                // Physical Device topology, so prioritise it.
+                group.addTask(priority: .userInitiated) { [self] in
+                    let tb = ThunderboltScanner.scan()
+                    await MainActor.run { self.snapshot.tb = tb }
                 }
+                // USB — fast, IORegistry walk. Used for tb-context
+                // cross-link and the USB section.
+                group.addTask(priority: .userInitiated) { [self] in
+                    let usb = USBScanner.scan()
+                    await MainActor.run { self.snapshot.usb = usb }
+                }
+                // Accessories + InternalHardware share a dependency:
+                // InternalHardwareScanner takes the accessory list so it
+                // can isolate the MagSafe receptacle. Run them as one
+                // task to keep that contract intact, then publish both
+                // in a single MainActor hop.
+                group.addTask(priority: .userInitiated) { [self] in
+                    let accessories = AccessoryScanner.scan()
+                        + SDCardScanner.scan()
+                        + PowerInputScanner.scan()
+                        + EthernetScanner.scan()
+                    let internalHardware = InternalHardwareScanner.scan(accessories: accessories)
+                    await MainActor.run {
+                        self.snapshot.accessories = accessories
+                        self.snapshot.internalHardware = internalHardware
+                    }
+                }
+                // PCIe — moderate cost (one IORegistry walk for every
+                // IOPCIDevice). Independent of the others.
+                group.addTask { [self] in
+                    let pcie = PCIScanner.scan()
+                    await MainActor.run { self.snapshot.pcie = pcie }
+                }
+                // Displays — IOMobileFramebuffer walk + EDID decode.
+                // Moderate cost, no SP spawn.
+                group.addTask { [self] in
+                    let displays = DisplayScanner.scan()
+                    await MainActor.run { self.snapshot.displays = displays }
+                }
+                // Bluetooth — spawns `system_profiler SPBluetoothDataType`
+                // which historically takes ~15 s on a busy radio. Lowest
+                // priority so it doesn't compete with the cheap scanners
+                // for the QoS thread pool.
+                group.addTask(priority: .utility) { [self] in
+                    let bluetooth = BluetoothScanner.scan()
+                    await MainActor.run { self.snapshot.bluetooth = bluetooth }
+                }
+            }
+            // All slices have streamed in; stamp the snapshot and clear
+            // the spinner. Selection picks up here if the user hadn't
+            // selected anything yet (or if their previous selection
+            // disappeared in the new snapshot).
+            self.snapshot.capturedAt = Date()
+            self.isScanning = false
+            if let sel = self.selection, !self.exists(id: sel) {
+                self.selection = self.firstSelectable()
+            } else if self.selection == nil {
+                self.selection = self.firstSelectable()
             }
         }
     }

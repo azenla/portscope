@@ -331,23 +331,30 @@ nonisolated enum PhysicalPortMode: Hashable {
 
 /// Snapshot of the entire system across TB + USB + connector-level state.
 nonisolated struct SystemSnapshot {
-    let tb: TBSnapshot
-    let usb: USBSnapshot
+    // Fields are `var` so the streaming rescan in `PortScopeViewModel`
+    // can update one slice at a time as each scanner completes — the
+    // sidebar populates progressively (TB ports first, then PCIe, then
+    // Bluetooth / Displays trickling in) instead of waiting on the
+    // slowest scanner to publish anything. Value semantics keep this
+    // safe: each MainActor.run block copies the struct, sets one field,
+    // assigns back; the runs are serialised by the actor.
+    var tb: TBSnapshot
+    var usb: USBSnapshot
     /// Per-physical-port runtime state from `IOAccessoryManager`. Includes
     /// both USB-C (HPM Type10) and MagSafe (HPM Type11) receptacles — the
     /// `connector` field distinguishes them. Empty on Macs that don't expose
     /// HPM interfaces (e.g. Intel hosts).
-    let accessories: [PortAccessoryInfo]
+    var accessories: [PortAccessoryInfo]
     /// Internal-fabric buses and devices: I²C, SPI, smart battery, MagSafe.
-    let internalHardware: InternalHardwareSnapshot
+    var internalHardware: InternalHardwareSnapshot
     /// Bluetooth controller + paired/connected devices, from SPBluetoothDataType.
-    let bluetooth: BluetoothSnapshot
+    var bluetooth: BluetoothSnapshot
     /// Built-in + external displays. Empty on Intel hosts.
-    let displays: DisplaySnapshot
+    var displays: DisplaySnapshot
     /// PCIe topology rooted at host bridges. Empty on Macs without a
     /// visible PCIe complex (rare; even Apple Silicon laptops have one).
-    let pcie: PCISnapshot
-    let capturedAt: Date
+    var pcie: PCISnapshot
+    var capturedAt: Date
 
     static let empty = SystemSnapshot(tb: .empty,
                                       usb: .empty,
