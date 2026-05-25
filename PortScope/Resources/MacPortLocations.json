@@ -2,7 +2,7 @@
   "$schema_version": 1,
   "$doc": "Per-chassis port-location catalogue. Keyed by `sysctl hw.model` (the chassis identifier the kernel exposes — e.g. `Mac14,12`). Each `ports` entry maps a (connector, port_number) pair to a human-friendly chassis location. Port numbering follows what `AppleHPMInterfaceType10.PortNumber` (USB-C / USB-A / HDMI) and `IOPort.PortNumber` (USB-A) publish. When the kernel's port number doesn't have a physical-chassis meaning (HDMI, MagSafe, SDXC — never more than one per chassis), the entry uses `port_number: 1`. Capability strings mirror Apple's tech-spec wording — `Thunderbolt / USB 4` (M1/M2/M3 base), `Thunderbolt 4` (Pro/Max chassis pre-M4), `Thunderbolt 5` (M4 Pro/Max). See CLAUDE.md → 'Adding a new Mac model to the port-location catalogue' for the procedure when Apple ships a new chassis.",
 
-  "$mbp_chassis_note": "The 2021+ MacBook Pro Pro/Max chassis is identical across every generation from M1 Pro through M5 Max. LEFT side (rear → front): MagSafe 3, USB-C (kernel port 2), USB-C (kernel port 3), 3.5 mm headphone jack. RIGHT side (rear → front): SDXC, HDMI, USB-C (kernel port 1 — the lone right-side TB). The M3 base (Mac15,3) is the only chassis that trims this layout, dropping the lone right-side TB so its kernel ports 1/2 occupy the left-side pair instead.",
+  "$mbp_chassis_note": "The 2021+ MacBook Pro Pro/Max chassis is identical across every generation from M1 Pro through M5 Max. LEFT side (rear → front): MagSafe 3, USB-C (kernel port 1 — right next to MagSafe), USB-C (kernel port 2), 3.5 mm headphone jack. RIGHT side (rear → front): SDXC, HDMI, USB-C (kernel port 3 — the lone right-side TB). The kernel numbers the left-side pair first because they share an HPM chip; the right-side lone port is on its own HPM. The M3 base (Mac15,3) is the only chassis that trims this layout, dropping the lone right-side TB so its kernel ports 1/2 are the only USB-Cs on the chassis.",
 
   "models": {
 
@@ -98,11 +98,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.0" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -111,11 +111,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.0" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -124,11 +124,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.0" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -137,11 +137,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.0" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -150,11 +150,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -163,11 +163,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -176,11 +176,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -189,11 +189,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -202,7 +202,7 @@
       "chassis": "MacBook Pro 14″ Pro chassis (M3 base — only 2 TB ports, both on left)",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Left Center",  "capability": "Thunderbolt / USB 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt / USB 4" },
         { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt / USB 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" }
@@ -214,11 +214,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -227,11 +227,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -240,11 +240,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -253,11 +253,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -266,11 +266,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -279,11 +279,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -292,11 +292,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -305,11 +305,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 5" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 5" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 5" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
       ]
     },
 
@@ -318,11 +318,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 5" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 5" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 5" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
       ]
     },
 
@@ -331,11 +331,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 5" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 5" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 5" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
       ]
     },
 
@@ -344,11 +344,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 5" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 5" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 5" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
       ]
     },
 
@@ -357,11 +357,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 4" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 4" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 4" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 4" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 4" }
       ]
     },
 
@@ -370,11 +370,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 5" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 5" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 5" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
       ]
     },
 
@@ -383,11 +383,11 @@
       "chassis": "MacBook Pro 14″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 5" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 5" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 5" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
       ]
     },
 
@@ -396,11 +396,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 5" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 5" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 5" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
       ]
     },
 
@@ -409,11 +409,11 @@
       "chassis": "MacBook Pro 16″ Pro chassis",
       "ports": [
         { "connector": "magsafe","port_number": 1, "location": "Left Rear",    "capability": "MagSafe 3" },
-        { "connector": "usb-c",  "port_number": 2, "location": "Left Center",  "capability": "Thunderbolt 5" },
-        { "connector": "usb-c",  "port_number": 3, "location": "Left Front",   "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 1, "location": "Left Rear",    "capability": "Thunderbolt 5" },
+        { "connector": "usb-c",  "port_number": 2, "location": "Left Front",   "capability": "Thunderbolt 5" },
         { "connector": "sd-card","port_number": 1, "location": "Right Rear",   "capability": "SDXC UHS-II" },
         { "connector": "hdmi",   "port_number": 1, "location": "Right Center", "capability": "HDMI 2.1" },
-        { "connector": "usb-c",  "port_number": 1, "location": "Right Front",  "capability": "Thunderbolt 5" }
+        { "connector": "usb-c",  "port_number": 3, "location": "Right Front",  "capability": "Thunderbolt 5" }
       ]
     },
 
