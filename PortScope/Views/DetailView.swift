@@ -221,10 +221,10 @@ private struct ControllerView: View {
                 Stat(label: "Bus Power",
                      value: (node.properties["Using Bus Power"]?.asBool ?? false) ? "Active" : "Idle",
                      symbol: "bolt"),
-                Stat(label: "Total Adapters",
+                Stat(label: "Adapters",
                      value: rootRouter.map { "\($0.children.count)" } ?? "—",
                      symbol: "rectangle.connected.to.line.below"),
-                Stat(label: "Routers in Chain",
+                Stat(label: "Chain Routers",
                      value: "\(externalCount)",
                      symbol: "link"),
                 Stat(label: "Domain UUID",
@@ -234,7 +234,7 @@ private struct ControllerView: View {
 
             if let root = rootRouter {
                 AdapterBreakdown(router: root,
-                                 title: "Built-in Router Adapters",
+                                 title: "Built-in Adapters",
                                  onNavigate: onNavigate)
             }
         }
@@ -326,7 +326,7 @@ private struct RouterView: View {
                 Stat(label: "USB4 Spec Version",
                      value: tbVersionLabel(node.properties["Thunderbolt Version"]?.asUInt),
                      symbol: "bolt.horizontal.circle"),
-                Stat(label: "Depth in Chain",
+                Stat(label: "Chain Depth",
                      value: depth == 0 ? "0 (host)" : "\(depth)",
                      symbol: "arrow.triangle.branch"),
                 Stat(label: "Firmware",
@@ -643,7 +643,7 @@ struct TunnelBreakdownList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("What's using this link")
+                Text("Link Members")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -891,16 +891,16 @@ private struct PortView: View {
                      symbol: iconFor(description: description)),
                 Stat(label: "Port", value: node.properties["Port Number"]?.display ?? "—",
                      symbol: "number"),
-                Stat(label: "Active Generation",
+                Stat(label: "Generation",
                      value: currentSpeed > 0 ? tbLinkSpeedLabel(currentSpeed) : "Inactive",
                      symbol: "antenna.radiowaves.left.and.right"),
-                Stat(label: "Active Width",
+                Stat(label: "Width",
                      value: currentWidth > 0 ? "\(currentWidth) lanes" : "—",
                      symbol: "arrow.left.and.right"),
                 Stat(label: "Lane",
                      value: node.properties["Lane"]?.display ?? "—",
                      symbol: "bolt"),
-                Stat(label: "Bus Power Drawn",
+                Stat(label: "Bus Power",
                      value: node.properties["Bus Power"]?.display ?? "—",
                      symbol: "bolt.fill")
             ])
@@ -1026,7 +1026,7 @@ private struct FunctionAdapterPortView: View {
                 Stat(label: "Link Capacity",
                      value: linkBw > 0 ? tbBandwidthLabel(linkBw) : "—",
                      symbol: "gauge.with.dots.needle.67percent"),
-                Stat(label: "Reserved Bandwidth",
+                Stat(label: "Reserved",
                      value: reservedBandwidthLabel(req: req,
                                                    maxAlloc: maxAlloc,
                                                    isActive: isActive),

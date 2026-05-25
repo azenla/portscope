@@ -156,7 +156,7 @@ struct PhysicalPortDetailView: View {
                 Stat(label: "Power Input",
                      value: acc?.usbPD?.winning?.powerLabel ?? "—",
                      symbol: "bolt.fill"),
-                Stat(label: "Plug Orientation",
+                Stat(label: "Orientation",
                      value: acc?.plugOrientation.label ?? "—",
                      symbol: acc?.plugOrientation.symbol ?? "arrow.up.arrow.down"),
                 Stat(label: "TB Devices",
@@ -170,11 +170,11 @@ struct PhysicalPortDetailView: View {
         return stats
     }
 
-    // MARK: - "What's happening on this port" card
+    // MARK: - Port Overview card
 
     @ViewBuilder
     private var modeCard: some View {
-        SectionCard(title: "What's happening on this port", symbol: "info.circle") {
+        SectionCard(title: "Port Overview", symbol: "info.circle") {
             VStack(alignment: .leading, spacing: 8) {
                 Text(explanation(for: port.mode, accessory: port.accessory))
                     .foregroundStyle(.secondary)
@@ -293,7 +293,7 @@ struct PhysicalPortDetailView: View {
                 InfoRow(label: "Cable E-Marker",
                         value: acc.cableLabel ?? "Not reported",
                         symbol: "barcode"),
-                InfoRow(label: "Plug Events (since boot)",
+                InfoRow(label: "Plug Events",
                         value: "\(acc.plugEventCount)",
                         symbol: "arrow.up.arrow.down.circle"),
                 InfoRow(label: "Overcurrent Events",
@@ -545,7 +545,7 @@ struct PhysicalPortDetailView: View {
     }
 
     private var usbCard: some View {
-        SectionCard(title: "USB Devices via This Port (\(port.attachedUSBDevices.count))",
+        SectionCard(title: "USB Devices (\(port.attachedUSBDevices.count))",
                     symbol: "cable.connector") {
             VStack(spacing: 0) {
                 ForEach(port.attachedUSBDevices, id: \.id) { dev in
@@ -559,7 +559,7 @@ struct PhysicalPortDetailView: View {
     }
 
     private func connectedDeviceCard(_ device: ConnectedDevice) -> some View {
-        SectionCard(title: "Connected Thunderbolt Device", symbol: "shippingbox.fill") {
+        SectionCard(title: "Connected Device", symbol: "shippingbox.fill") {
             Button {
                 onNavigate(device.id)
             } label: {
