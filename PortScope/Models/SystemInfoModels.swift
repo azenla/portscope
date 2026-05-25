@@ -54,6 +54,15 @@ nonisolated struct SystemInfoSnapshot: Hashable {
     /// NVRAM variables — boot config, SIP state, language, FMM name.
     /// Empty when nvram isn't readable (sandboxed builds).
     let nvram: NVRAMSnapshot
+    /// Cached HID device census — Apple-vendor sensors, keyboards,
+    /// trackpads, biometric, etc. Walked once per heavy-tier rescan
+    /// so the sidebar doesn't re-enumerate IOKit on every re-render.
+    let hidDevices: HIDDevicesSnapshot
+    /// Cached Touch ID state — same caching rationale as `hidDevices`.
+    /// Nil when no AppleMesaShim service is present.
+    let touchID: TouchIDInfo
+    /// Cached trackpad + keyboard info. Static across a rescan.
+    let inputDevices: InputDevicesInfo
     /// macOS marketing version — `kern.osproductversion` (e.g. "26.5").
     let macOSVersion: String?
     /// macOS build identifier — `kern.osversion` (e.g. "25F71").
@@ -78,6 +87,7 @@ nonisolated struct SystemInfoSnapshot: Hashable {
         memoryBytes: nil, memoryType: nil, memoryManufacturer: nil,
         internalStorage: nil, wifi: nil, memoryDIMMs: [],
         cameras: [], audioDevices: [], nvram: .empty,
+        hidDevices: .empty, touchID: .empty, inputDevices: .empty,
         macOSVersion: nil, macOSBuild: nil,
         kernelVersion: nil, systemFirmware: nil, hwModel: nil,
         marketingName: nil, systemSerial: nil, hardwareUUID: nil

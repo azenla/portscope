@@ -259,13 +259,17 @@ enum GPUSelector {
 /// fingerprint templates) and the AOP (which drives the sensor pad).
 /// The kernel publishes the sensor's `Product`, `LocationID`, and a
 /// handful of vendor/version fields; we surface what's there.
-struct TouchIDInfo: Hashable {
+nonisolated struct TouchIDInfo: Hashable {
     let isPresent: Bool
     let product: String?
     let manufacturer: String?
     let vendorID: UInt64?
     let productID: UInt64?
     let firmwareVersion: UInt64?
+
+    static let empty = TouchIDInfo(isPresent: false, product: nil,
+                                   manufacturer: nil, vendorID: nil,
+                                   productID: nil, firmwareVersion: nil)
 
     static func read() -> TouchIDInfo {
         let iter = IORegBridge.services(matchingClass: "AppleMesaShim")
@@ -378,9 +382,11 @@ enum TouchIDSelector {
 /// elements) and `AppleHIDKeyboardEventDriverV2` (built-in keyboard
 /// + backlight controller). We surface what we can read directly
 /// from IORegistry.
-struct InputDevicesInfo: Hashable {
+nonisolated struct InputDevicesInfo: Hashable {
     let trackpad: TrackpadInfo?
     let keyboard: KeyboardInfo?
+
+    static let empty = InputDevicesInfo(trackpad: nil, keyboard: nil)
 
     static func read() -> InputDevicesInfo {
         return InputDevicesInfo(trackpad: TrackpadInfo.read(),
@@ -388,7 +394,7 @@ struct InputDevicesInfo: Hashable {
     }
 }
 
-struct TrackpadInfo: Hashable {
+nonisolated struct TrackpadInfo: Hashable {
     let product: String?
     let vendor: String?
     let firmwareVersion: UInt64?
@@ -408,7 +414,7 @@ struct TrackpadInfo: Hashable {
     }
 }
 
-struct KeyboardInfo: Hashable {
+nonisolated struct KeyboardInfo: Hashable {
     let product: String?
     let vendor: String?
     let firmwareVersion: UInt64?

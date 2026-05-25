@@ -283,9 +283,9 @@ final class PortScopeViewModel: ObservableObject {
         if StorageSelector.isStorageID(id) { return snapshot.internalHardware.systemInfo.internalStorage != nil }
         if MemorySelector.isMemoryID(id) { return !snapshot.internalHardware.systemInfo.memoryDIMMs.isEmpty || snapshot.internalHardware.systemInfo.memoryBytes != nil }
         if GPUSelector.isGPUID(id) { return snapshot.internalHardware.systemInfo.gpuCoreCount != nil || snapshot.internalHardware.systemInfo.metalVersion != nil }
-        if TouchIDSelector.isTouchIDID(id) { return TouchIDInfo.read().isPresent }
+        if TouchIDSelector.isTouchIDID(id) { return snapshot.internalHardware.systemInfo.touchID.isPresent }
         if InputDevicesSelector.isInputID(id) {
-            let i = InputDevicesInfo.read()
+            let i = snapshot.internalHardware.systemInfo.inputDevices
             return i.trackpad != nil || i.keyboard != nil
         }
         if NVRAMSelector.isNVRAMID(id) { return !snapshot.internalHardware.systemInfo.nvram.allVariables.isEmpty }

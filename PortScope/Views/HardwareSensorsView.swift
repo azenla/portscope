@@ -20,7 +20,7 @@ import SwiftUI
 
 struct HardwareSensorsView: View {
     @State private var snapshot: HardwareSensorsSnapshot = .empty
-    @State private var refreshTimer: Timer?
+    @State private var refreshTask: Task<Void, Never>?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -44,18 +44,21 @@ struct HardwareSensorsView: View {
             footer
         }
         .frame(minWidth: 1100, minHeight: 820)
-        .onAppear {
-            snapshot = SensorScanner.scan()
-            // Re-scan every 2 seconds so the live values (temperature,
-            // power, light) tick forward. HID reads are cheap when the
-            // events are already buffered in the IOHIDEventSystem.
-            refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
-                Task { @MainActor in
-                    self.snapshot = SensorScanner.scan()
+        .task {
+            // Drive the refresh loop on a background task so the
+            // IOHIDEventSystem reads + IORegistry walks don't block the
+            // main thread. Each iteration scans off-main and hops back
+            // to MainActor only to publish the new snapshot.
+            refreshTask?.cancel()
+            refreshTask = Task.detached(priority: .userInitiated) {
+                while !Task.isCancelled {
+                    let snap = SensorScanner.scan()
+                    await MainActor.run { self.snapshot = snap }
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
                 }
             }
         }
-        .onDisappear { refreshTimer?.invalidate() }
+        .onDisappear { refreshTask?.cancel() }
     }
 
     private var header: some View {

@@ -95,6 +95,9 @@ nonisolated enum SystemInfoScanner {
             cameras: heavy.cameras,
             audioDevices: heavy.audio,
             nvram: heavy.nvram,
+            hidDevices: heavy.hidDevices,
+            touchID: heavy.touchID,
+            inputDevices: heavy.inputDevices,
             macOSVersion: macOSVersion,
             macOSBuild: macOSBuild,
             kernelVersion: kernelRelease,
@@ -122,6 +125,9 @@ nonisolated enum SystemInfoScanner {
         var cameras: [CameraInfo] = []
         var audio: [AudioDeviceInfo] = []
         var nvram: NVRAMSnapshot = .empty
+        var hidDevices: HIDDevicesSnapshot = .empty
+        var touchID: TouchIDInfo = .empty
+        var inputDevices: InputDevicesInfo = .empty
     }
 
     /// Run the six `system_profiler` data-type fetches in parallel via a
@@ -166,6 +172,15 @@ nonisolated enum SystemInfoScanner {
         }
         queue.async(group: group) {
             out.nvram = NVRAMScanner.scan()
+        }
+        queue.async(group: group) {
+            out.hidDevices = HIDDeviceScanner.scan()
+        }
+        queue.async(group: group) {
+            out.touchID = TouchIDInfo.read()
+        }
+        queue.async(group: group) {
+            out.inputDevices = InputDevicesInfo.read()
         }
         group.wait()
         return out

@@ -66,13 +66,13 @@ struct ContentView: View {
             } else if GPUSelector.isGPUID(sel) {
                 GPUDetailView(info: vm.snapshot.internalHardware.systemInfo).id(sel)
             } else if TouchIDSelector.isTouchIDID(sel) {
-                TouchIDDetailView(info: TouchIDInfo.read()).id(sel)
+                TouchIDDetailView(info: vm.snapshot.internalHardware.systemInfo.touchID).id(sel)
             } else if InputDevicesSelector.isInputID(sel) {
-                InputDevicesDetailView(info: InputDevicesInfo.read()).id(sel)
+                InputDevicesDetailView(info: vm.snapshot.internalHardware.systemInfo.inputDevices).id(sel)
             } else if NVRAMSelector.isNVRAMID(sel) {
                 NVRAMDetailView(snapshot: vm.snapshot.internalHardware.systemInfo.nvram).id(sel)
             } else if HIDDevicesSelector.isHIDID(sel) {
-                HIDDevicesDetailView(snapshot: HIDDeviceScanner.scan()).id(sel)
+                HIDDevicesDetailView(snapshot: vm.snapshot.internalHardware.systemInfo.hidDevices).id(sel)
             } else if WiFiSelector.isWiFiID(sel),
                       let wifi = vm.snapshot.internalHardware.systemInfo.wifi {
                 ScrollView { WiFiDetailView(info: wifi) }.id(sel)

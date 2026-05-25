@@ -455,7 +455,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var touchIDSection: some View {
-        let info = TouchIDInfo.read()
+        let info = vm.snapshot.internalHardware.systemInfo.touchID
         if info.isPresent {
             collapsibleSection("Touch ID", icon: "touchid") {
                 TouchIDSidebarRow(info: info).tag(TouchIDSelector.id)
@@ -465,7 +465,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var inputDevicesSection: some View {
-        let info = InputDevicesInfo.read()
+        let info = vm.snapshot.internalHardware.systemInfo.inputDevices
         if info.trackpad != nil || info.keyboard != nil {
             collapsibleSection("Input Devices", icon: "hand.tap") {
                 InputDevicesSidebarRow(info: info).tag(InputDevicesSelector.id)
@@ -475,7 +475,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var hidDevicesSection: some View {
-        let snap = HIDDeviceScanner.scan()
+        let snap = vm.snapshot.internalHardware.systemInfo.hidDevices
         if !snap.devices.isEmpty {
             collapsibleSection("HID Devices", icon: "keyboard.macwindow") {
                 HIDDevicesSidebarRow(snapshot: snap).tag(HIDDevicesSelector.id)

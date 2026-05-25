@@ -108,21 +108,27 @@ nonisolated struct HIDSensorReader {
     /// session. Keyed by the kernel's HID service `RegistryID` so the
     /// caller can join against the IORegistry walk used elsewhere.
     static func readAll() -> [UInt64: Reading] {
-        // `kIOHIDEventSystemClientTypeMonitor = 1`. The basic
-        // `IOHIDEventSystemClientCreate` defaults to "Simple" which
-        // can't read events; Monitor is the read-events-as-a-user
-        // client type. Admin (type 0) requires root and isn't needed.
-        guard let clientUM = _IOHIDEventSystemClientCreateWithType(
+        // Try the standard `Create` first (returns a Simple-type client
+        // on modern macOS). When that returns no services or rejects
+        // the event copy, fall through to the Monitor-type client which
+        // can read events as a non-root user but matches more strictly.
+        let client: AnyObject
+        if let basic = _IOHIDEventSystemClientCreate(kCFAllocatorDefault) {
+            client = basic.takeRetainedValue()
+        } else if let monitor = _IOHIDEventSystemClientCreateWithType(
             kCFAllocatorDefault, 1, nil
-        ) else { return [:] }
-        let client = clientUM.takeRetainedValue()
-        // Match every service on the Apple Vendor usage page (0xff00).
-        // Without the matching dict the kernel returns the full HID
-        // device list and most of those services don't carry typed
-        // sensor events — we'd waste time querying keyboards / mice
-        // for a temperature reading.
-        let matching: [String: Any] = ["PrimaryUsagePage": 0xff00]
-        _ = _IOHIDEventSystemClientSetMatching(client, matching as CFDictionary)
+        ) {
+            client = monitor.takeRetainedValue()
+        } else {
+            return [:]
+        }
+        // No matching dictionary — let the kernel return every HID
+        // service it knows about. We'll attempt all three sensor event
+        // types per service below, so services that don't carry typed
+        // events just fall silently out of the results. Setting a
+        // PrimaryUsagePage = 0xff00 matching filter empirically removes
+        // every service on macOS 26, which is the opposite of what we
+        // want.
 
         guard let servicesUM = _IOHIDEventSystemClientCopyServices(client) else {
             return [:]
