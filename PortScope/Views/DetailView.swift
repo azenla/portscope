@@ -741,8 +741,7 @@ private struct TunnelConsumerRow: View {
 /// only enumerates over USB).
 @MainActor
 func tunnelConsumers(forPort port: PhysicalPort,
-                     displays: [DisplayInfo],
-                     maxUSBListed: Int = 4) -> [PortTunnel.Kind: [TunnelConsumer]] {
+                     displays: [DisplayInfo]) -> [PortTunnel.Kind: [TunnelConsumer]] {
     var out: [PortTunnel.Kind: [TunnelConsumer]] = [:]
 
     // DisplayPort → displays attributed to this port. Adapter ID is unique
@@ -758,24 +757,18 @@ func tunnelConsumers(forPort port: PhysicalPort,
     // USB → the meaningful endpoint devices on the port. Skip hubs (the
     // dock's internals) and per-interface entries; the user wants to see
     // "what's the storage / mouse / NIC eating the link", not the dock's
-    // hub fabric. Cap the list so a busy dock doesn't dominate the card.
+    // hub fabric. List every endpoint — no cap. The card scrolls with the
+    // page; truncating to "… and N more" hides the device the user is
+    // looking for in exactly the busy-dock case where they care most.
     let usbEndpoints = port.attachedUSBDevices
         .filter { $0.kind == .usbDevice }
         .filter { isMeaningfulUSBEndpoint($0) }
     if !usbEndpoints.isEmpty {
-        let listed = usbEndpoints.prefix(maxUSBListed)
-        var rows: [TunnelConsumer] = listed.map { dev in
+        out[.usb] = usbEndpoints.map { dev in
             TunnelConsumer(id: "usb-\(dev.id.raw)",
                            title: usbEndpointTitle(dev),
                            subtitle: usbEndpointSubtitle(dev))
         }
-        let remaining = usbEndpoints.count - listed.count
-        if remaining > 0 {
-            rows.append(TunnelConsumer(id: "usb-more",
-                                       title: "… and \(remaining) more",
-                                       subtitle: nil))
-        }
-        out[.usb] = rows
     }
 
     return out

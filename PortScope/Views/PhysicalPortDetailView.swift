@@ -548,17 +548,11 @@ struct PhysicalPortDetailView: View {
         SectionCard(title: "USB Devices via This Port (\(port.attachedUSBDevices.count))",
                     symbol: "cable.connector") {
             VStack(spacing: 0) {
-                ForEach(port.attachedUSBDevices.prefix(20), id: \.id) { dev in
+                ForEach(port.attachedUSBDevices, id: \.id) { dev in
                     USBDeviceRow(node: dev, onNavigate: onNavigate)
-                    if dev.id != port.attachedUSBDevices.prefix(20).last?.id {
+                    if dev.id != port.attachedUSBDevices.last?.id {
                         Divider()
                     }
-                }
-                if port.attachedUSBDevices.count > 20 {
-                    Text("… and \(port.attachedUSBDevices.count - 20) more")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 6)
                 }
             }
         }
