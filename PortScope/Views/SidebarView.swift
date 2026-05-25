@@ -32,19 +32,23 @@ struct SidebarView: View {
     /// "ih:Buses", "bt:Connected") to keep top-level and subgroup names from
     /// colliding even if they happen to match.
     @State private var collapsedSubgroups: Set<String> = []
-    /// Persistent preference (Settings → Show Hardware Buses). When false
-    /// the sidebar shows only the Physical Ports section. When true the
-    /// raw Thunderbolt / USB / PCIe bus trees are surfaced too.
-    @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = false
+    /// Persistent preference (Settings → Show Hardware Buses). Default ON
+    /// — these are the raw IOKit-derived hierarchies most users actually
+    /// want when they launch a hardware-inspector. Toggle off to focus on
+    /// the high-level Physical Ports view.
+    @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = true
     /// Persistent preference (Settings → Show All Devices). When false the
-    /// sidebar omits Displays / Bluetooth / Internal Hardware. Independent
-    /// of `showBuses` — both default off.
+    /// sidebar omits Displays / Bluetooth / Internal Hardware. Default off.
     @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
     /// Persistent preference (Settings → Show Intermediate USB Hubs). When
     /// off (the default) USB hub nodes are flattened away so leaf devices
     /// sit directly under the port — useful for cascaded dock internals
     /// where every branch has 3–4 generic "USB2.0 Hub" rows between the
-    /// port and the actual device. Flip on to surface the raw hub chain.
+    /// port and the actual device. Flip on to surface the raw hub chain
+    /// AND the "Thunderbolt PCIe Slot N" root bridge (with its whole
+    /// bridge tree) on each TB-capable port; with the toggle off only
+    /// leaf PCIe endpoints (NVMe / eGPU / etc.) appear, with the
+    /// bridges flattened away the same way USB hubs are.
     @AppStorage(SidebarVisibility.showIntermediateHubsKey) private var showIntermediateHubs: Bool = false
     /// Persistent preference (Settings → Show Built-in Devices). Default
     /// ON — internal battery and built-in display are part of the
@@ -92,22 +96,48 @@ struct SidebarView: View {
         // section. Built once per render from `ports`.
         let tbProvidedUSB = tbProvidedUSBMap(ports: ports)
         // Map from a `PhysicalPortSelector` ID to the TB-tunneled PCIe
-        // endpoint devices behind that port. The mapping uses the
-        // registry-allocation-order pairing between TB controllers and
+        // tree behind that port. The mapping uses the registry-
+        // allocation-order pairing between TB controllers and
         // "Thunderbolt PCIe Slot N" root bridges (see
-        // `tbControllerPCIeSlotMap`). On most docks today this map is
-        // empty — Apple Silicon docks typically expose storage over USB,
-        // not real PCIe — but when an eGPU / NVMe / capture card *is*
-        // tunneled, it shows up under the dock here.
+        // `tbControllerPCIeSlotMap`).
+        //
+        // Two display modes, parallel to how USB hubs are handled:
+        //
+        //   - `showIntermediateHubs == true` (Show Intermediate USB
+        //     Hubs is on): surface the **PCIe Slot N root bridge**
+        //     itself, with its full bridge subtree underneath. Mirrors
+        //     the raw hub-chain view: the user sees every kernel
+        //     artefact in the path. Empty slots still appear so the
+        //     PCIe lane allocated to this TB controller is visible.
+        //   - `showIntermediateHubs == false` (default): flatten the
+        //     bridge tree the same way USB hubs are flattened, leaving
+        //     only the leaf `.endpoint` devices (NVMe / eGPU / capture
+        //     card). Idle slots with no endpoints are hidden so they
+        //     don't clutter the default view.
+        //
+        // On most Apple Silicon docks today this map is empty in the
+        // default view — docks expose storage over USB, not real PCIe.
         let tbPCIeEndpointsByPort: [TBNodeID: [PCINode]] = {
             let slots = tbControllerPCIeSlotMap(controllers: vm.tbSnapshot.controllers,
                                                 pcieRoots: vm.snapshot.pcie.roots)
             var out: [TBNodeID: [PCINode]] = [:]
             for p in ports {
                 guard let slot = slots[p.controller.id] else { continue }
-                let endpoints = pcieEndpointDescendants(of: slot)
-                guard !endpoints.isEmpty else { continue }
-                out[PhysicalPortSelector.id(for: p)] = endpoints
+                let nodes: [PCINode]
+                if showIntermediateHubs {
+                    // Show the full bridge subtree rooted at the PCIe
+                    // slot. Always include the slot row, even when no
+                    // endpoint is tunneled — the empty bridge is the
+                    // kernel's view of "this is the PCIe lane allocated
+                    // to this TB controller."
+                    nodes = [slot]
+                } else {
+                    // Flat endpoints only; hide idle slots.
+                    let endpoints = pcieEndpointDescendants(of: slot)
+                    guard !endpoints.isEmpty else { continue }
+                    nodes = endpoints
+                }
+                out[PhysicalPortSelector.id(for: p)] = nodes
             }
             return out
         }()
@@ -860,10 +890,17 @@ private struct PortBranch: View {
     let displayOutputs: [PortDisplayOutput]
     @Binding var expanded: Set<TBNodeID>
     let flattenHubs: Bool
-    /// TB-tunneled PCIe endpoint devices attributed to this port. Usually
-    /// empty (Apple Silicon docks expose storage over USB, not PCIe), but
-    /// when an eGPU / TB SSD / capture card *is* tunneled it shows up here
-    /// and gets nested under the TB device row alongside the USB tree.
+    /// TB-tunneled PCIe nodes attributed to this port. Two modes,
+    /// driven by `showIntermediateHubs` (the same toggle that surfaces
+    /// raw USB hub chains):
+    ///   - off (default): flat list of leaf `.endpoint` devices (eGPU,
+    ///     TB SSD, capture card). Usually empty on Apple Silicon docks
+    ///     because storage is tunneled over USB, not PCIe.
+    ///   - on: a single PCIe root bridge (the "Thunderbolt PCIe Slot N"
+    ///     allocated to this TB controller) with its full bridge
+    ///     subtree underneath — so the user can see every kernel
+    ///     artefact on the PCIe path, idle slots included.
+    /// `PCIBranch` handles both shapes natively.
     var pcieEndpoints: [PCINode] = []
 
     var body: some View {

@@ -190,7 +190,7 @@ struct PortScopeApp: App {
 /// The Preferences window. Houses persistent toggles that gate which
 /// sidebar sections are visible.
 private struct SettingsView: View {
-    @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = false
+    @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = true
     @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
     @AppStorage(SidebarVisibility.showIntermediateHubsKey) private var showIntermediateHubs: Bool = false
     @AppStorage(SidebarVisibility.showBuiltinDevicesKey) private var showBuiltinDevices: Bool = true
@@ -198,7 +198,7 @@ private struct SettingsView: View {
     var body: some View {
         Form {
             Toggle("Show Hardware Buses", isOn: $showBuses)
-            Text("Show the raw Thunderbolt, USB, and PCIe bus trees in the sidebar. The Physical Ports section is always visible.")
+            Text("Show the raw Thunderbolt, USB, and PCIe bus trees in the sidebar. On by default. The Physical Ports section is always visible.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -233,8 +233,10 @@ private struct SettingsView: View {
 /// sidebar reads each via `@AppStorage` so the UI updates live when the
 /// Settings window toggles them.
 enum SidebarVisibility {
-    /// Gates Thunderbolt / USB / PCIe sections (the bus trees). Default off,
-    /// so a fresh launch shows only the high-level Physical Ports view.
+    /// Gates Thunderbolt / USB / PCIe sections (the bus trees). Default
+    /// ON — these are the raw IOKit-derived hierarchies most users
+    /// actually want when they launch a hardware-inspector. Toggle off
+    /// to focus on the high-level Physical Ports view.
     static let showBusesKey = "showBuses"
     /// Gates Displays / Bluetooth / Internal Hardware. Default off.
     static let showAllDevicesKey = "showAllDevices"
