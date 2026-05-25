@@ -6,8 +6,27 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		FA060F902FC3CA4800582663 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FA0602C42FB9AB6900582663 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FA0602CB2FB9AB6900582663;
+			remoteInfo = PortScope;
+		};
+		FA060F9D2FC3CA5B00582663 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FA0602C42FB9AB6900582663 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FA0602CB2FB9AB6900582663;
+			remoteInfo = PortScope;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		FA0602CC2FB9AB6900582663 /* PortScope.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PortScope.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FA060F8A2FC3CA4800582663 /* PortScopeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PortScopeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FA060F992FC3CA5B00582663 /* PortScopeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PortScopeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +35,34 @@
 			path = PortScope;
 			sourceTree = "<group>";
 		};
+		FA060F8B2FC3CA4800582663 /* PortScopeUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PortScopeUITests;
+			sourceTree = "<group>";
+		};
+		FA060F9A2FC3CA5B00582663 /* PortScopeTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PortScopeTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		FA0602C92FB9AB6900582663 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA060F872FC3CA4800582663 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA060F962FC3CA5B00582663 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +76,8 @@
 			isa = PBXGroup;
 			children = (
 				FA0602CE2FB9AB6900582663 /* PortScope */,
+				FA060F8B2FC3CA4800582663 /* PortScopeUITests */,
+				FA060F9A2FC3CA5B00582663 /* PortScopeTests */,
 				FA0602CD2FB9AB6900582663 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +86,8 @@
 			isa = PBXGroup;
 			children = (
 				FA0602CC2FB9AB6900582663 /* PortScope.app */,
+				FA060F8A2FC3CA4800582663 /* PortScopeUITests.xctest */,
+				FA060F992FC3CA5B00582663 /* PortScopeTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +117,52 @@
 			productReference = FA0602CC2FB9AB6900582663 /* PortScope.app */;
 			productType = "com.apple.product-type.application";
 		};
+		FA060F892FC3CA4800582663 /* PortScopeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FA060F942FC3CA4800582663 /* Build configuration list for PBXNativeTarget "PortScopeUITests" */;
+			buildPhases = (
+				FA060F862FC3CA4800582663 /* Sources */,
+				FA060F872FC3CA4800582663 /* Frameworks */,
+				FA060F882FC3CA4800582663 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FA060F912FC3CA4800582663 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FA060F8B2FC3CA4800582663 /* PortScopeUITests */,
+			);
+			name = PortScopeUITests;
+			packageProductDependencies = (
+			);
+			productName = PortScopeUITests;
+			productReference = FA060F8A2FC3CA4800582663 /* PortScopeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		FA060F982FC3CA5B00582663 /* PortScopeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FA060F9F2FC3CA5B00582663 /* Build configuration list for PBXNativeTarget "PortScopeTests" */;
+			buildPhases = (
+				FA060F952FC3CA5B00582663 /* Sources */,
+				FA060F962FC3CA5B00582663 /* Frameworks */,
+				FA060F972FC3CA5B00582663 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FA060F9E2FC3CA5B00582663 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FA060F9A2FC3CA5B00582663 /* PortScopeTests */,
+			);
+			name = PortScopeTests;
+			packageProductDependencies = (
+			);
+			productName = PortScopeTests;
+			productReference = FA060F992FC3CA5B00582663 /* PortScopeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +175,14 @@
 				TargetAttributes = {
 					FA0602CB2FB9AB6900582663 = {
 						CreatedOnToolsVersion = 26.5;
+					};
+					FA060F892FC3CA4800582663 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = FA0602CB2FB9AB6900582663;
+					};
+					FA060F982FC3CA5B00582663 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = FA0602CB2FB9AB6900582663;
 					};
 				};
 			};
@@ -100,12 +201,28 @@
 			projectRoot = "";
 			targets = (
 				FA0602CB2FB9AB6900582663 /* PortScope */,
+				FA060F892FC3CA4800582663 /* PortScopeUITests */,
+				FA060F982FC3CA5B00582663 /* PortScopeTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		FA0602CA2FB9AB6900582663 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA060F882FC3CA4800582663 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA060F972FC3CA5B00582663 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +239,34 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FA060F862FC3CA4800582663 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA060F952FC3CA5B00582663 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FA060F912FC3CA4800582663 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FA0602CB2FB9AB6900582663 /* PortScope */;
+			targetProxy = FA060F902FC3CA4800582663 /* PBXContainerItemProxy */;
+		};
+		FA060F9E2FC3CA5B00582663 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FA0602CB2FB9AB6900582663 /* PortScope */;
+			targetProxy = FA060F9D2FC3CA5B00582663 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		FA0602D52FB9AB6900582663 /* Debug */ = {
@@ -311,6 +455,84 @@
 			};
 			name = Release;
 		};
+		FA060F922FC3CA4800582663 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 3FQW5YTQR8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.zenla.PortScopeUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = PortScope;
+			};
+			name = Debug;
+		};
+		FA060F932FC3CA4800582663 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 3FQW5YTQR8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.zenla.PortScopeUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = PortScope;
+			};
+			name = Release;
+		};
+		FA060FA02FC3CA5B00582663 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 3FQW5YTQR8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.zenla.PortScopeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PortScope.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PortScope";
+			};
+			name = Debug;
+		};
+		FA060FA12FC3CA5B00582663 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 3FQW5YTQR8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.zenla.PortScopeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PortScope.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PortScope";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -328,6 +550,24 @@
 			buildConfigurations = (
 				FA0602D82FB9AB6900582663 /* Debug */,
 				FA0602D92FB9AB6900582663 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FA060F942FC3CA4800582663 /* Build configuration list for PBXNativeTarget "PortScopeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA060F922FC3CA4800582663 /* Debug */,
+				FA060F932FC3CA4800582663 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FA060F9F2FC3CA5B00582663 /* Build configuration list for PBXNativeTarget "PortScopeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA060FA02FC3CA5B00582663 /* Debug */,
+				FA060FA12FC3CA5B00582663 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
