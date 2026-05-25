@@ -176,6 +176,7 @@ struct SidebarView: View {
                 audioSection
                 touchIDSection
                 inputDevicesSection
+                hidDevicesSection
                 nvramSection
             }
             if showBuses {
@@ -468,6 +469,16 @@ struct SidebarView: View {
         if info.trackpad != nil || info.keyboard != nil {
             collapsibleSection("Input Devices", icon: "hand.tap") {
                 InputDevicesSidebarRow(info: info).tag(InputDevicesSelector.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var hidDevicesSection: some View {
+        let snap = HIDDeviceScanner.scan()
+        if !snap.devices.isEmpty {
+            collapsibleSection("HID Devices", icon: "keyboard.macwindow") {
+                HIDDevicesSidebarRow(snapshot: snap).tag(HIDDevicesSelector.id)
             }
         }
     }

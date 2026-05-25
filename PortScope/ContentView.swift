@@ -71,6 +71,8 @@ struct ContentView: View {
                 InputDevicesDetailView(info: InputDevicesInfo.read()).id(sel)
             } else if NVRAMSelector.isNVRAMID(sel) {
                 NVRAMDetailView(snapshot: vm.snapshot.internalHardware.systemInfo.nvram).id(sel)
+            } else if HIDDevicesSelector.isHIDID(sel) {
+                HIDDevicesDetailView(snapshot: HIDDeviceScanner.scan()).id(sel)
             } else if WiFiSelector.isWiFiID(sel),
                       let wifi = vm.snapshot.internalHardware.systemInfo.wifi {
                 ScrollView { WiFiDetailView(info: wifi) }.id(sel)

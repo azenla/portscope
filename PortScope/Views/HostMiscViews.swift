@@ -520,3 +520,114 @@ enum InputDevicesSelector {
     static let id = TBNodeID(raw: mask)
     static func isInputID(_ id: TBNodeID) -> Bool { id.raw == mask }
 }
+
+// MARK: - HID Devices
+
+struct HIDDevicesDetailView: View {
+    let snapshot: HIDDevicesSnapshot
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                hero
+                ForEach(snapshot.grouped, id: \.category) { group in
+                    SectionCard(title: "\(group.category.title) (\(group.devices.count))",
+                                symbol: group.category.symbol) {
+                        VStack(spacing: 0) {
+                            ForEach(group.devices) { dev in
+                                HIDDeviceRow(device: dev)
+                                if dev.id != group.devices.last?.id { Divider() }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minWidth: 720)
+        .background(.background)
+    }
+
+    private var hero: some View {
+        HStack(alignment: .center, spacing: 16) {
+            ZStack {
+                Circle().fill(Color.purple.opacity(0.15))
+                    .frame(width: 84, height: 84)
+                Image(systemName: "keyboard.macwindow").font(.system(size: 32))
+                    .foregroundStyle(.purple)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("HID Devices").font(.title2).bold()
+                Text("\(snapshot.devices.count) Human Interface Device services on this host")
+                    .foregroundStyle(.secondary).font(.callout)
+            }
+            Spacer()
+        }
+    }
+}
+
+private struct HIDDeviceRow: View {
+    let device: HIDDeviceInfo
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: device.category.symbol)
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(device.product ?? device.kernelClass)
+                    .font(.callout.weight(.medium))
+                if let s = device.subtitle, !s.isEmpty,
+                   s != device.product {
+                    Text(s).font(.caption2).foregroundStyle(.secondary)
+                }
+                Text(metaLine)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if device.builtIn {
+                Text("Built-in")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.green.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(.vertical, 6).padding(.horizontal, 4)
+    }
+
+    private var metaLine: String {
+        var parts: [String] = [device.kernelClass]
+        if let up = device.usagePage, let u = device.usage {
+            parts.append(String(format: "usage 0x%02llX/%llu", up, u))
+        }
+        if let v = device.vendorID, v > 0 {
+            parts.append(String(format: "VID 0x%04llX", v))
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+struct HIDDevicesSidebarRow: View {
+    let snapshot: HIDDevicesSnapshot
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "keyboard.macwindow")
+                .foregroundStyle(.purple)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("HID Devices").lineLimit(1)
+                Text("\(snapshot.devices.count) services")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+enum HIDDevicesSelector {
+    private static let mask: UInt64 = 0x4844_0000_0000_0001
+    static let id = TBNodeID(raw: mask)
+    static func isHIDID(_ id: TBNodeID) -> Bool { id.raw == mask }
+}

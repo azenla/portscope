@@ -289,6 +289,7 @@ final class PortScopeViewModel: ObservableObject {
             return i.trackpad != nil || i.keyboard != nil
         }
         if NVRAMSelector.isNVRAMID(id) { return !snapshot.internalHardware.systemInfo.nvram.allVariables.isEmpty }
+        if HIDDevicesSelector.isHIDID(id) { return true }
         if WiFiSelector.isWiFiID(id) { return snapshot.internalHardware.systemInfo.wifi != nil }
         if CameraSelector.isCameraID(id) {
             return snapshot.internalHardware.systemInfo.cameras
