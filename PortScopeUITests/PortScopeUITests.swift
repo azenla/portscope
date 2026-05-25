@@ -62,8 +62,12 @@ final class PortScopeUITests: XCTestCase {
         // present.
         let possibleHeaders = ["USB-C", "USB-A", "HDMI", "SD Card",
                                "Ethernet", "Power", "MagSafe"]
+        // Subgroup headers render inside a SwiftUI Button (so they surface
+        // as buttons, not static text) with .textCase(.uppercase) applied
+        // to the title Text (so "Power" reaches the a11y tree as "POWER").
+        // Match case-insensitively across element types.
         let found = possibleHeaders.contains { header in
-            app.staticTexts[header].waitForExistence(timeout: 2)
+            elementWithLabelExists(header, timeout: 2)
         }
         XCTAssertTrue(found, """
         Expected at least one of \(possibleHeaders) as a sidebar subgroup \
@@ -109,8 +113,10 @@ final class PortScopeUITests: XCTestCase {
 
         // SettingsView labels each toggle with a stable string. We don't
         // toggle anything (that would mutate user defaults and pollute the
-        // host) — just check the labels render. Each toggle's *label* is a
-        // visible static text node alongside the actual control.
+        // host) — just check the labels render. On macOS, a SwiftUI Toggle
+        // becomes a checkbox whose accessibility label is the toggle's
+        // title, so the label surfaces on the checkbox element rather than
+        // as a standalone static text node — match across element types.
         let toggles = [
             "Show Hardware Buses",
             "Show All Devices",
@@ -118,10 +124,29 @@ final class PortScopeUITests: XCTestCase {
             "Show Intermediate USB Hubs"
         ]
         for label in toggles {
-            let row = app.staticTexts[label]
-            XCTAssertTrue(row.waitForExistence(timeout: 5),
+            XCTAssertTrue(elementWithLabelExists(label, timeout: 5),
                           "Settings window is missing toggle label '\(label)'")
         }
+    }
+
+    // MARK: - Helpers
+
+    /// Returns true when any element in the app's accessibility tree has
+    /// the given label (case-insensitive). SwiftUI surfaces text labels on
+    /// different element types depending on context — a `Toggle` becomes a
+    /// checkbox on macOS, a `Button { Text(…) }` becomes a button, a `Text`
+    /// in a `Form` row becomes a static text — and `.textCase(.uppercase)`
+    /// can rewrite the surfaced string. Predicate-matching across all
+    /// descendants sidesteps both axes.
+    @MainActor
+    private func elementWithLabelExists(_ label: String,
+                                        timeout: TimeInterval) -> Bool {
+        let predicate = NSPredicate(format: "label ==[c] %@ OR title ==[c] %@",
+                                    label, label)
+        let element = app.descendants(matching: .any)
+            .matching(predicate)
+            .firstMatch
+        return element.waitForExistence(timeout: timeout)
     }
 
     // MARK: - Performance
