@@ -217,9 +217,9 @@ private struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Toggle("Show Intermediate USB Hubs", isOn: $showIntermediateHubs)
+            Toggle("Show Intermediate Hubs & Bridges", isOn: $showIntermediateHubs)
                 .padding(.top, 8)
-            Text("Show the full chain of cascaded USB hubs (dock internals, hub-of-hubs) in the sidebar. By default these are flattened away so leaf devices appear directly under the port they're attached to.")
+            Text("Show the full chain of cascaded USB hubs (dock internals, hub-of-hubs) and the Thunderbolt PCIe Slot bridges under each TB-capable port. By default these are flattened away so leaf devices appear directly under the port they're attached to and idle PCIe slots are hidden.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -243,7 +243,11 @@ enum SidebarVisibility {
     /// When off (the default), USB hubs in the sidebar are treated as
     /// pass-through wrappers (like `.other` IOService kexts): their non-hub
     /// descendants are promoted up so cascaded dock internals don't bury the
-    /// actual leaf devices. Flip on to see the raw hub-of-hubs chain.
+    /// actual leaf devices. PCIe attribution under each physical port is
+    /// flattened the same way — only leaf `.endpoint` devices are
+    /// surfaced, and idle "Thunderbolt PCIe Slot" bridges are hidden. Flip
+    /// on to see the raw hub-of-hubs chain AND the PCIe slot bridge with
+    /// its full subtree under each TB-capable port.
     static let showIntermediateHubsKey = "showIntermediateHubs"
     /// Gates the chassis-built-in non-port devices in the Physical Device
     /// section: the internal battery (laptops) and the built-in display
