@@ -236,11 +236,13 @@ struct SidebarView: View {
                 || !outputs.isEmpty {
                 toOpen.append(pid)
             }
-            // When a TB device hosts USB endpoints (the common dock case),
-            // the device row is the disclosure that contains the USB tree —
-            // auto-open it so the user sees what's behind the dock on first
-            // render. Daisy-chained sub-devices stay collapsed.
-            if let device = p.connectedDevice, !p.usbDeviceRoots.isEmpty {
+            // When a TB device hosts USB endpoints or DP/HDMI outputs (the
+            // common dock case), the device row is the disclosure that
+            // contains those branches — auto-open it so the user sees
+            // what's behind the dock on first render. Daisy-chained
+            // sub-devices stay collapsed.
+            if let device = p.connectedDevice,
+               (!p.usbDeviceRoots.isEmpty || !outputs.isEmpty) {
                 toOpen.append(device.id)
             }
             // Top-level USB hubs get their immediate children visible.
@@ -674,39 +676,36 @@ private struct PortBranch: View {
             ) {
                 if let device {
                     // When a TB device is attached the dock owns the
-                    // tunneled USB endpoints — surface them as children of
-                    // the device row, not as siblings of it. Hubs are still
-                    // flattened away when the toggle is off, so the user
-                    // sees the actual peripherals, not a chain of dock-
-                    // internal hub wrappers. PCIe endpoints follow the same
-                    // pattern for the rare case where a TB device tunnels
-                    // real PCIe storage (eGPU enclosures, TB SSDs).
+                    // tunneled USB endpoints, the PCIe endpoints (eGPU
+                    // enclosures, TB SSDs), *and* the DP/HDMI outputs —
+                    // every active function adapter on the dock router
+                    // lives there. Surface them all as children of the
+                    // device row so the tree reads as "USB-C Port → Dock
+                    // → everything the dock provides". Hubs are still
+                    // flattened away when the toggle is off, so a busy
+                    // 14-port dock reads as actual peripherals, not the
+                    // dock-internal hub chain.
                     DeviceBranch(device: device,
                                  expanded: $expanded,
                                  flattenHubs: flattenHubs,
                                  usbRoots: roots,
-                                 pcieEndpoints: pcieEndpoints)
+                                 pcieEndpoints: pcieEndpoints,
+                                 displayOutputs: displayOutputs)
                 } else {
-                    // No TB device on this port — render USB roots and
-                    // displays directly under the port row (USB-only dock,
-                    // direct-attach monitor, etc.). PCIe-without-TB-device
-                    // shouldn't happen on a USB-C port, but render
-                    // defensively if it does.
+                    // No TB device on this port — render USB roots, PCIe,
+                    // and displays directly under the port row (USB-only
+                    // dock, direct-attach monitor over USB-C alt mode,
+                    // etc.). PCIe-without-TB-device shouldn't happen on a
+                    // USB-C port, but render defensively if it does.
                     ForEach(roots, id: \.id) { dev in
                         USBBranch(node: dev, depth: 0, expanded: $expanded, flattenHubs: flattenHubs)
                     }
                     ForEach(pcieEndpoints) { ep in
                         PCIBranch(node: ep, expanded: $expanded)
                     }
-                }
-                // Display outputs hang off the port itself even when a TB
-                // device is present — each output is its own DP/HDMI
-                // function adapter on the dock, and rendering the displays
-                // inside the device row would bury them under the USB
-                // device list (which is usually long). Keeping them as
-                // port-level siblings preserves the existing affordance.
-                ForEach(displayOutputs) { output in
-                    DisplayOutputBranch(output: output, expanded: $expanded)
+                    ForEach(displayOutputs) { output in
+                        DisplayOutputBranch(output: output, expanded: $expanded)
+                    }
                 }
             } label: {
                 PortRow(port: port).tag(selectionID)
@@ -801,11 +800,17 @@ private struct DeviceBranch: View {
     /// alongside the USB tree. Empty for daisy-chained sub-devices for the
     /// same reason as `usbRoots`.
     var pcieEndpoints: [PCINode] = []
+    /// DP/HDMI outputs attributed to this device. Each one is an active
+    /// DP/HDMI function adapter on the dock router with the display panel
+    /// nested below — same payload as the port-level rendering, just
+    /// reparented under the device. Empty for daisy-chained sub-devices.
+    var displayOutputs: [PortDisplayOutput] = []
 
     var body: some View {
         let hasChildren = !device.daisyChained.isEmpty
             || !usbRoots.isEmpty
             || !pcieEndpoints.isEmpty
+            || !displayOutputs.isEmpty
         if !hasChildren {
             DeviceRow(device: device).tag(device.id)
         } else {
@@ -822,6 +827,14 @@ private struct DeviceBranch: View {
                     DeviceBranch(device: child,
                                  expanded: $expanded,
                                  flattenHubs: flattenHubs)
+                }
+                // Displays come first inside the device row — they're
+                // physically the dock's outputs and visually quieter than
+                // a long USB peripheral list, so leading with them keeps
+                // the row's "what's connected through this dock" overview
+                // legible at a glance.
+                ForEach(displayOutputs) { output in
+                    DisplayOutputBranch(output: output, expanded: $expanded)
                 }
                 ForEach(usbRoots, id: \.id) { dev in
                     USBBranch(node: dev,
