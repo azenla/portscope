@@ -19,15 +19,28 @@ import Foundation
 import IOKit
 
 nonisolated enum SensorScanner {
+    /// Build a snapshot of *readable* sensors. Discovery rows (sensors
+    /// the kernel exposes but doesn't publish live values for) are
+    /// dropped — the user asked for a tight, value-bearing view rather
+    /// than a wall of "Live read needs HID" tags. The combined data
+    /// path:
+    ///
+    /// 1. Mine IOKit for every sensor-bearing service class, collecting
+    ///    identification (Product, LocationID = SMC key, registry id).
+    /// 2. Open an `IOHIDEventSystemClient` session and read every
+    ///    available temperature / power / ambient-light event in one
+    ///    pass, keyed by registry id.
+    /// 3. Merge the two: a discovery row is kept iff (a) its registry
+    ///    id appears in the HID readings, or (b) we synthesised the
+    ///    value from a regular IORegistry property (battery /
+    ///    AC-PSU telemetry).
     static func scan() -> HardwareSensorsSnapshot {
+        let liveReadings = HIDSensorReader.readAll()
         var out: [HardwareSensor] = []
-        out.append(contentsOf: scanPMUTempSensors())
-        out.append(contentsOf: scanPMUPowerSensors())
-        out.append(contentsOf: scanALSSensors())
-        out.append(contentsOf: scanNVMeTempSensors())
-        out.append(contentsOf: scanBiometricSensors())
-        out.append(contentsOf: scanMultitouchSensors())
-        out.append(contentsOf: scanButtonSensors())
+        out.append(contentsOf: scanPMUTempSensors(live: liveReadings))
+        out.append(contentsOf: scanPMUPowerSensors(live: liveReadings))
+        out.append(contentsOf: scanALSSensors(live: liveReadings))
+        out.append(contentsOf: scanNVMeTempSensors(live: liveReadings))
         out.append(contentsOf: scanBatterySensors())
         out.append(contentsOf: scanPSUSensors())
         return HardwareSensorsSnapshot(capturedAt: Date(), sensors: out)
@@ -35,52 +48,37 @@ nonisolated enum SensorScanner {
 
     // MARK: - PMU thermal
 
-    private static func scanPMUTempSensors() -> [HardwareSensor] {
-        return mineHID(class: "AppleARMPMUTempSensor", category: .temperature)
+    private static func scanPMUTempSensors(live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
+        return mineHID(class: "AppleARMPMUTempSensor",
+                       category: .temperature,
+                       live: live)
     }
 
     // MARK: - PMU power rails
 
-    private static func scanPMUPowerSensors() -> [HardwareSensor] {
-        return mineHID(class: "AppleARMPMUPowerSensor", category: .power)
+    private static func scanPMUPowerSensors(live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
+        return mineHID(class: "AppleARMPMUPowerSensor",
+                       category: .power,
+                       live: live)
     }
 
     // MARK: - Ambient light + color
 
-    private static func scanALSSensors() -> [HardwareSensor] {
+    private static func scanALSSensors(live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
         // `AppleSPUVD6286` is the ambient-light / colour-temperature
         // sensor on the AOP I²C bus on M-series laptops (in front of the
         // FaceTime camera). Sometimes paired with `AppleSPUALSColorDriver`.
-        return mineHID(class: "AppleSPUVD6286", category: .light)
+        return mineHID(class: "AppleSPUVD6286",
+                       category: .light,
+                       live: live)
     }
 
     // MARK: - NVMe storage thermal
 
-    private static func scanNVMeTempSensors() -> [HardwareSensor] {
+    private static func scanNVMeTempSensors(live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
         return mineHID(class: "AppleEmbeddedNVMeTemperatureSensor",
-                       category: .temperature)
-    }
-
-    // MARK: - Touch ID / Biometric
-
-    private static func scanBiometricSensors() -> [HardwareSensor] {
-        // `AppleMesaShim` is the Mesa Touch ID sensor (Apple Mesa fingerprint
-        // module). The shim service mediates between the SEP and the AOP.
-        return mineHID(class: "AppleMesaShim", category: .biometric)
-    }
-
-    // MARK: - Multitouch trackpad
-
-    private static func scanMultitouchSensors() -> [HardwareSensor] {
-        return mineHID(class: "AppleMultitouchDevice", category: .touch)
-    }
-
-    // MARK: - Chassis buttons
-
-    private static func scanButtonSensors() -> [HardwareSensor] {
-        // `AppleM68Buttons` reports the physical chassis buttons (Touch ID
-        // power button, possibly volume / mute keys on certain chassis).
-        return mineHID(class: "AppleM68Buttons", category: .button)
+                       category: .temperature,
+                       live: live)
     }
 
     // MARK: - Battery & charger telemetry (LIVE values via IOKit)
@@ -191,16 +189,24 @@ nonisolated enum SensorScanner {
 
     // MARK: - HID-sensor enumeration helper
 
-    /// Walk every service matching `class` and emit a `HardwareSensor`
-    /// row for each one. We pull the `Product` string (e.g. "PMU tcal")
-    /// and `LocationID` (the SMC 4-char ASCII key when applicable) for
-    /// identification. Live values aren't read here — the HID Event
-    /// System path would let us subscribe but it's a private API.
+    /// Walk every service matching `class`, emit a `HardwareSensor`
+    /// row *only* for the ones that have a live HID reading. Discovery-
+    /// only rows are dropped per the user's "tight value-bearing view"
+    /// requirement — the wall of "Live read needs HID" tags went away
+    /// when we wired the HID Event System reader.
+    ///
+    /// `LocationID` is the SMC 4-char ASCII key on PMU sensors; we use
+    /// it to synthesise a friendly name. Live readings come from
+    /// `HIDSensorReader.readAll()` keyed by registry entry id, which
+    /// matches `IORegBridge.entryID(of:)`.
     private static func mineHID(class cls: String,
-                                category: SensorCategory) -> [HardwareSensor] {
+                                category: SensorCategory,
+                                live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
         var out: [HardwareSensor] = []
         for svc in IORegBridge.services(matchingClass: cls) {
             defer { IOObjectRelease(svc) }
+            guard let regID = IORegBridge.entryID(of: svc) else { continue }
+            guard let reading = live[regID] else { continue }
             let product = string(svc, "Product")
             let location: UInt32? = {
                 if let n = number(svc, "LocationID") { return UInt32(truncatingIfNeeded: n) }
@@ -217,8 +223,8 @@ nonisolated enum SensorScanner {
                 name: friendly,
                 subtitle: subtitle,
                 category: category,
-                value: nil,
-                unit: nil,
+                value: reading.value,
+                unit: reading.unit,
                 locationID: location,
                 kernelClass: cls
             ))

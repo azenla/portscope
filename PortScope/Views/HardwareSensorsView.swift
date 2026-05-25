@@ -2,15 +2,18 @@
 //  HardwareSensorsView.swift
 //  PortScope
 //
-//  Modal sheet (sibling of the Thunderbolt Topology view) that lists
-//  every sensor the kernel exposes through IOKit on the host. Driven
-//  by `SensorScanner.scan()` which walks the relevant service classes
-//  and synthesises a friendly name per sensor from the kernel
-//  `Product` string + decoded SMC key. Live values surface for the
-//  battery / charger telemetry the kernel publishes as regular
-//  IORegistry properties; HID-only sensors (the per-core thermal /
-//  power probes) appear as discovery rows because their values are
-//  only readable through the HID Event System (private API).
+//  Modal sheet (sibling of the Thunderbolt Topology view) that surveys
+//  every sensor PortScope can read live values from. Driven by
+//  `SensorScanner.scan()` which merges static IORegistry identification
+//  (Product, SMC key, kernel class) with live HID Event System readings
+//  for temperature / power / ambient light, plus direct IORegistry
+//  reads for battery + AC-PSU telemetry.
+//
+//  Layout is a continuous, reflowing chip grid grouped by sensor
+//  category. Each chip carries the friendly name, the live value, and
+//  a fine-print line with the SMC key when available. The grid fills
+//  whatever width the sheet provides — better signal density for a
+//  view that can have 200+ live readings on a busy M-class chip.
 //
 
 import SwiftUI
@@ -25,7 +28,7 @@ struct HardwareSensorsView: View {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 18) {
                     summary
                     ForEach(snapshot.grouped, id: \.category) { group in
                         sensorGroupCard(category: group.category,
@@ -40,11 +43,12 @@ struct HardwareSensorsView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 760, minHeight: 720)
+        .frame(minWidth: 1100, minHeight: 820)
         .onAppear {
             snapshot = SensorScanner.scan()
-            // Re-scan every 2 seconds so the live values (battery temp,
-            // wall power) tick forward without the user mashing Refresh.
+            // Re-scan every 2 seconds so the live values (temperature,
+            // power, light) tick forward. HID reads are cheap when the
+            // events are already buffered in the IOHIDEventSystem.
             refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
                 Task { @MainActor in
                     self.snapshot = SensorScanner.scan()
@@ -60,7 +64,7 @@ struct HardwareSensorsView: View {
                 .font(.title2).foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Hardware Sensors").font(.title2.bold())
-                Text("Every sensor the kernel exposes through IOKit on this host.")
+                Text("Live readings from every sensor PortScope can reach through the HID Event System.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -69,27 +73,26 @@ struct HardwareSensorsView: View {
         .padding()
     }
 
-    /// Tally bar so the user can see at a glance how many of each kind
-    /// of sensor are present (e.g. "75 thermal · 150 power rails · 1
-    /// ambient light · 1 trackpad").
+    /// Tally chips so the user can see at a glance how many of each
+    /// category are present and live ("Temperature 89 · Power 47 ·
+    /// Ambient Light 1 · Battery 1").
     private var summary: some View {
-        HStack(spacing: 14) {
+        FlowChips {
             ForEach(snapshot.grouped, id: \.category) { group in
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
                     Image(systemName: group.category.symbol)
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Text("\(group.sensors.count)")
-                        .font(.caption.weight(.medium).monospacedDigit())
+                        .font(.caption.weight(.semibold).monospacedDigit())
                     Text(group.category.title)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 8).padding(.vertical, 4)
+                .padding(.horizontal, 10).padding(.vertical, 5)
                 .background(Color.secondary.opacity(0.08))
                 .clipShape(Capsule())
             }
-            Spacer()
         }
     }
 
@@ -97,10 +100,9 @@ struct HardwareSensorsView: View {
                                  sensors: [HardwareSensor]) -> some View {
         SectionCard(title: "\(category.title) (\(sensors.count))",
                     symbol: category.symbol) {
-            VStack(spacing: 0) {
+            FlowChips {
                 ForEach(sensors) { sensor in
-                    SensorRow(sensor: sensor)
-                    if sensor.id != sensors.last?.id { Divider() }
+                    SensorChip(sensor: sensor)
                 }
             }
         }
@@ -109,7 +111,7 @@ struct HardwareSensorsView: View {
     private var legend: some View {
         HStack(spacing: 10) {
             Image(systemName: "info.circle").foregroundStyle(.secondary)
-            Text("Sensors with a live value read it from a published IORegistry property. Others (per-core PMU thermal / power probes, ALS, motion) require an HID Event System subscription to read — surfaced here as discovery rows. Sensor names are synthesised from the kernel `Product` string + the SMC key when the kernel publishes both.")
+            Text("Values stream from the HID Event System for thermal / power / ambient-light sensors; battery and AC-PSU readings come straight from `AppleSmartBattery` IORegistry properties. Names are synthesised from the kernel `Product` string + the decoded 4-character SMC key — e.g. `Tp01` → \"Performance Core p01\".")
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
@@ -133,55 +135,75 @@ struct HardwareSensorsView: View {
     }
 }
 
-private struct SensorRow: View {
+// MARK: - Chip
+
+/// One sensor rendered as a compact chip: friendly name across the
+/// top, the live value as the focal element, and a fine-print SMC-key
+/// subtitle. Colour-coded by category so the eye finds clusters of
+/// thermal vs power vs light rows at a glance.
+private struct SensorChip: View {
     let sensor: HardwareSensor
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: sensor.category.symbol)
-                .foregroundStyle(.secondary)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(sensor.name).font(.callout.weight(.medium))
-                if let sub = sensor.subtitle, !sub.isEmpty {
-                    Text(sub)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Text(sensor.kernelClass)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: sensor.category.symbol)
                     .font(.caption2)
+                    .foregroundStyle(accent)
+                Text(sensor.name)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(formatValue(sensor.value ?? .nan))
+                    .font(.title3.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.primary)
+                if let unit = sensor.unit {
+                    Text(unit)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let sub = sensor.subtitle, !sub.isEmpty {
+                Text(sub)
+                    .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
-            Spacer()
-            if let v = sensor.value {
-                HStack(spacing: 4) {
-                    Text(formatValue(v))
-                        .font(.callout.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.primary)
-                    if let u = sensor.unit {
-                        Text(u).font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Color.green.opacity(0.12))
-                .clipShape(Capsule())
-            } else {
-                Text("Live read needs HID")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(Capsule())
-            }
         }
-        .padding(.vertical, 8).padding(.horizontal, 4)
+        .padding(10)
+        .frame(width: 200, alignment: .leading)
+        .background(accent.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(accent.opacity(0.25), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var accent: Color {
+        switch sensor.category {
+        case .temperature: return .orange
+        case .power:       return .red
+        case .voltage:     return .yellow
+        case .current:     return .yellow
+        case .energy:      return .green
+        case .light:       return .blue
+        case .motion:      return .purple
+        case .biometric:   return .pink
+        case .button:      return .gray
+        case .touch:       return .cyan
+        case .other:       return .secondary
+        }
     }
 
     private func formatValue(_ v: Double) -> String {
+        if !v.isFinite { return "—" }
+        if abs(v) >= 1000 { return String(format: "%.0f", v) }
         if abs(v) >= 100 { return String(format: "%.0f", v) }
         if abs(v) >= 10 { return String(format: "%.1f", v) }
-        return String(format: "%.2f", v)
+        if abs(v) >= 1 { return String(format: "%.2f", v) }
+        return String(format: "%.3f", v)
     }
 }
