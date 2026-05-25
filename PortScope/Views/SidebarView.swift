@@ -83,6 +83,13 @@ struct SidebarView: View {
         // top-level "Physical Device" wrapper isn't needed — and nesting
         // Section inside Section in a sidebar List doesn't render the inner
         // headers anyway.
+        // Map from a TB function-adapter port's ID to the USB device roots
+        // tunneled through it. Lets the Thunderbolt tree show the actual USB
+        // devices nested under the "USB Adapter" port that's providing the
+        // tunnel, rather than forcing the user to cross-reference the USB
+        // section. Built once per render from `ports`.
+        let tbProvidedUSB = tbProvidedUSBMap(ports: ports)
+
         List(selection: $vm.selection) {
             physicalDeviceContent(ports: ports,
                                   hw: hw,
@@ -100,7 +107,8 @@ struct SidebarView: View {
                         ForEach(vm.tbSnapshot.controllers, id: \.id) { node in
                             ControllerBranch(node: node,
                                              expanded: $expanded,
-                                             flattenHubs: !showIntermediateHubs)
+                                             flattenHubs: !showIntermediateHubs,
+                                             providedUSB: tbProvidedUSB)
                         }
                     }
                 }
@@ -217,6 +225,16 @@ struct SidebarView: View {
         // Thunderbolt section.
         for ctrl in vm.tbSnapshot.controllers where controllerHasAttachedHost(ctrl) {
             toOpen.append(ctrl.id)
+            // Also auto-open the Mac Host Router and the active host-side
+            // USB Adapter port — that's where the TB-tunneled USB devices
+            // get grafted in, and leaving the chain collapsed would hide
+            // the new nested USB tree on first render.
+            if let rootSwitch = findRootSwitchInController(ctrl) {
+                toOpen.append(rootSwitch.id)
+                for adapter in activeHostUSBAdapters(under: ctrl) {
+                    toOpen.append(adapter.id)
+                }
+            }
         }
         // USB host controllers in the USB section auto-open once.
         for ctrl in vm.usbSnapshot.controllers {
@@ -780,10 +798,64 @@ private struct DeviceRow: View {
 
 // MARK: - Thunderbolt section (controllers expand to show full TB tree)
 
+/// Build the TB-port → USB-device-roots map used by the Thunderbolt
+/// sidebar tree to nest the tunneled USB devices under the function
+/// adapter port that's providing them. Only the *host-side* USB Adapter
+/// ports on a depth-0 Mac Host Router get the devices grafted — those
+/// are the IOKit endpoint where the tunneled xHCI actually enumerates;
+/// the dock-side adapter ports are the other end of the tunnel.
+private func tbProvidedUSBMap(ports: [PhysicalPort]) -> [TBNodeID: [TBNode]] {
+    var out: [TBNodeID: [TBNode]] = [:]
+    for p in ports where !p.usbDeviceRoots.isEmpty {
+        for adapter in activeHostUSBAdapters(under: p.controller) {
+            out[adapter.id] = p.usbDeviceRoots
+        }
+    }
+    return out
+}
+
+/// Find USB function adapter ports (`"USB Adapter"` / `"USB Gen T Adapter"`)
+/// directly under this TB controller's Mac Host Router that have an active
+/// hop table. The active hop count is the kernel-authoritative signal that
+/// a USB tunnel is currently terminated on that adapter — picking the
+/// active one avoids attaching the dock's USB devices to an idle USB Gen T
+/// adapter sitting next to the live USB Adapter.
+private func activeHostUSBAdapters(under controller: TBNode) -> [TBNode] {
+    var out: [TBNode] = []
+    guard let macHostRouter = findRootSwitchInController(controller) else { return [] }
+    for child in macHostRouter.children where child.kind == .port {
+        let desc = child.properties["Description"]?.asString ?? ""
+        if desc == "USB Adapter" || desc == "USB Gen T Adapter" {
+            if case let .array(arr)? = child.properties["Hop Table"], !arr.isEmpty {
+                out.append(child)
+            }
+        }
+    }
+    return out
+}
+
+/// Locate the depth-0 switch (Mac Host Router) within a TB controller's
+/// subtree. Used by the USB-attribution map to find host-side adapters.
+private func findRootSwitchInController(_ controller: TBNode) -> TBNode? {
+    var stack = controller.children
+    while !stack.isEmpty {
+        let n = stack.removeFirst()
+        if n.kind == .switch, (n.properties["Depth"]?.asUInt ?? 0) == 0 {
+            return n
+        }
+        stack.append(contentsOf: n.children)
+    }
+    return nil
+}
+
 private struct ControllerBranch: View {
     let node: TBNode
     @Binding var expanded: Set<TBNodeID>
     let flattenHubs: Bool
+    /// Map keyed by TB function-adapter port IDs to the USB device roots
+    /// tunneled through them. Forwarded down to `FullTopologyRow` so the
+    /// graft applies wherever the matching node lives in the subtree.
+    var providedUSB: [TBNodeID: [TBNode]] = [:]
 
     var body: some View {
         // Skip `.other` wrapper kexts (DPConnectionManager, IPService, etc.)
@@ -799,7 +871,7 @@ private struct ControllerBranch: View {
             )
         ) {
             ForEach(kids, id: \.id) { child in
-                FullTopologyRow(node: child, depth: 1, expanded: $expanded, flattenHubs: flattenHubs)
+                FullTopologyRow(node: child, depth: 1, expanded: $expanded, flattenHubs: flattenHubs, providedUSB: providedUSB)
             }
         } label: {
             HStack(spacing: 6) {
@@ -964,10 +1036,20 @@ private struct FullTopologyRow: View {
     let depth: Int
     @Binding var expanded: Set<TBNodeID>
     var flattenHubs: Bool = false
+    /// TB function-adapter port → tunneled USB device roots. When this
+    /// node's ID is present, the row appends the USB devices as additional
+    /// children so the Thunderbolt tree reads as "TB controller → switch →
+    /// USB Adapter port → device hub → actual devices". Empty for non-TB
+    /// trees (the internal-hardware bus rows pass this through unset).
+    var providedUSB: [TBNodeID: [TBNode]] = [:]
 
     var body: some View {
         let kids = promotedChildren(of: node, flattenHubs: flattenHubs)
-        if kids.isEmpty {
+        let extraUSB = providedUSB[node.id] ?? []
+        // Disclosure when the kernel-side children exist OR when we have
+        // a USB graft to surface (an inactive port with attached devices
+        // would otherwise render as a leaf and hide the tunneled list).
+        if kids.isEmpty && extraUSB.isEmpty {
             label.tag(node.id)
         } else {
             DisclosureGroup(
@@ -979,7 +1061,16 @@ private struct FullTopologyRow: View {
                 )
             ) {
                 ForEach(kids, id: \.id) { child in
-                    FullTopologyRow(node: child, depth: depth + 1, expanded: $expanded, flattenHubs: flattenHubs)
+                    FullTopologyRow(node: child, depth: depth + 1, expanded: $expanded, flattenHubs: flattenHubs, providedUSB: providedUSB)
+                }
+                // Tunneled USB roots come last so the kernel-published TB
+                // structure (which the user already understands) stays
+                // visually above the grafted-in subtree.
+                ForEach(extraUSB, id: \.id) { dev in
+                    USBBranch(node: dev,
+                              depth: depth + 1,
+                              expanded: $expanded,
+                              flattenHubs: flattenHubs)
                 }
             } label: {
                 label
