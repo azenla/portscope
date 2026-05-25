@@ -314,7 +314,16 @@ private struct RouterView: View {
                 Stat(label: "Model",
                      value: node.properties["Device Model Name"]?.asString ?? "—",
                      symbol: "shippingbox"),
-                Stat(label: "Thunderbolt Generation",
+                // The kernel field labelled "Thunderbolt Version" is
+                // actually the USB4 spec compliance level (encoded as
+                // major.minor — 0x40 → 4.0), not a TB marketing
+                // generation. A TB5 dock typically reports "Spec 4.0"
+                // because TB5 is built on USB4 v4.0; reading the field
+                // as a TB-generation label (the old "Thunderbolt
+                // Generation: Spec 4.0") makes users with TB5 docks
+                // think they have TB4 hardware. The marketing name in
+                // the title already carries the real generation.
+                Stat(label: "USB4 Spec Version",
                      value: tbVersionLabel(node.properties["Thunderbolt Version"]?.asUInt),
                      symbol: "bolt.horizontal.circle"),
                 Stat(label: "Depth in Chain",
@@ -1278,14 +1287,21 @@ struct BandwidthBar: View {
                             .fill(Color.orange)
                             .frame(width: geo.size.width * reqFrac)
                         if showPeakMarker {
-                            // Slim dashed marker at the "peak planned" position
-                            // — readable against the orange + quaternary
+                            // Slim marker at the "peak planned" position —
+                            // readable against the orange + quaternary
                             // backdrop, distinct from the bar fill so the eye
-                            // doesn't read it as additional usage.
+                            // doesn't read it as additional usage. Clamp
+                            // the offset so a tiny maxFrac (≈100 Mb/s on a
+                            // 80 Gb/s link) doesn't push the marker off the
+                            // left edge, and so the marker stays inside the
+                            // capsule when maxFrac == 1.0.
+                            let markerW: CGFloat = 2
+                            let rawOffset = geo.size.width * maxFrac - markerW / 2
                             Rectangle()
                                 .fill(Color.yellow.opacity(0.85))
-                                .frame(width: 2, height: 22)
-                                .offset(x: geo.size.width * maxFrac - 1)
+                                .frame(width: markerW, height: 22)
+                                .offset(x: min(max(0, rawOffset),
+                                               geo.size.width - markerW))
                         }
                     }
                 }
