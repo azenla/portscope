@@ -104,98 +104,102 @@ nonisolated struct HIDSensorReader {
         let eventType: String
     }
 
-    /// Snapshot every readable sensor in one IOHIDEventSystemClient
-    /// session. Keyed by the kernel's HID service `RegistryID` so the
-    /// caller can join against the IORegistry walk used elsewhere.
+    /// Snapshot every readable sensor across all known sensor types.
+    /// Keyed by the kernel's HID service `RegistryID` so the caller can
+    /// join against the IORegistry walk used elsewhere.
+    ///
+    /// Apple's HID Event System gates each *sensor type* on a distinct
+    /// PrimaryUsage code. A shared services list returns nothing useful;
+    /// the kernel only populates the event payload after matching a
+    /// service whose primary usage matches the page + type we're asking
+    /// about. We open one client per type, set the appropriate matching
+    /// dict, and merge the readings. Codes come from Apple's HID usage
+    /// tables + the conventions Stats / Sensei / asitop use; they've
+    /// been stable across Apple Silicon generations.
     static func readAll() -> [UInt64: Reading] {
-        // Try the standard `Create` first (returns a Simple-type client
-        // on modern macOS). When that returns no services or rejects
-        // the event copy, fall through to the Monitor-type client which
-        // can read events as a non-root user but matches more strictly.
-        let client: AnyObject
-        if let basic = _IOHIDEventSystemClientCreate(kCFAllocatorDefault) {
-            client = basic.takeRetainedValue()
-        } else if let monitor = _IOHIDEventSystemClientCreateWithType(
-            kCFAllocatorDefault, 1, nil
-        ) {
-            client = monitor.takeRetainedValue()
-        } else {
-            return [:]
-        }
-        // No matching dictionary — let the kernel return every HID
-        // service it knows about. We'll attempt all three sensor event
-        // types per service below, so services that don't carry typed
-        // events just fall silently out of the results. Setting a
-        // PrimaryUsagePage = 0xff00 matching filter empirically removes
-        // every service on macOS 26, which is the opposite of what we
-        // want.
-
-        guard let servicesUM = _IOHIDEventSystemClientCopyServices(client) else {
-            return [:]
-        }
-        let services = servicesUM.takeRetainedValue()
-        let count = CFArrayGetCount(services)
         var out: [UInt64: Reading] = [:]
-        for i in 0..<count {
-            guard let raw = CFArrayGetValueAtIndex(services, i) else { continue }
-            // CFArrayGetValueAtIndex returns +0; bridge to AnyObject for
-            // the typed CF-bridged helpers below. The array owns the
-            // service references for its lifetime, so we don't retain.
-            let service: AnyObject = unsafeBitCast(raw, to: AnyObject.self)
-            guard let regID = registryID(of: service) else { continue }
-            // Each service is one specific sensor. Try the three event
-            // types we know how to interpret; the first that returns
-            // a finite value wins.
-            if let r = readTemperature(service: service, regID: regID) {
-                out[regID] = r
-                continue
-            }
-            if let r = readPower(service: service, regID: regID) {
-                out[regID] = r
-                continue
-            }
-            if let r = readAmbientLight(service: service, regID: regID) {
-                out[regID] = r
-                continue
-            }
-        }
+        // Temperature sensors — PMU per-core thermal probes + the
+        // chassis / NVMe / battery probes that pass through HID.
+        readGroup(usagePage: 0xff00, usage: 0x05,
+                  eventType: HIDEventType.temperature.rawValue,
+                  field: HIDEventField.temperatureLevel,
+                  unit: "°C", eventName: "Temperature",
+                  validRange: -50...200, into: &out)
+        // Power rails — Apple's per-rail energy / power meters.
+        readGroup(usagePage: 0xff00, usage: 0x0a,
+                  eventType: HIDEventType.power.rawValue,
+                  field: HIDEventField.powerMeasurement,
+                  unit: "W", eventName: "Power",
+                  validRange: 0...10_000, into: &out)
+        // Current sensors — separately published on usage 0x0b.
+        readGroup(usagePage: 0xff00, usage: 0x0b,
+                  eventType: HIDEventType.power.rawValue,
+                  field: HIDEventField.powerMeasurement,
+                  unit: "A", eventName: "Current",
+                  validRange: -50...50, into: &out)
+        // Ambient light — on the standard HID Sensors page (0x20).
+        readGroup(usagePage: 0x20, usage: 0x41,
+                  eventType: HIDEventType.ambientLight.rawValue,
+                  field: HIDEventField.ambientLightLevel,
+                  unit: "lux", eventName: "Ambient Light",
+                  validRange: 0...200_000, into: &out)
         return out
     }
 
-    // MARK: - Single-event reads
+    // MARK: - Per-type pass
 
-    private static func readTemperature(service: AnyObject, regID: UInt64) -> Reading? {
-        guard let eventUM = _IOHIDServiceClientCopyEvent(service,
-                                                         HIDEventType.temperature.rawValue,
-                                                         nil, 0) else { return nil }
-        let event = eventUM.takeRetainedValue()
-        let v = _IOHIDEventGetFloatValue(event, HIDEventField.temperatureLevel)
-        // Apple Silicon publishes thermal readings in degrees Celsius.
-        // Reject NaN / infinity and obviously-impossible readings, but
-        // keep low values — calibration sensors and idle cores can sit
-        // near 0 °C and that's a legitimate reading.
-        guard v.isFinite, v > -50, v < 200 else { return nil }
-        return Reading(serviceID: regID, value: v, unit: "°C", eventType: "Temperature")
-    }
+    /// One matched-and-read pass for a single sensor type. Scopes the
+    /// IOHIDEventSystem client to services that publish the requested
+    /// PrimaryUsagePage + PrimaryUsage pair, then copies the typed
+    /// event off each one and reads the float field.
+    private static func readGroup(usagePage: Int,
+                                  usage: Int,
+                                  eventType: Int64,
+                                  field: Int32,
+                                  unit: String,
+                                  eventName: String,
+                                  validRange: ClosedRange<Double>,
+                                  into out: inout [UInt64: Reading]) {
+        // Monitor-type client (1) is the read-events-as-user surface —
+        // requires the `com.apple.private.hid.client.event-monitor`
+        // entitlement that PortScope.entitlements ships. Without the
+        // entitlement the kernel hands back a Simple-type client whose
+        // CopyEvent calls return nil, so the panel falls back to the
+        // discovery-only mode.
+        let client: AnyObject
+        if let m = _IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, 1, nil) {
+            client = m.takeRetainedValue()
+        } else if let s = _IOHIDEventSystemClientCreate(kCFAllocatorDefault) {
+            client = s.takeRetainedValue()
+        } else {
+            return
+        }
+        let matching: [String: Any] = [
+            "PrimaryUsagePage": usagePage,
+            "PrimaryUsage": usage
+        ]
+        _ = _IOHIDEventSystemClientSetMatching(client, matching as CFDictionary)
 
-    private static func readPower(service: AnyObject, regID: UInt64) -> Reading? {
-        guard let eventUM = _IOHIDServiceClientCopyEvent(service,
-                                                         HIDEventType.power.rawValue,
-                                                         nil, 0) else { return nil }
-        let event = eventUM.takeRetainedValue()
-        let v = _IOHIDEventGetFloatValue(event, HIDEventField.powerMeasurement)
-        guard v.isFinite, v >= 0 else { return nil }
-        return Reading(serviceID: regID, value: v, unit: "W", eventType: "Power")
-    }
-
-    private static func readAmbientLight(service: AnyObject, regID: UInt64) -> Reading? {
-        guard let eventUM = _IOHIDServiceClientCopyEvent(service,
-                                                         HIDEventType.ambientLight.rawValue,
-                                                         nil, 0) else { return nil }
-        let event = eventUM.takeRetainedValue()
-        let v = _IOHIDEventGetFloatValue(event, HIDEventField.ambientLightLevel)
-        guard v.isFinite, v >= 0 else { return nil }
-        return Reading(serviceID: regID, value: v, unit: "lux", eventType: "Ambient Light")
+        guard let servicesUM = _IOHIDEventSystemClientCopyServices(client) else {
+            return
+        }
+        let services = servicesUM.takeRetainedValue()
+        let count = CFArrayGetCount(services)
+        for i in 0..<count {
+            guard let raw = CFArrayGetValueAtIndex(services, i) else { continue }
+            let service: AnyObject = unsafeBitCast(raw, to: AnyObject.self)
+            guard let regID = registryID(of: service) else { continue }
+            guard let eventUM = _IOHIDServiceClientCopyEvent(service, eventType, nil, 0) else {
+                continue
+            }
+            let event = eventUM.takeRetainedValue()
+            let v = _IOHIDEventGetFloatValue(event, field)
+            guard v.isFinite, validRange.contains(v) else { continue }
+            out[regID] = Reading(serviceID: regID,
+                                 value: v,
+                                 unit: unit,
+                                 eventType: eventName)
+        }
     }
 
     // MARK: - Property helpers

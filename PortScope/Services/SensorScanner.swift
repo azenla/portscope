@@ -37,48 +37,58 @@ nonisolated enum SensorScanner {
     static func scan() -> HardwareSensorsSnapshot {
         let liveReadings = HIDSensorReader.readAll()
         var out: [HardwareSensor] = []
-        out.append(contentsOf: scanPMUTempSensors(live: liveReadings))
-        out.append(contentsOf: scanPMUPowerSensors(live: liveReadings))
-        out.append(contentsOf: scanALSSensors(live: liveReadings))
-        out.append(contentsOf: scanNVMeTempSensors(live: liveReadings))
+        // Walk every IOHIDEventService once and emit a row for every
+        // service that has a live HID reading. The reading itself
+        // tells us which category bucket to drop it in — temperature
+        // services emit °C readings, power services emit W, current
+        // services emit A, ambient-light services emit lux. We don't
+        // need to know the kernel class ahead of time, just match by
+        // registry id.
+        for svc in IORegBridge.services(matchingClass: "IOHIDEventService") {
+            defer { IOObjectRelease(svc) }
+            guard let regID = IORegBridge.entryID(of: svc) else { continue }
+            guard let reading = liveReadings[regID] else { continue }
+            let product = string(svc, "Product")
+            let location: UInt32? = {
+                if let n = number(svc, "LocationID") { return UInt32(truncatingIfNeeded: n) }
+                return nil
+            }()
+            let key = location.flatMap(decodeSMCKey)
+            let cls = IORegBridge.className(of: svc) ?? "IOHIDEventService"
+            let category = categoryFor(reading: reading)
+            let friendly = synthesiseName(product: product, smcKey: key, category: category)
+            var subtitleParts: [String] = []
+            if let p = product, !p.isEmpty { subtitleParts.append(p) }
+            if let k = key, !k.isEmpty { subtitleParts.append("key \(k)") }
+            out.append(HardwareSensor(
+                name: friendly,
+                subtitle: subtitleParts.isEmpty ? nil : subtitleParts.joined(separator: " · "),
+                category: category,
+                value: reading.value,
+                unit: reading.unit,
+                locationID: location,
+                kernelClass: cls
+            ))
+        }
         out.append(contentsOf: scanBatterySensors())
         out.append(contentsOf: scanPSUSensors())
         return HardwareSensorsSnapshot(capturedAt: Date(), sensors: out)
     }
 
-    // MARK: - PMU thermal
-
-    private static func scanPMUTempSensors(live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
-        return mineHID(class: "AppleARMPMUTempSensor",
-                       category: .temperature,
-                       live: live)
-    }
-
-    // MARK: - PMU power rails
-
-    private static func scanPMUPowerSensors(live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
-        return mineHID(class: "AppleARMPMUPowerSensor",
-                       category: .power,
-                       live: live)
-    }
-
-    // MARK: - Ambient light + color
-
-    private static func scanALSSensors(live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
-        // `AppleSPUVD6286` is the ambient-light / colour-temperature
-        // sensor on the AOP I²C bus on M-series laptops (in front of the
-        // FaceTime camera). Sometimes paired with `AppleSPUALSColorDriver`.
-        return mineHID(class: "AppleSPUVD6286",
-                       category: .light,
-                       live: live)
-    }
-
-    // MARK: - NVMe storage thermal
-
-    private static func scanNVMeTempSensors(live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
-        return mineHID(class: "AppleEmbeddedNVMeTemperatureSensor",
-                       category: .temperature,
-                       live: live)
+    /// Map a reading's unit string back to the sensor category bucket
+    /// the panel groups under. The reader normalises units (°C, W, A,
+    /// lux), so a string compare is sufficient and avoids threading
+    /// a category enum through the HID layer.
+    private static func categoryFor(reading: HIDSensorReader.Reading) -> SensorCategory {
+        switch reading.unit {
+        case "°C":  return .temperature
+        case "W":   return .power
+        case "A":   return .current
+        case "V":   return .voltage
+        case "lux": return .light
+        case "Wh":  return .energy
+        default:    return .other
+        }
     }
 
     // MARK: - Battery & charger telemetry (LIVE values via IOKit)
@@ -187,50 +197,7 @@ nonisolated enum SensorScanner {
         return out
     }
 
-    // MARK: - HID-sensor enumeration helper
-
-    /// Walk every service matching `class`, emit a `HardwareSensor`
-    /// row *only* for the ones that have a live HID reading. Discovery-
-    /// only rows are dropped per the user's "tight value-bearing view"
-    /// requirement — the wall of "Live read needs HID" tags went away
-    /// when we wired the HID Event System reader.
-    ///
-    /// `LocationID` is the SMC 4-char ASCII key on PMU sensors; we use
-    /// it to synthesise a friendly name. Live readings come from
-    /// `HIDSensorReader.readAll()` keyed by registry entry id, which
-    /// matches `IORegBridge.entryID(of:)`.
-    private static func mineHID(class cls: String,
-                                category: SensorCategory,
-                                live: [UInt64: HIDSensorReader.Reading]) -> [HardwareSensor] {
-        var out: [HardwareSensor] = []
-        for svc in IORegBridge.services(matchingClass: cls) {
-            defer { IOObjectRelease(svc) }
-            guard let regID = IORegBridge.entryID(of: svc) else { continue }
-            guard let reading = live[regID] else { continue }
-            let product = string(svc, "Product")
-            let location: UInt32? = {
-                if let n = number(svc, "LocationID") { return UInt32(truncatingIfNeeded: n) }
-                return nil
-            }()
-            let key = location.flatMap(decodeSMCKey)
-            let friendly = synthesiseName(product: product, smcKey: key, category: category)
-            var subtitleParts: [String] = []
-            if let p = product, !p.isEmpty { subtitleParts.append(p) }
-            if let k = key, !k.isEmpty { subtitleParts.append("key \(k)") }
-            let subtitle = subtitleParts.isEmpty ? nil
-                : subtitleParts.joined(separator: " · ")
-            out.append(HardwareSensor(
-                name: friendly,
-                subtitle: subtitle,
-                category: category,
-                value: reading.value,
-                unit: reading.unit,
-                locationID: location,
-                kernelClass: cls
-            ))
-        }
-        return out
-    }
+    // MARK: - SMC key + label helpers
 
     /// Decode a 32-bit SMC key encoded as 4 ASCII characters. The kernel
     /// publishes it as the big-endian integer, so we shift / mask down
