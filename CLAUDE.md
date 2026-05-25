@@ -111,6 +111,8 @@ When Apple ships a new Mac (or you discover one missing from the catalogue), add
 
 When two `hw.model` identifiers map to the same chassis with the same port layout (M3 Max 14" splits as `Mac15,7` and `Mac15,8`; M3 Max 16" splits as `Mac15,9` and `Mac15,11`), duplicate the entry under both keys. There's no inheritance keyword — keep it explicit so a future redesign of one identifier doesn't silently corrupt the other.
 
+**MacBook Pro chassis is consistent since 2021.** Every 14" and 16" MacBook Pro from M1 Pro (2021) onward — including all M5 Pro / M5 Max — shares one physical port layout, and the kernel numbers ports the same way on each. LEFT side rear→front: MagSafe 3, USB-C (port 2), USB-C (port 3), 3.5 mm headphone. RIGHT side rear→front: SDXC, HDMI, USB-C (port 1 — the lone right-side TB). The only catalogued exception is the M3 base (`Mac15,3`), which omits the lone right-side TB so its kernel ports 1 / 2 sit at Left Center and Left Front instead. When adding a new generation (M6, M7, …) you can re-use the M5 Max entry verbatim and just swap the capability string — don't reverse-engineer the side mapping from scratch.
+
 ## Things that bit me — read before "fixing"
 
 - **`Adapter Type` integer codes vary by chip vendor and Apple controller generation.** Type7 (M3+/TB5), Type5 (M1/M2 — swaps PCIe/USB/DP codes!), Intel JHL95xx all permute. Use the kernel's `Description` string (`"PCIe Adapter"`, `"DP or HDMI Adapter"`, `"USB Adapter"`, `"USB Gen T Adapter"`, `"Thunderbolt Port"`, `"Port is inactive"`, `"Thunderbolt Native Host Interface Adapter"`) — authoritative across vendors. `TBAdapterType` only decodes the universally-stable codes (`0` inactive, `1` lane, `2` NHI); everything else is `.unknown(rawValue)` deliberately.
