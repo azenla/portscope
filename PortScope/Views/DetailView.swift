@@ -1418,7 +1418,14 @@ private struct StatCell: View {
                     Text(displayValue)
                         .font(.callout.monospaced(stat.isSecret))
                         .textSelection(.enabled)
-                        .lineLimit(2)
+                        // Reserve space for two lines on every cell so a
+                        // single value that wraps (e.g. "TB3/USB4 Gen 2 —
+                        // 20 Gb/s per lane") doesn't make its row taller
+                        // than the surrounding rows. `LazyVGrid` only
+                        // normalises height *within* a row, not across
+                        // rows, so without the reservation the second
+                        // row reads as visibly shorter than the first.
+                        .lineLimit(2, reservesSpace: true)
                     if stat.isSecret && !hovering {
                         Image(systemName: "eye.slash")
                             .font(.caption2)
@@ -1429,6 +1436,7 @@ private struct StatCell: View {
             Spacer(minLength: 0)
         }
         .padding(10)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(.background.secondary)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .onHover { hovering = $0 }
