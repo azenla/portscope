@@ -297,9 +297,15 @@ nonisolated enum TopologyMapper {
     /// when accessory data is available the sidebar numbering follows it
     /// instead of arbitrary TB-controller iteration order.
     static func physicalPorts(from snapshot: SystemSnapshot) -> [PhysicalPort] {
-        let tbPorts = snapshot.tb.controllers.compactMap {
-            makePort(number: 0, controller: $0, accessory: nil)
+        // Pair each TB controller with its resolved PhysicalPort (skipping
+        // controllers that don't produce a port — e.g. ones with no root
+        // switch). Keep the controller→port mapping so we can join via
+        // Socket ID below without `zip` getting out of step.
+        let resolvedPairs: [(controller: TBNode, port: PhysicalPort)] = snapshot.tb.controllers.compactMap { controller in
+            guard let port = makePort(number: 0, controller: controller, accessory: nil) else { return nil }
+            return (controller, port)
         }
+        let tbPorts = resolvedPairs.map { $0.port }
         let usbByPort = usbDevicesByPort(in: snapshot.usb)
         let usbCAccessories = snapshot.accessories.filter {
             if case .usbC = $0.connector { return true }
@@ -327,14 +333,44 @@ nonisolated enum TopologyMapper {
             }
         }
 
-        // Match each AppleHPM USB-C port to the best TB controller. Ports with
-        // CIO active match the controller whose lane has a downstream switch;
-        // remaining ports get assigned in order.
+        // Match each AppleHPM USB-C port to its TB controller. Strategy
+        // adapted from WhatCable
+        // (Sources/WhatCableCore/IOThunderboltLabels.swift:69-78, MIT,
+        // Copyright (c) 2026 Darryl Morley): each TB host-root lane
+        // adapter publishes a `Socket ID` string ("1", "2", "3", …) that
+        // matches the HPM accessory's `PortNumber`. This is direct and
+        // independent of registry-allocation order; the previous
+        // heuristic guessed by "does this controller have a downstream
+        // device?" which only works on chassis with exactly one cable
+        // plugged in.
+        //
+        // Anything we can't resolve via Socket ID falls through to the
+        // legacy two-pass heuristic so PortScope still degrades
+        // gracefully on hosts where the `Socket ID` field is missing
+        // (older Apple Silicon controllers, Intel JHL95xx, etc.).
+        let socketIDIndex = socketIDToTBPort(resolvedPairs: resolvedPairs)
         var remainingTB = tbPorts
         var paired: [(PortAccessoryInfo, PhysicalPort?)] = []
+        var unmatched: [PortAccessoryInfo] = []
 
-        // Pass 1: TB-active accessory ports claim a TB controller with a downstream device.
-        for acc in usbCAccessories where acc.carriesThunderbolt {
+        // Pass 0: direct Socket ID join.
+        for acc in usbCAccessories {
+            let socketKey = String(acc.portNumber)
+            guard let tb = socketIDIndex[socketKey] else {
+                unmatched.append(acc)
+                continue
+            }
+            if let idx = remainingTB.firstIndex(where: { $0.id == tb.id }) {
+                paired.append((acc, remainingTB.remove(at: idx)))
+            } else {
+                // Lane adapter was matched twice — fall back to heuristic.
+                unmatched.append(acc)
+            }
+        }
+
+        // Pass 1: TB-active unmatched accessory ports claim a TB
+        // controller with a downstream device.
+        for acc in unmatched where acc.carriesThunderbolt {
             if let idx = remainingTB.firstIndex(where: { $0.connectedDevice != nil }) {
                 paired.append((acc, remainingTB.remove(at: idx)))
             } else if let idx = remainingTB.indices.first {
@@ -343,8 +379,9 @@ nonisolated enum TopologyMapper {
                 paired.append((acc, nil))
             }
         }
-        // Pass 2: any other accessory ports take remaining TB controllers in order.
-        for acc in usbCAccessories where !acc.carriesThunderbolt {
+        // Pass 2: any remaining (non-TB-active) accessory ports take
+        // remaining TB controllers in order.
+        for acc in unmatched where !acc.carriesThunderbolt {
             if let first = remainingTB.first {
                 remainingTB.removeFirst()
                 paired.append((acc, first))
@@ -895,6 +932,37 @@ nonisolated enum TopologyMapper {
         TBNode(id: id, kind: .other, title: "Receptacle", subtitle: nil,
                className: "", properties: [:], propertyOrder: [],
                children: [], registryPath: nil)
+    }
+
+    /// Build `socketID → PhysicalPort` for direct Socket ID joins. Each
+    /// host-root TB lane adapter publishes a `Socket ID` string ("1",
+    /// "2", "3", …) that matches the HPM accessory's `PortNumber`.
+    /// Walks each TB controller's root switch and reads the first lane
+    /// adapter's `Socket ID`; if two lane adapters under the same
+    /// controller publish different Socket IDs the controller covers
+    /// multiple physical receptacles (unobserved but possible) — we
+    /// keep both mappings so each receptacle resolves correctly.
+    ///
+    /// Strategy adapted from WhatCable
+    /// (Sources/WhatCableCore/IOThunderboltLabels.swift:69-78, MIT,
+    /// Copyright (c) 2026 Darryl Morley). The MagSafe collision
+    /// (`Port-MagSafe 3@N` shares an `@N` suffix with the neighbouring
+    /// USB-C) doesn't apply at the controller level — `Socket ID` is
+    /// only published on TB lane adapters.
+    private static func socketIDToTBPort(resolvedPairs: [(controller: TBNode, port: PhysicalPort)]) -> [String: PhysicalPort] {
+        var out: [String: PhysicalPort] = [:]
+        for pair in resolvedPairs {
+            guard let root = findRootSwitch(in: pair.controller) else { continue }
+            for child in root.children where isLaneAdapter(child) {
+                if let socket = child.properties["Socket ID"]?.asString,
+                   !socket.isEmpty {
+                    if out[socket] == nil {
+                        out[socket] = pair.port
+                    }
+                }
+            }
+        }
+        return out
     }
 
     private static func makePort(number: Int, controller: TBNode, accessory: PortAccessoryInfo?) -> PhysicalPort? {

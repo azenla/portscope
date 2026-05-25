@@ -355,16 +355,44 @@ nonisolated struct PortAccessoryInfo: Identifiable, Hashable {
     }
 }
 
-/// DisplayPort pin assignment label per USB-IF Type-C alt-mode spec.
+/// DisplayPort pin assignment label.
+///
+/// The kernel's `DisplayPortPinAssignment` integer is NOT the raw USB-IF
+/// Type-C alt-mode spec value — Apple publishes a smaller Apple-specific
+/// encoding that only covers the pin assignments modern hardware actually
+/// negotiates (USB-IF Pin Assignments A and B are deprecated). Encoding
+/// adopted from WhatCable (Sources/WhatCableCore/DisplayPortLaneConfig.swift,
+/// MIT, Copyright (c) 2026 Darryl Morley), where it was confirmed
+/// empirically on Apple Silicon Macs:
+///
+///   0 = no DP alt mode active
+///   1 = Pin Assignment C (4-lane DP, no USB 3)
+///   2 = Pin Assignment D (2-lane DP + USB 3)
+///   3 = Pin Assignment E (4-lane DP, flipped orientation)
+///   4 = Pin Assignment F (2-lane DP + USB 3, flipped)
+///
+/// PortScope previously used the USB-IF spec values directly (1=A...6=F)
+/// which didn't match what Apple's kernel publishes. The new encoding
+/// makes "4-lane vs 2-lane" reads correct.
 nonisolated func displayPortPinAssignmentLabel(_ raw: UInt64) -> String {
     switch raw {
     case 0: return "None"
-    case 1: return "A (4-lane DP)"
-    case 2: return "B (4-lane DP)"
-    case 3: return "C (4-lane DP + USB)"
-    case 4: return "D (2-lane DP + USB 3)"
-    case 5: return "E (4-lane DP + USB 2)"
-    case 6: return "F (2-lane DP + USB 3)"
+    case 1: return "C — 4-lane DP (no USB 3)"
+    case 2: return "D — 2-lane DP + USB 3"
+    case 3: return "E — 4-lane DP (flipped)"
+    case 4: return "F — 2-lane DP + USB 3 (flipped)"
     default: return "Assignment \(raw)"
+    }
+}
+
+/// Decoded DP lane count from `DisplayPortPinAssignment`. Returns 4
+/// (Pin Assignments C / E), 2 (D / F), or nil (no DP / unknown).
+/// Encoding per WhatCable DisplayPortLaneConfig.swift:23-37 (MIT,
+/// Copyright (c) 2026 Darryl Morley).
+nonisolated func displayPortLaneCount(_ raw: UInt64) -> Int? {
+    switch raw {
+    case 1, 3: return 4
+    case 2, 4: return 2
+    default: return nil
     }
 }

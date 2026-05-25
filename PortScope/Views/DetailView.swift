@@ -895,8 +895,11 @@ private struct PortView: View {
                      value: currentSpeed > 0 ? tbLinkSpeedLabel(currentSpeed) : "Inactive",
                      symbol: "antenna.radiowaves.left.and.right"),
                 Stat(label: "Width",
-                     value: currentWidth > 0 ? "\(currentWidth) lanes" : "—",
+                     value: currentWidth > 0 ? tbCurrentLinkWidthLabel(currentWidth) : "—",
                      symbol: "arrow.left.and.right"),
+                Stat(label: "Negotiated Rate",
+                     value: tbCurrentLinkRateLabel(speed: currentSpeed, width: currentWidth) ?? "—",
+                     symbol: "speedometer"),
                 Stat(label: "Lane",
                      value: node.properties["Lane"]?.display ?? "—",
                      symbol: "bolt"),
@@ -931,17 +934,21 @@ private struct PortView: View {
                     GridRow {
                         Text("Current").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
                         Text(currentSpeed > 0 ? tbLinkSpeedLabel(currentSpeed) : "—")
-                        Text(currentWidth > 0 ? "\(currentWidth) lanes" : "—")
+                        Text(currentWidth > 0 ? tbCurrentLinkWidthLabel(currentWidth) : "—")
                     }
                     GridRow {
                         Text("Target").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        Text(targetSpeed > 0 ? tbLinkSpeedLabel(targetSpeed) : "—")
-                        Text(targetWidth > 0 ? "\(targetWidth) lanes" : "—")
+                        // Target fields use different encodings from Current.
+                        // See `tbSupportedLinkSpeedLabel` / `tbTargetLinkWidthLabel`.
+                        Text(targetSpeed > 0 ? tbSupportedLinkSpeedLabel(targetSpeed) : "—")
+                        Text(targetWidth > 0 ? tbTargetLinkWidthLabel(targetWidth) : "—")
                     }
                     GridRow {
                         Text("Supported").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        Text(supportedSpeed > 0 ? tbLinkSpeedLabel(supportedSpeed) : "—")
-                        Text(supportedWidth > 0 ? "\(supportedWidth) lanes" : "—")
+                        // Supported is a bitmask of speed codes; Width
+                        // uses the same encoding as Current.
+                        Text(supportedSpeed > 0 ? tbSupportedLinkSpeedLabel(supportedSpeed) : "—")
+                        Text(supportedWidth > 0 ? tbCurrentLinkWidthLabel(supportedWidth) : "—")
                     }
                 }
                 .font(.callout)

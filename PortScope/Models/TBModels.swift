@@ -205,10 +205,16 @@ nonisolated extension TBNode {
                 let gbps = Double(v) / 100.0
                 return "\(v) (\(String(format: "%.1f", gbps)) Gb/s)"
             }
-        case "Current Link Speed", "Target Link Speed", "Supported Link Speed":
+        case "Current Link Speed":
             if let v = value.asUInt { return tbLinkSpeedLabel(v) }
-        case "Current Link Width", "Target Link Width", "Supported Link Width":
-            if let v = value.asUInt { return "\(v)× lanes" }
+        case "Target Link Speed", "Supported Link Speed":
+            // Bitmask form of the same encoding — see tbSupportedLinkSpeedLabel.
+            if let v = value.asUInt { return tbSupportedLinkSpeedLabel(v) }
+        case "Current Link Width", "Supported Link Width":
+            if let v = value.asUInt { return tbCurrentLinkWidthLabel(v) }
+        case "Target Link Width":
+            // Different encoding: 0x1 = single, 0x3 = dual. NOT bitmask.
+            if let v = value.asUInt { return tbTargetLinkWidthLabel(v) }
         case "Device Speed", "kUSBCurrentSpeed":
             if let v = value.asUInt { return usbSpeedLabel(v) }
         case "bcdUSB", "bcdDevice":
@@ -271,30 +277,148 @@ nonisolated func prettyCompatibleString(_ value: IORegValue) -> String {
 }
 
 /// Map the `Current Link Speed` field to a TB generation label.
-/// Observed: 0 = inactive, 2 = TB3/USB4 Gen 2 (20 Gbit/lane), 8 = TB5 Gen 3 (40 Gbit/lane bidirectional), etc.
+///
+/// Encoding (single value, NOT a bitmask on the Current field):
+///   `0` = inactive
+///   `0x8` = TB3 (10 Gb/s/lane)
+///   `0x4` = USB4 / TB4 (20 Gb/s/lane)
+///   `0x2` = TB5 / USB4 v2 (40 Gb/s/lane)
+///
+/// Mapping adapted from WhatCable
+/// (Sources/WhatCableCore/IOThunderboltLink.swift:13-65, MIT, Copyright
+/// (c) 2026 Darryl Morley). Anchored against Linux's
+/// `drivers/thunderbolt/tb_regs.h`. Confirmed empirically on this host:
+/// an active TB5 link reports `Current Link Speed = 2`, `Current Link
+/// Width = 2` (dual lane), `Link Bandwidth = 800` → 80 Gb/s = 2 lanes ×
+/// 40 Gb/s/lane (and the cable e-marker decodes to 80 Gb/s class too —
+/// see `CableEmarkerInfo`).
+///
+/// PortScope's earlier mapping (`2 = TB3 Gen 2 20 Gb/s/lane`,
+/// `8 = TB5 80 Gb/s/lane`) was empirically wrong — that combination
+/// would imply 40 Gb/s total on the active link, but the kernel
+/// reports 80.
 nonisolated func tbLinkSpeedLabel(_ raw: UInt64) -> String {
     switch raw {
     case 0: return "Inactive"
-    case 1: return "TB3/USB4 Gen 1 — 10 Gb/s per lane"
-    case 2: return "TB3/USB4 Gen 2 — 20 Gb/s per lane"
-    case 4: return "TB4 Gen 3 — 40 Gb/s per lane"
-    case 8: return "TB5 Gen 4 — 80 Gb/s per lane"
-    case 14: return "TB5 asymmetric — 120 Gb/s tx / 40 Gb/s rx"
-    default: return "Raw value \(raw)"
+    case 0x2: return "TB5 / USB4 v2 — 40 Gb/s per lane"
+    case 0x4: return "TB4 / USB4 v1 — 20 Gb/s per lane"
+    case 0x8: return "TB3 — 10 Gb/s per lane"
+    default:
+        // `Supported Link Speed` / `Target Link Speed` are bitmasks of
+        // the above three values OR'd together (e.g. 14 = 0x8|0x4|0x2 =
+        // "TB3 + TB4 + TB5 supported"). Decode any non-single value as
+        // the bitmask form.
+        return tbSupportedLinkSpeedLabel(raw)
     }
 }
 
+/// Per-lane Gb/s for a `Current Link Speed` raw value, or nil for
+/// inactive / unknown. Useful when combining with `Current Link Width`
+/// to derive total link bandwidth. Encoding per WhatCable
+/// IOThunderboltLink.swift:32-39 (MIT, Copyright (c) 2026 Darryl Morley).
+nonisolated func tbPerLaneGbps(speed raw: UInt64) -> Int? {
+    switch raw {
+    case 0x2: return 40
+    case 0x4: return 20
+    case 0x8: return 10
+    default: return nil
+    }
+}
+
+/// Decode `Supported Link Speed` / `Target Link Speed` as a bitmask of
+/// the same single-value codes used by `Current Link Speed`. Bit `0x8` =
+/// TB3, `0x4` = TB4, `0x2` = TB5. A value of 14 = `0x8|0x4|0x2` means
+/// "supports all three" — the typical TB5 host advertisement. Per
+/// WhatCable IOThunderboltLink.swift:68-97 (MIT, Copyright (c) 2026
+/// Darryl Morley).
+nonisolated func tbSupportedLinkSpeedLabel(_ raw: UInt64) -> String {
+    if raw == 0 { return "—" }
+    var parts: [String] = []
+    if raw & 0x2 != 0 { parts.append("TB5") }
+    if raw & 0x4 != 0 { parts.append("TB4") }
+    if raw & 0x8 != 0 { parts.append("TB3") }
+    if parts.isEmpty { return "Raw 0x\(String(raw, radix: 16))" }
+    return parts.joined(separator: " · ")
+}
+
 /// Short link generation label used in sidebars and dense rows.
+///
+/// Same single-value encoding as `tbLinkSpeedLabel`. Mapping per
+/// WhatCable IOThunderboltLink.swift:13-65 (MIT, Copyright (c) 2026
+/// Darryl Morley).
 nonisolated func tbGenerationShortLabel(_ raw: UInt64) -> String {
     switch raw {
     case 0: return "Inactive"
-    case 1: return "TB3 Gen 1"
-    case 2: return "TB3 Gen 2"
-    case 4: return "TB4"
-    case 8: return "TB5"
-    case 14: return "TB5 async"
-    default: return "Speed \(raw)"
+    case 0x2: return "TB5"
+    case 0x4: return "TB4"
+    case 0x8: return "TB3"
+    default: return tbSupportedLinkSpeedLabel(raw)
     }
+}
+
+/// Decode `Current Link Width` as a bitmask. Per WhatCable
+/// IOThunderboltLink.swift:99-138 (MIT, Copyright (c) 2026 Darryl
+/// Morley):
+///   `0x1` = single lane
+///   `0x2` = dual lane (the symmetric case)
+///   `0x4` = asymmetric TX (3 TX / 1 RX) — TB5 only
+///   `0x8` = asymmetric RX (1 TX / 3 RX) — TB5 only
+///
+/// Note: this is NOT the same encoding as `Target Link Width`, which
+/// uses `0x1` = single, `0x3` = dual (no asymmetric values). See
+/// `tbTargetLinkWidthLabel`.
+nonisolated func tbCurrentLinkWidthLabel(_ raw: UInt64) -> String {
+    if raw == 0 { return "Inactive" }
+    let (tx, rx) = tbCurrentLinkLanes(raw)
+    if tx == rx { return "\(tx)× \(tx == 1 ? "lane" : "lanes")" }
+    return "\(tx) TX / \(rx) RX (asymmetric)"
+}
+
+/// Number of active TX and RX lanes for a `Current Link Width` value.
+nonisolated func tbCurrentLinkLanes(_ raw: UInt64) -> (tx: Int, rx: Int) {
+    let asymTx = raw & 0x4 != 0
+    let asymRx = raw & 0x8 != 0
+    let dual = raw & 0x2 != 0
+    let single = raw & 0x1 != 0
+    let tx: Int
+    let rx: Int
+    if asymTx { tx = 3; rx = 1 }
+    else if asymRx { tx = 1; rx = 3 }
+    else if dual { tx = 2; rx = 2 }
+    else if single { tx = 1; rx = 1 }
+    else { tx = 0; rx = 0 }
+    return (tx, rx)
+}
+
+/// Decode `Target Link Width`. Per WhatCable IOThunderboltLink.swift:140-156
+/// (MIT, Copyright (c) 2026 Darryl Morley) — the spec uses a DIFFERENT
+/// encoding here: `0x1` = single, `0x3` = dual. So a value of `0x3`
+/// here means "negotiated dual lane," NOT "asymmetric."
+nonisolated func tbTargetLinkWidthLabel(_ raw: UInt64) -> String {
+    switch raw {
+    case 0: return "—"
+    case 0x1: return "Single lane"
+    case 0x3: return "Dual lane"
+    default: return "Raw 0x\(String(raw, radix: 16))"
+    }
+}
+
+/// Combine `Current Link Speed` + `Current Link Width` into a single
+/// negotiated-rate label like `"Up to 40 Gb/s × 2 lanes (80 Gb/s)"`.
+/// Returns nil when either field is inactive. Useful for rendering the
+/// active TB lane adapter row in a compact form.
+nonisolated func tbCurrentLinkRateLabel(speed: UInt64, width: UInt64) -> String? {
+    guard speed != 0, width != 0 else { return nil }
+    guard let perLane = tbPerLaneGbps(speed: speed) else { return nil }
+    let (tx, rx) = tbCurrentLinkLanes(width)
+    let symmetric = (tx == rx)
+    if symmetric {
+        let total = perLane * tx
+        return "Up to \(perLane) Gb/s × \(tx) \(tx == 1 ? "lane" : "lanes") (\(total) Gb/s)"
+    }
+    let txTotal = perLane * tx
+    let rxTotal = perLane * rx
+    return "Up to \(perLane) Gb/s × asymmetric (\(txTotal) Gb/s TX, \(rxTotal) Gb/s RX)"
 }
 
 /// Format a "Link Bandwidth" raw value as a human bandwidth string. Field is
