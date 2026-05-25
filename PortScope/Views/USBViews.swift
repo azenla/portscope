@@ -103,6 +103,7 @@ struct USBHubView: View {
         let portCount = node.properties["Number of Ports"]?.asUInt
         let speed = node.properties["Device Speed"]?.asUInt
             ?? node.properties["kUSBCurrentSpeed"]?.asUInt
+        let bcdUSB = node.properties["bcdUSB"]?.asUInt
         let power = USBDevicePower(properties: node.properties)
         let attached = countDevices(under: node)
 
@@ -114,9 +115,9 @@ struct USBHubView: View {
                 Stat(label: "Model",
                      value: NodeFormatter.usbProductName(node.properties) ?? "—",
                      symbol: "shippingbox"),
-                Stat(label: "USB Spec",
-                     value: usbBcdVersion(node.properties["bcdUSB"]?.asUInt),
-                     symbol: "doc.text"),
+                Stat(label: "Capability",
+                     value: usbCapabilityLabel(bcdUSB: bcdUSB),
+                     symbol: "arrow.up.forward"),
                 Stat(label: "Negotiated Speed",
                      value: usbSpeedLabel(speed),
                      symbol: "antenna.radiowaves.left.and.right"),
@@ -134,8 +135,9 @@ struct USBHubView: View {
                      symbol: "macbook")
             ])
 
-            if let speedVal = speed {
-                USBLinkRateCard(speed: speedVal)
+            if speed != nil || bcdUSB != nil {
+                USBLinkRateCard(currentSpeed: speed, bcdUSB: bcdUSB,
+                                deviceClass: node.properties["bDeviceClass"]?.asUInt)
             }
             if power.hasData {
                 USBSinkPowerCard(power: power)
@@ -175,9 +177,9 @@ struct USBDeviceView: View {
                 Stat(label: "Product",
                      value: NodeFormatter.usbProductName(node.properties) ?? "—",
                      symbol: "shippingbox"),
-                Stat(label: "USB Spec",
-                     value: usbBcdVersion(bcdUSB),
-                     symbol: "doc.text"),
+                Stat(label: "Capability",
+                     value: usbCapabilityLabel(bcdUSB: bcdUSB),
+                     symbol: "arrow.up.forward"),
                 Stat(label: "Negotiated Speed",
                      value: usbSpeedLabel(speed),
                      symbol: "antenna.radiowaves.left.and.right"),
@@ -196,8 +198,9 @@ struct USBDeviceView: View {
                      isSecret: serial?.isEmpty == false)
             ])
 
-            if let speedVal = speed {
-                USBLinkRateCard(speed: speedVal)
+            if speed != nil || bcdUSB != nil {
+                USBLinkRateCard(currentSpeed: speed, bcdUSB: bcdUSB,
+                                deviceClass: cls)
             }
             if power.hasData {
                 USBSinkPowerCard(power: power)
@@ -379,40 +382,137 @@ struct USBSinkPowerCard: View {
 
 /// Visual indicator of the USB link rate for the negotiated speed.
 struct USBLinkRateCard: View {
-    let speed: UInt64
+    let currentSpeed: UInt64?
+    let bcdUSB: UInt64?
+    let deviceClass: UInt64?
+
+    private var negotiated: USBSpeed? {
+        currentSpeed.flatMap { USBSpeed(rawValue: Int($0)) }
+    }
+    private var capability: USBSpeed? {
+        usbCapabilityFromBCD(bcdUSB)
+    }
+    private var isDowngraded: Bool {
+        guard let n = negotiated, let c = capability else { return false }
+        return c.rateMbps > n.rateMbps
+    }
 
     var body: some View {
-        if let s = USBSpeed(rawValue: Int(speed)) {
-            SectionCard(title: "Link Rate", symbol: "speedometer") {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text(s.shortLabel).font(.callout.weight(.medium))
-                        Spacer()
-                        Text(s.rateLabel).font(.callout.bold().monospaced())
-                    }
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.quaternary).frame(height: 14)
-                            Capsule()
-                                .fill(s.accentColor)
-                                .frame(width: geo.size.width * rateFraction(s), height: 14)
-                        }
-                    }
-                    .frame(height: 14)
-                    HStack(spacing: 12) {
-                        ForEach(USBSpeed.allRates, id: \.label) { name, rate in
-                            HStack(spacing: 4) {
-                                Circle()
-                                    .fill(rate == s.rateMbps ? s.accentColor : Color.secondary.opacity(0.3))
-                                    .frame(width: 6, height: 6)
-                                Text(name).font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
+        SectionCard(title: "Link Rate", symbol: "speedometer") {
+            VStack(alignment: .leading, spacing: 12) {
+                headline
+                rateBar
+                legend
+                if isDowngraded {
+                    downgradeNote
                 }
-                .padding(.vertical, 4)
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    /// The negotiated line is the headline (it's what's happening right
+    /// now); the device's declared capability sits next to it so the user
+    /// can see the gap at a glance. Both labels use the long-form name
+    /// ("USB 3.0 SuperSpeed") so the card reads even without the bar.
+    private var headline: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Negotiated").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if let n = negotiated {
+                    Text(n.shortLabel).font(.callout.weight(.medium))
+                    Text(n.rateLabel)
+                        .font(.callout.bold().monospaced())
+                        .foregroundStyle(n.accentColor)
+                } else {
+                    Text("Unknown").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            if let c = capability {
+                HStack {
+                    Text("Capability").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("up to \(c.shortLabel)").font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text(c.rateLabel).font(.callout.monospaced())
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+    }
+
+    /// Single bar with two fills: the device's capability ceiling as a
+    /// translucent backdrop, the negotiated rate on top in the speed's
+    /// accent colour. When they match, only the accent fill is visible.
+    /// Log-scaled so 12 Mb/s is still readable against 20 Gb/s.
+    private var rateBar: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary).frame(height: 14)
+                if let c = capability {
+                    Capsule()
+                        .fill(c.accentColor.opacity(0.25))
+                        .frame(width: geo.size.width * rateFraction(c), height: 14)
+                }
+                if let n = negotiated {
+                    Capsule()
+                        .fill(n.accentColor)
+                        .frame(width: geo.size.width * rateFraction(n), height: 14)
+                }
+            }
+        }
+        .frame(height: 14)
+    }
+
+    private var legend: some View {
+        HStack(spacing: 12) {
+            ForEach(USBSpeed.allRates, id: \.label) { name, rate in
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(legendColor(forRate: rate))
+                        .frame(width: 6, height: 6)
+                    Text(name).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func legendColor(forRate rate: Double) -> Color {
+        if let n = negotiated, rate == n.rateMbps { return n.accentColor }
+        if let c = capability, rate == c.rateMbps { return c.accentColor.opacity(0.55) }
+        return Color.secondary.opacity(0.3)
+    }
+
+    /// Shown only when the device negotiated below its declared protocol's
+    /// ceiling. The note explains *why* this might be — cable, hub, port —
+    /// without panicking the user, and gives low-bandwidth HID a pass since
+    /// mice/keyboards run at Full Speed by design even on USB 2.0.
+    private var downgradeNote: some View {
+        let isHIDLike: Bool = {
+            guard let cls = deviceClass else { return false }
+            return cls == USBDeviceClass.hid.rawValue
+        }()
+        let isFullSpeed = negotiated?.rateMbps == USBSpeed.full.rateMbps
+        let lowBandwidthByDesign = isHIDLike && isFullSpeed
+
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: lowBandwidthByDesign
+                  ? "info.circle"
+                  : "exclamationmark.triangle.fill")
+                .foregroundStyle(lowBandwidthByDesign ? Color.secondary : Color.orange)
+                .font(.caption)
+                .frame(width: 14)
+            Text(lowBandwidthByDesign
+                 ? "HID peripherals (mice, keyboards) typically negotiate Full Speed even when their controller declares USB 2.0 — the device has no high-speed endpoints, so this isn't a downgrade in practice."
+                 : "This device negotiated below its declared capability. Common causes: a USB 2.0 cable, an intermediate USB 2.0 hub between the device and the host, or a host port limited to the lower rate.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .background((lowBandwidthByDesign ? Color.secondary : Color.orange).opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// Logarithmic fraction so 1.5 Mb/s isn't invisible against 20 Gb/s.
@@ -421,6 +521,14 @@ struct USBLinkRateCard: View {
         let logMax = log10(USBSpeed.superPlusBy2.rateMbps + 1)
         return min(max(log / logMax, 0.04), 1.0)
     }
+}
+
+/// Human-readable label for the device's declared protocol capability,
+/// used in the device/hub stat grid. Falls through to `"—"` so empty
+/// `bcdUSB` doesn't poison the row.
+nonisolated func usbCapabilityLabel(bcdUSB: UInt64?) -> String {
+    guard let cap = usbCapabilityFromBCD(bcdUSB) else { return "—" }
+    return "\(cap.shortLabel) · up to \(cap.rateLabel)"
 }
 
 private extension USBSpeed {
@@ -483,8 +591,11 @@ struct USBDeviceRow: View {
     var body: some View {
         let speed = node.properties["Device Speed"]?.asUInt
             ?? node.properties["kUSBCurrentSpeed"]?.asUInt
+        let bcdUSB = node.properties["bcdUSB"]?.asUInt
         let cls = node.properties["bDeviceClass"]?.asUInt
         let symbol = USBDeviceClass(rawValue: cls ?? 0)?.symbol ?? "cable.connector"
+        let downgraded = usbIsDowngraded(bcdUSB: bcdUSB, currentSpeed: speed)
+        let capability = usbCapabilityFromBCD(bcdUSB)
 
         Button {
             onNavigate(node.id)
@@ -500,6 +611,23 @@ struct USBDeviceRow: View {
                             Text(usbSpeedShortLabel(s))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                        }
+                        // Show the gap inline so the user doesn't have to
+                        // open the device to spot a downgraded link. The
+                        // pill uses a stable color (orange) since it's a
+                        // diagnostic hint, not a property of the device's
+                        // own speed class.
+                        if downgraded, let cap = capability {
+                            HStack(spacing: 2) {
+                                Image(systemName: "arrow.down.right")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text("vs \(cap.shortLabel)")
+                                    .font(.caption2)
+                            }
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Color.orange.opacity(0.12))
+                            .clipShape(Capsule())
                         }
                         if let cls {
                             Text(usbDeviceClassLabel(cls))

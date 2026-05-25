@@ -76,6 +76,41 @@ struct TBFormattersTests {
         #expect(usbBcdVersion(nil) == "—")
     }
 
+    @Test("usbCapabilityFromBCD maps protocol version to peak speed")
+    func capabilityCeiling() {
+        // Major bumps mean a real ceiling change; minor bumps within 3.x
+        // distinguish 3.0 / 3.1 / 3.2 because USB-IF uses different
+        // signalling rates per minor (5G → 10G → 20G).
+        #expect(usbCapabilityFromBCD(0x0200) == .high)
+        #expect(usbCapabilityFromBCD(0x0210) == .high)
+        #expect(usbCapabilityFromBCD(0x0300) == .super)
+        #expect(usbCapabilityFromBCD(0x0310) == .superPlus)
+        #expect(usbCapabilityFromBCD(0x0320) == .superPlusBy2)
+        #expect(usbCapabilityFromBCD(0x0110) == .full)
+        #expect(usbCapabilityFromBCD(0x0100) == .full)
+        #expect(usbCapabilityFromBCD(nil) == nil)
+        // Unknown major version doesn't get a guess — better to render
+        // nothing than mislabel the speed ceiling.
+        #expect(usbCapabilityFromBCD(0x0500) == nil)
+    }
+
+    @Test("usbIsDowngraded only fires when capability > negotiated")
+    func downgrade() {
+        // USB-3.2 device negotiated at SuperSpeed (5 G) — downgraded.
+        #expect(usbIsDowngraded(bcdUSB: 0x0320,
+                                currentSpeed: UInt64(USBSpeed.super.rawValue)) == true)
+        // USB-2.0 device negotiated at Full Speed — downgraded
+        // (HID-by-design is a hint the UI overlays, not a kernel signal).
+        #expect(usbIsDowngraded(bcdUSB: 0x0200,
+                                currentSpeed: UInt64(USBSpeed.full.rawValue)) == true)
+        // USB-3.0 device negotiated at SuperSpeed — match, no downgrade.
+        #expect(usbIsDowngraded(bcdUSB: 0x0300,
+                                currentSpeed: UInt64(USBSpeed.super.rawValue)) == false)
+        // No bcdUSB → can't decide → don't surface.
+        #expect(usbIsDowngraded(bcdUSB: nil,
+                                currentSpeed: UInt64(USBSpeed.high.rawValue)) == false)
+    }
+
     @Test("TBNode.formatValue prefixes hex for selected fields")
     func nodeFormatValue() {
         let s = TBNode.formatValue("Vendor ID", .unsigned(0x05ac))

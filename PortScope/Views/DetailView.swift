@@ -805,11 +805,23 @@ private func usbEndpointTitle(_ node: TBNode) -> String {
 private func usbEndpointSubtitle(_ node: TBNode) -> String? {
     let speed = node.properties["Device Speed"]?.asUInt
         ?? node.properties["kUSBCurrentSpeed"]?.asUInt
+    let bcdUSB = node.properties["bcdUSB"]?.asUInt
     let vendor = node.properties["kUSBVendorString"]?.asString
         ?? node.properties["USB Vendor Name"]?.asString
     var parts: [String] = []
     if let v = vendor, !v.isEmpty { parts.append(v) }
-    if let s = speed, s > 0 { parts.append(usbSpeedShortLabel(s)) }
+    // Show negotiated alongside capability so a USB-3 device downgraded
+    // to USB-2 doesn't read as "just a USB-2 device" — the user sees both
+    // numbers and the ↓ marker telling them where to look.
+    if let s = speed, s > 0 {
+        if let cap = usbCapabilityFromBCD(bcdUSB), cap.rateMbps > USBSpeed(rawValue: Int(s))?.rateMbps ?? .infinity {
+            parts.append("\(usbSpeedShortLabel(s)) ↓ \(cap.shortLabel)")
+        } else {
+            parts.append(usbSpeedShortLabel(s))
+        }
+    } else if let cap = usbCapabilityFromBCD(bcdUSB) {
+        parts.append(cap.shortLabel)
+    }
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 

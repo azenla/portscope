@@ -175,6 +175,50 @@ nonisolated func usbBcdVersion(_ raw: UInt64?) -> String {
     return "\(major).\(minor).\(sub)"
 }
 
+/// Map a device's declared `bcdUSB` protocol version to the peak speed that
+/// protocol version supports. Returns nil when the value isn't recognised.
+///
+/// This is the *capability ceiling* — what the device could in principle
+/// link up at — not what's currently negotiated. A USB-3.2 storage device
+/// (bcdUSB = 0x0320) capable of 20 Gb/s might still negotiate SuperSpeed
+/// (5 Gb/s) because the cable, hub, or host port doesn't support faster.
+/// Comparing this against `kUSBCurrentSpeed` is how PortScope tells the
+/// user "your USB-3 SSD is running at USB-3.0 speed even though it's a
+/// USB-3.2 drive" — easy to miss otherwise.
+///
+/// Caveat: many low-bandwidth USB-2 peripherals (mice, keyboards, billboard
+/// adapters) declare `bcdUSB = 0x0200` but only ever operate at Full Speed
+/// (12 Mb/s) by design — they have no high-speed endpoints. We surface that
+/// pair as-is and let the device-class symbol carry the "this is expected"
+/// signal; we don't try to silently hide it.
+nonisolated func usbCapabilityFromBCD(_ bcdUSB: UInt64?) -> USBSpeed? {
+    guard let v = bcdUSB else { return nil }
+    let major = (v >> 8) & 0xFF
+    let minor = (v >> 4) & 0xF
+    switch (major, minor) {
+    case (1, 0): return .full       // USB 1.0 — Low or Full; Full is the ceiling
+    case (1, _): return .full       // USB 1.1 — Full Speed (12 Mb/s)
+    case (2, _): return .high       // USB 2.0 — High Speed (480 Mb/s)
+    case (3, 0): return .super      // USB 3.0 — SuperSpeed (5 Gb/s)
+    case (3, 1): return .superPlus  // USB 3.1 — assume Gen 2 (10 Gb/s)
+    case (3, _): return .superPlusBy2 // USB 3.2 — SuperSpeed+ 2× (20 Gb/s)
+    default: return nil
+    }
+}
+
+/// True when the device is running below its declared protocol's peak
+/// rate. Used to flag the common "your USB-3 device is on a USB-2 cable"
+/// case in the UI. We deliberately keep the rule strict — `bcdUSB` vs
+/// `kUSBCurrentSpeed` only — and let the caller decide whether to render a
+/// soft "this is normal for HID" hint based on device class.
+nonisolated func usbIsDowngraded(bcdUSB: UInt64?, currentSpeed: UInt64?) -> Bool {
+    guard let cap = usbCapabilityFromBCD(bcdUSB),
+          let raw = currentSpeed,
+          let negotiated = USBSpeed(rawValue: Int(raw))
+    else { return false }
+    return cap.rateMbps > negotiated.rateMbps
+}
+
 /// Per-physical-port summary of the power the Mac is sourcing on a USB-C
 /// receptacle. Pulled together from two IOKit sources:
 ///
