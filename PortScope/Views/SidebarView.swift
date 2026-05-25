@@ -89,13 +89,34 @@ struct SidebarView: View {
         // tunnel, rather than forcing the user to cross-reference the USB
         // section. Built once per render from `ports`.
         let tbProvidedUSB = tbProvidedUSBMap(ports: ports)
+        // Map from a `PhysicalPortSelector` ID to the TB-tunneled PCIe
+        // endpoint devices behind that port. The mapping uses the
+        // registry-allocation-order pairing between TB controllers and
+        // "Thunderbolt PCIe Slot N" root bridges (see
+        // `tbControllerPCIeSlotMap`). On most docks today this map is
+        // empty — Apple Silicon docks typically expose storage over USB,
+        // not real PCIe — but when an eGPU / NVMe / capture card *is*
+        // tunneled, it shows up under the dock here.
+        let tbPCIeEndpointsByPort: [TBNodeID: [PCINode]] = {
+            let slots = tbControllerPCIeSlotMap(controllers: vm.tbSnapshot.controllers,
+                                                pcieRoots: vm.snapshot.pcie.roots)
+            var out: [TBNodeID: [PCINode]] = [:]
+            for p in ports {
+                guard let slot = slots[p.controller.id] else { continue }
+                let endpoints = pcieEndpointDescendants(of: slot)
+                guard !endpoints.isEmpty else { continue }
+                out[PhysicalPortSelector.id(for: p)] = endpoints
+            }
+            return out
+        }()
 
         List(selection: $vm.selection) {
             physicalDeviceContent(ports: ports,
                                   hw: hw,
                                   batteryNode: batteryNode,
                                   builtInDisplay: builtInDisplay,
-                                  flattenHubs: !showIntermediateHubs)
+                                  flattenHubs: !showIntermediateHubs,
+                                  pcieByPortID: tbPCIeEndpointsByPort)
 
             if showBuses {
                 collapsibleSection("Thunderbolt", icon: "bolt.horizontal.circle") {
@@ -181,7 +202,8 @@ struct SidebarView: View {
                                        hw: InternalHardwareSnapshot,
                                        batteryNode: TBNode?,
                                        builtInDisplay: DisplayInfo?,
-                                       flattenHubs: Bool) -> some View {
+                                       flattenHubs: Bool,
+                                       pcieByPortID: [TBNodeID: [PCINode]]) -> some View {
         if ports.isEmpty && hw.magsafe == nil && batteryNode == nil && builtInDisplay == nil {
             Text(vm.isScanning ? "Scanning…" : "No Thunderbolt controllers")
                 .foregroundStyle(.secondary)
@@ -194,7 +216,8 @@ struct SidebarView: View {
                              allDisplays: vm.snapshot.displays.displays,
                              expanded: $expanded,
                              collapsedSubgroups: $collapsedSubgroups,
-                             flattenHubs: flattenHubs)
+                             flattenHubs: flattenHubs,
+                             pcieByPortID: pcieByPortID)
         }
     }
 
@@ -212,6 +235,13 @@ struct SidebarView: View {
                 || !p.usbDeviceRoots.isEmpty
                 || !outputs.isEmpty {
                 toOpen.append(pid)
+            }
+            // When a TB device hosts USB endpoints (the common dock case),
+            // the device row is the disclosure that contains the USB tree —
+            // auto-open it so the user sees what's behind the dock on first
+            // render. Daisy-chained sub-devices stay collapsed.
+            if let device = p.connectedDevice, !p.usbDeviceRoots.isEmpty {
+                toOpen.append(device.id)
             }
             // Top-level USB hubs get their immediate children visible.
             for root in p.usbDeviceRoots { toOpen.append(root.id) }
@@ -427,6 +457,11 @@ private struct PortsByConnector: View {
     /// it doesn't collide with subgroup keys used by other sections.
     @Binding var collapsedSubgroups: Set<String>
     let flattenHubs: Bool
+    /// TB-tunneled PCIe endpoints keyed by `PhysicalPortSelector` ID. Each
+    /// list is the set of real PCIe endpoint devices reached through that
+    /// physical port — fed forward to `PortBranch` → `DeviceBranch` so
+    /// the dock row nests them alongside the USB device tree.
+    let pcieByPortID: [TBNodeID: [PCINode]]
 
     var body: some View {
         let powerPorts = ports.filter { $0.connector == .acPower }
@@ -447,7 +482,8 @@ private struct PortsByConnector: View {
                     PortBranch(port: port,
                                displayOutputs: displayOutputsFor(port),
                                expanded: $expanded,
-                               flattenHubs: flattenHubs)
+                               flattenHubs: flattenHubs,
+                               pcieEndpoints: pcieByPortID[PhysicalPortSelector.id(for: port)] ?? [])
                 }
             }
         }
@@ -459,7 +495,8 @@ private struct PortsByConnector: View {
                     PortBranch(port: port,
                                displayOutputs: displayOutputsFor(port),
                                expanded: $expanded,
-                               flattenHubs: flattenHubs)
+                               flattenHubs: flattenHubs,
+                               pcieEndpoints: pcieByPortID[PhysicalPortSelector.id(for: port)] ?? [])
                 }
             }
         }
@@ -609,6 +646,11 @@ private struct PortBranch: View {
     let displayOutputs: [PortDisplayOutput]
     @Binding var expanded: Set<TBNodeID>
     let flattenHubs: Bool
+    /// TB-tunneled PCIe endpoint devices attributed to this port. Usually
+    /// empty (Apple Silicon docks expose storage over USB, not PCIe), but
+    /// when an eGPU / TB SSD / capture card *is* tunneled it shows up here
+    /// and gets nested under the TB device row alongside the USB tree.
+    var pcieEndpoints: [PCINode] = []
 
     var body: some View {
         let selectionID = PhysicalPortSelector.id(for: port)
@@ -618,7 +660,7 @@ private struct PortBranch: View {
         // dock internals don't appear as nested rows under the port.
         let roots = flattenedUSBRoots(port.usbDeviceRoots, flattenHubs: flattenHubs)
 
-        if device == nil && roots.isEmpty && displayOutputs.isEmpty {
+        if device == nil && roots.isEmpty && displayOutputs.isEmpty && pcieEndpoints.isEmpty {
             PortRow(port: port).tag(selectionID)
         } else {
             DisclosureGroup(
@@ -631,16 +673,38 @@ private struct PortBranch: View {
                 )
             ) {
                 if let device {
-                    DeviceBranch(device: device, expanded: $expanded)
+                    // When a TB device is attached the dock owns the
+                    // tunneled USB endpoints — surface them as children of
+                    // the device row, not as siblings of it. Hubs are still
+                    // flattened away when the toggle is off, so the user
+                    // sees the actual peripherals, not a chain of dock-
+                    // internal hub wrappers. PCIe endpoints follow the same
+                    // pattern for the rare case where a TB device tunnels
+                    // real PCIe storage (eGPU enclosures, TB SSDs).
+                    DeviceBranch(device: device,
+                                 expanded: $expanded,
+                                 flattenHubs: flattenHubs,
+                                 usbRoots: roots,
+                                 pcieEndpoints: pcieEndpoints)
+                } else {
+                    // No TB device on this port — render USB roots and
+                    // displays directly under the port row (USB-only dock,
+                    // direct-attach monitor, etc.). PCIe-without-TB-device
+                    // shouldn't happen on a USB-C port, but render
+                    // defensively if it does.
+                    ForEach(roots, id: \.id) { dev in
+                        USBBranch(node: dev, depth: 0, expanded: $expanded, flattenHubs: flattenHubs)
+                    }
+                    ForEach(pcieEndpoints) { ep in
+                        PCIBranch(node: ep, expanded: $expanded)
+                    }
                 }
-                // Render the real USB bus hierarchy: top-level hubs become
-                // disclosure rows that expand into their downstream devices,
-                // matching what `ioreg -c IOUSBHostDevice` shows. Pass depth
-                // 0 so the top-level hubs auto-expand to reveal what's
-                // immediately under them; nested hubs stay collapsed.
-                ForEach(roots, id: \.id) { dev in
-                    USBBranch(node: dev, depth: 0, expanded: $expanded, flattenHubs: flattenHubs)
-                }
+                // Display outputs hang off the port itself even when a TB
+                // device is present — each output is its own DP/HDMI
+                // function adapter on the dock, and rendering the displays
+                // inside the device row would bury them under the USB
+                // device list (which is usually long). Keeping them as
+                // port-level siblings preserves the existing affordance.
                 ForEach(displayOutputs) { output in
                     DisplayOutputBranch(output: output, expanded: $expanded)
                 }
@@ -725,9 +789,24 @@ private struct DisplayOutputRow: View {
 private struct DeviceBranch: View {
     let device: ConnectedDevice
     @Binding var expanded: Set<TBNodeID>
+    let flattenHubs: Bool
+    /// USB device roots tunneled through this TB device's TB controller.
+    /// Only the top-level device in a daisy chain is populated — the kernel
+    /// doesn't tell us which sub-dock in a chain is hosting a given USB
+    /// endpoint (they all enumerate under one host xHCI), so attributing
+    /// them to the first dock is the best we can do without speculation.
+    /// Daisy-chained sub-`DeviceBranch`es receive an empty list.
+    var usbRoots: [TBNode] = []
+    /// TB-tunneled PCIe endpoints attributed to this device, surfaced
+    /// alongside the USB tree. Empty for daisy-chained sub-devices for the
+    /// same reason as `usbRoots`.
+    var pcieEndpoints: [PCINode] = []
 
     var body: some View {
-        if device.daisyChained.isEmpty {
+        let hasChildren = !device.daisyChained.isEmpty
+            || !usbRoots.isEmpty
+            || !pcieEndpoints.isEmpty
+        if !hasChildren {
             DeviceRow(device: device).tag(device.id)
         } else {
             DisclosureGroup(
@@ -740,7 +819,18 @@ private struct DeviceBranch: View {
                 )
             ) {
                 ForEach(device.daisyChained, id: \.id) { child in
-                    DeviceBranch(device: child, expanded: $expanded)
+                    DeviceBranch(device: child,
+                                 expanded: $expanded,
+                                 flattenHubs: flattenHubs)
+                }
+                ForEach(usbRoots, id: \.id) { dev in
+                    USBBranch(node: dev,
+                              depth: 0,
+                              expanded: $expanded,
+                              flattenHubs: flattenHubs)
+                }
+                ForEach(pcieEndpoints) { ep in
+                    PCIBranch(node: ep, expanded: $expanded)
                 }
             } label: {
                 DeviceRow(device: device).tag(device.id)
@@ -810,6 +900,47 @@ private func tbProvidedUSBMap(ports: [PhysicalPort]) -> [TBNodeID: [TBNode]] {
         for adapter in activeHostUSBAdapters(under: p.controller) {
             out[adapter.id] = p.usbDeviceRoots
         }
+    }
+    return out
+}
+
+/// For each TB controller, find the "Thunderbolt PCIe Slot N" root that's
+/// allocated alongside it in the IOKit registry. Apple Silicon allocates
+/// the TB controller and its corresponding TB PCIe downstream root port as
+/// adjacent IORegistry entries — the slot's registry ID is the closest one
+/// *greater than* the TB controller's. This is the only stable association
+/// the kernel publishes; there's no explicit cross-reference between the
+/// two services, so we lean on the allocation order. Returns a map keyed
+/// by the TB controller's `TBNodeID`.
+private func tbControllerPCIeSlotMap(controllers: [TBNode],
+                                     pcieRoots: [PCINode]) -> [TBNodeID: PCINode] {
+    let slots = pcieRoots
+        .filter { $0.slotName?.contains("Slot-") == true }
+        .sorted { $0.id.raw < $1.id.raw }
+    let ctrls = controllers.sorted { $0.id.raw < $1.id.raw }
+    var out: [TBNodeID: PCINode] = [:]
+    for c in ctrls {
+        // First TB PCIe slot whose registry id is greater than this
+        // controller's. On the user's MBP that pairs each controller with
+        // the slot immediately after it (Ctrl 0xD39 → Slot 0xD76, etc.).
+        if let slot = slots.first(where: { $0.id.raw > c.id.raw }) {
+            out[c.id] = slot
+        }
+    }
+    return out
+}
+
+/// Collect every endpoint device (kind `.endpoint`) under a PCIe subtree.
+/// Used to surface the TB-tunneled NVMe / ethernet / capture cards on a
+/// dock without surfacing the chain of dock-internal bridges that wrap
+/// them — bridges are kernel-side topology, endpoints are the device the
+/// user cares about.
+private func pcieEndpointDescendants(of root: PCINode) -> [PCINode] {
+    var out: [PCINode] = []
+    var stack = [root]
+    while let n = stack.popLast() {
+        if n.kind == .endpoint { out.append(n) }
+        stack.append(contentsOf: n.children)
     }
     return out
 }
