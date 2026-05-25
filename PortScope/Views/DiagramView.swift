@@ -326,35 +326,51 @@ private struct LinkSegment: View {
                 }
                 if s.hasLink {
                     MiniBandwidthBar(summary: s)
-                    HStack(spacing: 10) {
-                        // Reserved is the only number that reflects actual
-                        // commitment; surface it as the headline.
-                        HStack(spacing: 4) {
-                            Circle().fill(Color.orange).frame(width: 6, height: 6)
-                            Text("Reserved \(tbBandwidthLabel(s.reserved))")
-                                .font(.caption2.monospacedDigit().weight(.medium))
-                        }
-                        Text("(\(String(format: "%.0f%%", s.reservedFraction * 100)) of link)")
-                            .font(.caption2.monospacedDigit())
+                    // Two short rows instead of one wide one. At 300 px
+                    // column width the previous single-row layout pushed
+                    // "Reserved 31 Gb/s" + "(39% of link)" + the planning
+                    // info onto a wrapping line where Gb/s units broke off
+                    // mid-cell and the overbook delta got truncated to
+                    // "by 1…". Splitting keeps each line readable and
+                    // avoids any clipping math at the column boundary.
+                    HStack(spacing: 6) {
+                        Circle().fill(Color.orange).frame(width: 6, height: 6)
+                        Text("Reserved")
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
+                        Text(tbBandwidthLabel(s.reserved))
+                            .font(.caption2.monospacedDigit().weight(.medium))
                         Spacer()
-                        if s.planExceedsCapacity {
-                            HStack(spacing: 4) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.red)
-                                Text("Plan \(tbBandwidthLabel(s.max)) overbooks by \(tbBandwidthLabel(s.max - s.linkBandwidth))")
-                                    .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(.red)
-                            }
-                            .help("TB tunnels are budgeted on peak, but the scheduler relies on them not peaking at once. This is informational, not an error.")
-                        } else {
-                            HStack(spacing: 4) {
-                                Circle().fill(Color.yellow.opacity(0.55)).frame(width: 6, height: 6)
-                                Text("Max planned \(tbBandwidthLabel(s.max))")
-                                    .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
+                        Text("\(String(format: "%.0f%%", s.reservedFraction * 100)) of link")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                    if s.planExceedsCapacity {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                            Text("Plan \(tbBandwidthLabel(s.max))")
+                                .font(.caption2.monospacedDigit().weight(.medium))
+                                .foregroundStyle(.red)
+                            Text("overbooks by \(tbBandwidthLabel(s.max - s.linkBandwidth))")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.red.opacity(0.85))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                            Spacer()
+                        }
+                        .help("TB tunnels are budgeted on peak, but the scheduler relies on them not peaking at once. This is informational, not an error.")
+                    } else {
+                        HStack(spacing: 6) {
+                            Circle().fill(Color.yellow.opacity(0.55)).frame(width: 6, height: 6)
+                            Text("Max planned")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(tbBandwidthLabel(s.max))
+                                .font(.caption2.monospacedDigit().weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Spacer()
                         }
                     }
                 }
@@ -441,7 +457,14 @@ private struct ConnectedDeviceCard: View {
                     .foregroundStyle(.purple)
                 Text(device.title)
                     .font(.subheadline.bold())
-                    .lineLimit(2)
+                    // Long marketing names ("Anker Prime Docking Station
+                    // (14-in-1, 8K, Thunderbolt 5)") need more than two
+                    // lines at 300 px column width — capping at 2 ate the
+                    // trailing " Thunderbolt 5)" portion. Let the title
+                    // wrap freely and fix the row's vertical sizing so the
+                    // layout flexes around it.
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
             }
             // The kernel's `Thunderbolt Version` encoding ("Spec 4.0") is
             // misleading on TB5 hardware (Apple maps the high nibble loosely),
