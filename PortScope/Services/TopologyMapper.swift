@@ -762,13 +762,66 @@ nonisolated enum TopologyMapper {
         return out
     }
 
+    /// Derive the physical USB-C port number for a TB-tunneled USB
+    /// controller (`usb-drd*`). Two strategies, in order of preference:
+    ///
+    ///   1. Walk the controller's `XHCIPort` wrapper children and read
+    ///      the `UsbIOPort` property — a registry path ending in
+    ///      `Port-USB-C@N`. The trailing `@N` is the HPM port number
+    ///      the chassis catalogue keys against. This is robust against
+    ///      reorganisations of the IOService plane and matches the
+    ///      approach in WhatCable
+    ///      (Sources/WhatCableDarwinBackend/USBWatcher.swift:151-217,
+    ///      MIT, Copyright (c) 2026 Darryl Morley).
+    ///
+    ///   2. Fall back to `locationID >> 24` plus one — works on every
+    ///      Apple Silicon host observed (drd0 → Port 1, drd1 → Port 2, …)
+    ///      but is purely structural; one wrong allocation order on
+    ///      future hardware would silently misattribute every device.
     private static func physicalPortNumber(forUSBController controller: TBNode) -> Int? {
         let nameMatch = controller.properties["IONameMatch"]?.asString
             ?? controller.properties["IONameMatched"]?.asString
             ?? ""
         guard nameMatch.hasPrefix("usb-drd") else { return nil }
+
+        // Strategy 1: pull the port number out of a child wrapper's
+        // `UsbIOPort` path. Wrappers are `.other`-kind kexts with a
+        // class name containing "XHCIPort" (e.g.
+        // `AppleUSB20XHCIARMPort`). Both the SS and HS wrappers point
+        // at the same `Port-USB-C@N`, so the first match suffices.
+        for wrapper in controller.children where wrapper.kind == .other {
+            guard wrapper.className.contains("XHCIPort") else { continue }
+            let path = wrapper.properties["UsbIOPort"]?.asString
+                ?? unwrapDataAsString(wrapper.properties["UsbIOPort"])
+            if let path, let n = portNumberFromUsbIOPortPath(path) {
+                return n
+            }
+        }
+
+        // Strategy 2: locationID-byte fallback.
         guard let loc = controller.properties["locationID"]?.asUInt else { return nil }
         return Int(loc >> 24) + 1
+    }
+
+    /// Parse a `UsbIOPort` registry path. Apple Silicon publishes paths
+    /// like `IOService:/.../Port-USB-C@1` (USB-C) or
+    /// `IOService:/.../Port-USB-A@1` (USB-A). The trailing `@N` is the
+    /// HPM port number. Returns nil for unrecognised paths so callers
+    /// can fall through to their next strategy.
+    private static func portNumberFromUsbIOPortPath(_ path: String) -> Int? {
+        guard let last = path.split(separator: "/").last else { return nil }
+        guard let atIdx = last.lastIndex(of: "@") else { return nil }
+        let nSubstring = last[last.index(after: atIdx)...]
+        return Int(nSubstring)
+    }
+
+    /// Some kernels publish `UsbIOPort` as a NUL-trimmed `Data` blob
+    /// rather than a CFString. Try both — WhatCable
+    /// USBWatcher.swift:202-211.
+    private static func unwrapDataAsString(_ value: IORegValue?) -> String? {
+        guard case let .data(d) = value else { return nil }
+        let trimmed = d.prefix(while: { $0 != 0 })
+        return String(data: Data(trimmed), encoding: .utf8)
     }
 
     /// Walk a USB controller's full subtree (including `.other` port wrappers)

@@ -292,6 +292,36 @@ nonisolated struct PortAccessoryInfo: Identifiable, Hashable {
     let cableProductID: UInt64?
     /// Cable manufacturer string (often the e-marker silicon vendor).
     let cableManufacturer: String?
+    /// Structured decode of the cable's near-end e-marker (SOP'), when one
+    /// is present. Carries the cable speed class, current rating, max
+    /// VBUS, EPR capability, active vs passive, optical vs copper,
+    /// retimer vs redriver, and any spec-violation tells. Decoded from
+    /// the `Metadata.VDOs` array the kernel publishes on the
+    /// `IOPortTransportComponentCCUSBPDSOP*` services. See
+    /// `USBPDVDOModels.swift` (decoder adapted from WhatCable, MIT,
+    /// Copyright (c) 2026 Darryl Morley).
+    let cableEmarker: CableEmarkerInfo?
+    /// Negotiated USB 3 generation read from the per-port
+    /// `IOPortTransportStateUSB3` service, when one exists. Provides a
+    /// port-side view distinct from device-side `bcdUSB` /
+    /// `kUSBCurrentSpeed`. Decoder adapted from WhatCable
+    /// (Sources/WhatCableCore/USB3Transport.swift, MIT, Copyright (c)
+    /// 2026 Darryl Morley).
+    let usb3State: USB3TransportState?
+    /// Thunderbolt controller's own cable assessment, read from
+    /// `IOPortTransportStateCIO`. Independent of, and sometimes
+    /// contradicts, the cable e-marker. Decoder adapted from WhatCable
+    /// (Sources/WhatCableCore/CIOCableCapability.swift, MIT, Copyright
+    /// (c) 2026 Darryl Morley).
+    let cioState: CIOCableState?
+    /// Per-lane PHY state — `AppleT*TypeCPhy` services publish per-port
+    /// dictionaries with each lane's transport assignment (CIO / DP /
+    /// USB3 / idle). Authoritative source for "this port is running
+    /// CIO on 2 lanes and DP on the other 2," which the HPM
+    /// `TransportsActive` array can't disambiguate. Decoder adapted from
+    /// WhatCable (Sources/WhatCableCore/AppleTypeCPhy.swift, MIT,
+    /// Copyright (c) 2026 Darryl Morley).
+    let phyState: PhyState?
     let usbPD: USBPDProfile?
     /// Raw IORegistry properties of the `AppleHPMInterfaceType10` entry, kept
     /// for the Developer details disclosure.

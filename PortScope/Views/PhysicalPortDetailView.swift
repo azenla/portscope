@@ -30,6 +30,18 @@ struct PhysicalPortDetailView: View {
                     transportsCard
                     connectorCableCard
                 }
+                if let emarker = port.accessory?.cableEmarker {
+                    cableEmarkerCard(emarker)
+                }
+                if let cio = port.accessory?.cioState {
+                    cioStateCard(cio)
+                }
+                if let phy = port.accessory?.phyState, phy.liveLaneCount > 0 || !phy.dpLinks.isEmpty || !phy.dpTunnels.isEmpty {
+                    phyStateCard(phy)
+                }
+                if let usb3 = port.accessory?.usb3State, usb3.hasLiveLink {
+                    usb3StateCard(usb3)
+                }
                 if let pd = port.accessory?.usbPD {
                     powerInputCard(pd: pd)
                 }
@@ -312,6 +324,276 @@ struct PhysicalPortDetailView: View {
         if acc.activeCable { return "Active (powered e-marker)" }
         if acc.connectionActive { return "Passive" }
         return "—"
+    }
+
+    // MARK: - Cable E-Marker (decoded VDOs)
+
+    /// Render the structured e-marker decode. The raw VDO fields here are
+    /// invisible in the existing "Cable E-Marker" InfoRow (which shows the
+    /// silicon-vendor VID/PID line only). Decoder per WhatCable
+    /// (Sources/WhatCableCore/USBPDVDO.swift, MIT, Copyright (c) 2026
+    /// Darryl Morley).
+    private func cableEmarkerCard(_ e: CableEmarkerInfo) -> some View {
+        let vdo = e.cableVDO
+        var rows: [InfoRow] = [
+            InfoRow(label: "Cable Class",
+                    value: vdo.speed.label,
+                    symbol: "speedometer"),
+            InfoRow(label: "Current Rating",
+                    value: vdo.current.label,
+                    symbol: "bolt"),
+            InfoRow(label: "Max Voltage",
+                    value: "\(vdo.maxVolts) V",
+                    symbol: "bolt.circle"),
+            InfoRow(label: "Max Power",
+                    value: "~\(vdo.maxWatts) W (at \(vdo.maxVolts) V × \(vdo.current.maxAmps == 5 ? "5 A" : "3 A"))",
+                    symbol: "bolt.fill"),
+            InfoRow(label: "Construction",
+                    value: e.productType.label,
+                    symbol: e.productType == .activeCable ? "cpu" : "cable.connector.horizontal"),
+            InfoRow(label: "VBUS Through Cable",
+                    value: vdo.vbusThroughCable ? "Yes" : "No",
+                    symbol: vdo.vbusThroughCable ? "checkmark.circle" : "circle.slash"),
+            InfoRow(label: "EPR Capable",
+                    value: vdo.eprCapable ? "Yes (≥48 V)" : "No",
+                    symbol: vdo.eprCapable ? "checkmark.seal" : "seal.slash")
+        ]
+        if let ns = vdo.latencyNanoseconds {
+            rows.append(InfoRow(label: "Approx Length / Latency",
+                                value: latencyLabel(nanoseconds: ns,
+                                                    cableType: vdo.cableType),
+                                symbol: "ruler"))
+        }
+        if let a = e.activeVDO2 {
+            rows.append(contentsOf: [
+                InfoRow(label: "Active Element",
+                        value: a.activeElement.label,
+                        symbol: a.activeElement == .retimer ? "memorychip.fill" : "memorychip"),
+                InfoRow(label: "Physical Medium",
+                        value: a.physicalConnection.label,
+                        symbol: a.physicalConnection == .optical ? "fiberchannel" : "cable.connector"),
+                InfoRow(label: "Protocols Supported",
+                        value: activeProtocolList(a),
+                        symbol: "checklist"),
+                InfoRow(label: "Lanes",
+                        value: a.twoLanesSupported ? "2 lanes" : "1 lane",
+                        symbol: "rectangle.split.2x1")
+            ])
+            if a.maxOperatingTempC > 0 {
+                rows.append(InfoRow(label: "Max Operating Temp",
+                                    value: "\(a.maxOperatingTempC) °C",
+                                    symbol: "thermometer.medium"))
+            }
+            if a.shutdownTempC > 0 {
+                rows.append(InfoRow(label: "Thermal Shutdown",
+                                    value: "\(a.shutdownTempC) °C",
+                                    symbol: "thermometer.high"))
+            }
+        }
+        if let c = e.certStat, c.isPresent {
+            rows.append(InfoRow(label: "USB-IF Certified",
+                                value: String(format: "XID %u", c.xid),
+                                symbol: "checkmark.seal.fill",
+                                tint: .green))
+        }
+        rows.append(InfoRow(label: "Cable Silicon VID",
+                            value: String(format: "0x%04X", e.vendorID),
+                            symbol: "number"))
+
+        return SectionCard(title: "Cable E-Marker (decoded)", symbol: "barcode.viewfinder") {
+            VStack(alignment: .leading, spacing: 10) {
+                InfoRowsView(rows: rows)
+                if !vdo.decodeWarnings.isEmpty {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Spec-violation tells")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.orange)
+                        ForEach(Array(vdo.decodeWarnings.enumerated()), id: \.offset) { _, w in
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                    .font(.caption2)
+                                Text(w.label)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                Text("Decoded from IOPortTransportComponentCCUSBPDSOP\(e.endpoint == .sopDoublePrime ? "pp" : "p") Metadata.VDOs. The cable silicon answers Discover Identity; software cannot verify what's physically inside the jacket.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func activeProtocolList(_ a: PDActiveCableVDO2) -> String {
+        var parts: [String] = []
+        if a.usb4Supported { parts.append("USB4") }
+        if a.usb32Supported { parts.append("USB 3.2") }
+        if a.usb2Supported { parts.append("USB 2.0") }
+        if a.usb4AsymmetricMode { parts.append("Asymmetric") }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+    }
+
+    // MARK: - PHY per-lane state
+
+    /// Render the per-lane PHY assignment ("Lane 0: CIO; Lane 1: CIO") plus
+    /// active DP links. This is the authoritative source for "how many
+    /// lanes is DP using vs how many is CIO" on a mixed-mode USB-C link.
+    /// `HPM.TransportsActive` only tells you DP and CIO are both running,
+    /// not how each splits across the 2 lanes. Decoder per WhatCable
+    /// (Sources/WhatCableCore/AppleTypeCPhy.swift, MIT, Copyright (c)
+    /// 2026 Darryl Morley).
+    private func phyStateCard(_ phy: PhyState) -> some View {
+        SectionCard(title: "PHY Lanes", symbol: "rectangle.split.2x1.fill") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(phy.lanes, id: \.index) { lane in
+                    HStack {
+                        Image(systemName: lane.isLive ? "circle.fill" : "circle.dashed")
+                            .foregroundStyle(lane.isLive ? .green : .secondary)
+                            .font(.caption)
+                        Text("Lane \(lane.index)").foregroundStyle(.secondary)
+                        Spacer()
+                        if lane.transport.isEmpty {
+                            Text("Idle").foregroundStyle(.tertiary).monospaced()
+                        } else {
+                            Text(lane.transport).monospaced()
+                            if !lane.client.isEmpty {
+                                Text("→ \(lane.client)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    .font(.callout)
+                }
+                if let usb2 = phy.usb2Transport, !usb2.isEmpty {
+                    Divider()
+                    HStack {
+                        Image(systemName: "cable.connector").font(.caption).foregroundStyle(.secondary)
+                        Text("USB 2.0").foregroundStyle(.secondary)
+                        Spacer()
+                        Text(usb2).monospaced()
+                        if let client = phy.usb2Client, !client.isEmpty {
+                            Text("→ \(client)").font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .font(.callout)
+                }
+                if !phy.dpLinks.isEmpty {
+                    Divider()
+                    Text("DisplayPort Pixel Clocks")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(phy.dpLinks.enumerated()), id: \.offset) { idx, link in
+                        HStack {
+                            Text("Stream \(idx + 1)").foregroundStyle(.secondary)
+                            Spacer()
+                            Text(link.linkRate).monospaced()
+                        }
+                        .font(.caption)
+                    }
+                }
+                if !phy.dpTunnels.isEmpty {
+                    Divider()
+                    Text("DisplayPort Tunnels (DP over Thunderbolt)")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(phy.dpTunnels.enumerated()), id: \.offset) { idx, link in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Tunnel \(idx + 1)").foregroundStyle(.secondary)
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(link.linkRate).monospaced()
+                                if let client = link.client {
+                                    Text(client).font(.caption2).foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                        .font(.caption)
+                    }
+                }
+                Text("Read from AppleT*TypeCPhy. Per-lane Transport tells you whether the lane is carrying CIO (Thunderbolt / USB4), DisplayPort, or USB 3 — the HPM controller only publishes the protocol set, not the per-lane split.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    // MARK: - CIO + USB3 transport state
+
+    /// Render the Thunderbolt controller's own cable assessment. This is
+    /// a corroborating signal next to the e-marker: when CIO and the
+    /// e-marker disagree, CIO is the active-link source of truth
+    /// (cf. WhatCable CIOCableCapability.swift:8-19, MIT, Copyright (c)
+    /// 2026 Darryl Morley).
+    private func cioStateCard(_ c: CIOCableState) -> some View {
+        var rows: [InfoRow] = []
+        if let label = c.cableSpeedLabel {
+            rows.append(InfoRow(label: "Cable Speed (per TB controller)",
+                                value: label,
+                                symbol: "bolt.horizontal.circle.fill"))
+        } else if let raw = c.cableSpeed {
+            rows.append(InfoRow(label: "Cable Speed (raw)",
+                                value: "\(raw)",
+                                symbol: "questionmark.circle"))
+        }
+        if let asym = c.asymmetricModeSupported {
+            rows.append(InfoRow(label: "Asymmetric Capability",
+                                value: asym ? "Port advertises asymmetric capability" : "Not advertised",
+                                symbol: "arrow.left.arrow.right"))
+        }
+        if let ltm = c.linkTrainingMode {
+            rows.append(InfoRow(label: "Link Training Mode",
+                                value: "\(ltm)",
+                                symbol: "waveform.path"))
+        }
+        return SectionCard(title: "Cable Assessment (Thunderbolt controller)",
+                            symbol: "bolt.horizontal.circle") {
+            VStack(alignment: .leading, spacing: 8) {
+                InfoRowsView(rows: rows)
+                Text("Read from IOPortTransportStateCIO. The TB controller measures the cable independently of its USB-PD e-marker — useful when an active cable mis-reports as passive in its e-marker.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// Render the per-port USB 3 signaling state.
+    private func usb3StateCard(_ s: USB3TransportState) -> some View {
+        let rows: [InfoRow] = [
+            InfoRow(label: "Negotiated Generation",
+                    value: s.speedLabel ?? "Unknown",
+                    symbol: "speedometer"),
+            InfoRow(label: "Data Role",
+                    value: s.dataRole ?? "—",
+                    symbol: "arrow.left.arrow.right.circle")
+        ]
+        return SectionCard(title: "USB 3 Link", symbol: "cable.connector.horizontal") {
+            VStack(alignment: .leading, spacing: 8) {
+                InfoRowsView(rows: rows)
+                Text("Read from IOPortTransportStateUSB3. This is the port-side reading of negotiated SuperSpeed generation, separate from each device's bcdUSB / kUSBCurrentSpeed.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// Translate the cable latency reading into a friendly length estimate.
+    /// Copper cables tick about 10 ns / metre per the USB-PD spec; active
+    /// optical cables encode discrete 1000 ns / 2000 ns lengths.
+    private func latencyLabel(nanoseconds: Int, cableType: PDCableType) -> String {
+        if cableType == .active && (nanoseconds == 1000 || nanoseconds == 2000) {
+            return "\(nanoseconds) ns (optical)"
+        }
+        // 10 ns/m is the rough copper rule the latency field encodes.
+        let metres = Double(nanoseconds) / 10.0
+        if metres < 1.5 {
+            return "\(nanoseconds) ns (~\(String(format: "%.1f", metres)) m)"
+        }
+        return "\(nanoseconds) ns (~\(Int(metres.rounded())) m)"
     }
 
     // MARK: - Power Input (Mac is sinking — a charger is supplying us)

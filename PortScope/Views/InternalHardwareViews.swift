@@ -87,6 +87,17 @@ struct BatteryView: View {
                 }
             }
 
+            // Charger state from AppleSmartBattery.ChargerData. The kernel
+            // publishes a nested dict on every Apple Silicon Mac (laptops + the
+            // desktop telemetry endpoint). Surfacing this gives the user a
+            // direct, kernel-side view of why charging is or isn't happening.
+            //
+            // Field discovery adapted from WhatCable
+            // (Sources/WhatCableCore/AppleSmartBattery.swift:178-210 and
+            // Sources/WhatCableDarwinBackend/AppleSmartBatteryReader.swift:106-107,
+            // MIT, Copyright (c) 2026 Darryl Morley).
+            chargerDataCard(props: node.properties)
+
             // Health = MaxCapacity (%) reported by the gauge IC. Show a brief
             // explanation so users understand it's a percentage of design.
             SectionCard(title: "Health", symbol: "heart.text.square") {
@@ -154,6 +165,100 @@ struct BatteryView: View {
         guard let designLife, designLife > 0 else { return "\(cycleCount)" }
         let pct = Int((Double(cycleCount) / Double(designLife) * 100).rounded())
         return "\(cycleCount) · \(pct)% of \(designLife)"
+    }
+
+    /// Render `AppleSmartBattery.ChargerData` when present. The nested dict
+    /// carries the gauge IC's own view of charging state: what voltage and
+    /// current it's pushing into the cell right now, plus bitfields that
+    /// non-zero out when the IC is blocking charge for some reason
+    /// (thermal limit, full battery, fault, etc.). PortScope shows them as
+    /// raw values — bit decoders for these fields aren't public — but a
+    /// non-zero value is itself the diagnostic signal ("the kernel knows
+    /// something is wrong / rate-limited").
+    @ViewBuilder
+    private func chargerDataCard(props: [String: IORegValue]) -> some View {
+        if case let .dictionary(kv) = props["ChargerData"] {
+            let d = Dictionary(kv, uniquingKeysWith: { a, _ in a })
+            let chargingMV = d["ChargingVoltage"]?.asUInt ?? 0
+            let chargingMA = d["ChargingCurrent"]?.asUInt ?? 0
+            let notCharging = d["NotChargingReason"]?.asUInt ?? 0
+            let slowCharging = d["SlowChargingReason"]?.asUInt ?? 0
+            let thermallyLimited = d["TimeChargingThermallyLimited"]?.asUInt ?? 0
+            let vacLimit = d["VacVoltageLimit"]?.asUInt ?? 0
+
+            if chargingMV > 0 || chargingMA > 0 || notCharging != 0 || slowCharging != 0 || thermallyLimited > 0 || vacLimit > 0 {
+                SectionCard(title: "Charger State", symbol: "bolt.car") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if chargingMV > 0 || chargingMA > 0 {
+                            HStack {
+                                Text("Delivering to cell").foregroundStyle(.secondary)
+                                Spacer()
+                                Text(chargerDeliveryLabel(mV: chargingMV, mA: chargingMA))
+                                    .monospaced()
+                            }
+                            .font(.callout)
+                        }
+                        if notCharging != 0 {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Not-charging reason").foregroundStyle(.secondary)
+                                Spacer()
+                                Text(reasonLabel(notCharging))
+                                    .monospaced()
+                                    .foregroundStyle(.orange)
+                            }
+                            .font(.callout)
+                            Text("The gauge IC has at least one bit set in NotChargingReason. macOS uses this to suppress charging (battery full, fault, accessory-managed, etc.).")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if slowCharging != 0 {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Slow-charging reason").foregroundStyle(.secondary)
+                                Spacer()
+                                Text(reasonLabel(slowCharging))
+                                    .monospaced()
+                                    .foregroundStyle(.orange)
+                            }
+                            .font(.callout)
+                            Text("The kernel is rate-limiting charge for at least one reason in SlowChargingReason (thermal, source-limit, optimisation, etc.).")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if thermallyLimited > 0 {
+                            HStack {
+                                Text("Time thermally limited").foregroundStyle(.secondary)
+                                Spacer()
+                                Text("\(thermallyLimited) s")
+                                    .monospaced()
+                            }
+                            .font(.callout)
+                        }
+                        if vacLimit > 0 {
+                            HStack {
+                                Text("VAC voltage limit").foregroundStyle(.secondary)
+                                Spacer()
+                                Text(String(format: "%.2f V", Double(vacLimit) / 1000.0))
+                                    .monospaced()
+                            }
+                            .font(.callout)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func chargerDeliveryLabel(mV: UInt64, mA: UInt64) -> String {
+        let v = Double(mV) / 1000.0
+        let a = Double(mA) / 1000.0
+        let w = v * a
+        return String(format: "%.2f V · %.2f A  (~%.1f W)", v, a, w)
+    }
+
+    /// Render a bitfield reason as decimal + hex so an engineer can look up
+    /// the bits without needing a decoder built in (Apple doesn't publish one).
+    private func reasonLabel(_ raw: UInt64) -> String {
+        String(format: "%llu (0x%llX)", raw, raw)
     }
 }
 

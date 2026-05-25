@@ -80,6 +80,10 @@ nonisolated enum SDCardScanner {
             cableVendorID: nil,
             cableProductID: nil,
             cableManufacturer: nil,
+            cableEmarker: nil,
+            usb3State: nil,
+            cioState: nil,
+            phyState: nil,
             usbPD: nil,
             registryProperties: props,
             registryPath: IORegBridge.path(of: entry)

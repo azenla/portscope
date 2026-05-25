@@ -387,6 +387,10 @@ enum SnapshotDumper {
             "cable_vendor_id": a.cableVendorID.map { NSNumber(value: $0) } ?? NSNull(),
             "cable_product_id": a.cableProductID.map { NSNumber(value: $0) } ?? NSNull(),
             "cable_manufacturer": a.cableManufacturer ?? NSNull(),
+            "cable_emarker": a.cableEmarker.map(cableEmarkerToJSON(_:)) ?? NSNull(),
+            "usb3_state": a.usb3State.map(usb3StateToJSON(_:)) ?? NSNull(),
+            "cio_state": a.cioState.map(cioStateToJSON(_:)) ?? NSNull(),
+            "phy_state": a.phyState.map(phyStateToJSON(_:)) ?? NSNull(),
             "raw_properties": propertiesToJSON(a.registryProperties)
         ]
         if let pd = a.usbPD {
@@ -403,12 +407,128 @@ enum SnapshotDumper {
         return out
     }
 
+    private static func usb3StateToJSON(_ s: USB3TransportState) -> [String: Any] {
+        var out: [String: Any] = [
+            "signaling": s.signaling,
+            "signaling_description": s.signalingDescription ?? NSNull(),
+            "data_role": s.dataRole ?? NSNull(),
+            "has_live_link": s.hasLiveLink
+        ]
+        if let label = s.speedLabel {
+            out["speed_label"] = label
+        }
+        return out
+    }
+
+    private static func cioStateToJSON(_ c: CIOCableState) -> [String: Any] {
+        var out: [String: Any] = [
+            "cable_speed": c.cableSpeed.map { NSNumber(value: $0) } ?? NSNull(),
+            "cable_generation_raw": c.cableGenerationRaw.map { NSNumber(value: $0) } ?? NSNull(),
+            "generation_raw": c.generationRaw.map { NSNumber(value: $0) } ?? NSNull(),
+            "asymmetric_mode_supported": c.asymmetricModeSupported.map { NSNumber(value: $0) } ?? NSNull(),
+            "legacy_adapter": c.legacyAdapter.map { NSNumber(value: $0) } ?? NSNull(),
+            "link_training_mode": c.linkTrainingMode.map { NSNumber(value: $0) } ?? NSNull()
+        ]
+        if let label = c.cableSpeedLabel {
+            out["cable_speed_label"] = label
+        }
+        return out
+    }
+
+    private static func phyStateToJSON(_ p: PhyState) -> [String: Any] {
+        let lanes: [[String: Any]] = p.lanes.map { lane in
+            [
+                "index": lane.index,
+                "transport": lane.transport,
+                "power_level": lane.powerLevel,
+                "client": lane.client,
+                "live": lane.isLive
+            ]
+        }
+        let dpLinks: [[String: Any]] = p.dpLinks.map { link in
+            var d: [String: Any] = ["link_rate": link.linkRate]
+            if let c = link.client { d["client"] = c }
+            return d
+        }
+        let dpTunnels: [[String: Any]] = p.dpTunnels.map { link in
+            var d: [String: Any] = ["link_rate": link.linkRate]
+            if let c = link.client { d["client"] = c }
+            return d
+        }
+        return [
+            "phy_id": p.id,
+            "lanes": lanes,
+            "cio_lane_count": p.cioLaneCount,
+            "dp_lane_count": p.dpLaneCount,
+            "usb3_lane_count": p.usb3LaneCount,
+            "live_lane_count": p.liveLaneCount,
+            "usb2_transport": p.usb2Transport ?? NSNull(),
+            "usb2_client": p.usb2Client ?? NSNull(),
+            "dp_links": dpLinks,
+            "dp_tunnels": dpTunnels
+        ]
+    }
+
     private static func usbPDOptionToJSON(_ o: USBPDOption) -> [String: Any] {
         return [
             "voltage_mv": o.voltageMV,
             "max_current_ma": o.maxCurrentMA,
             "max_power_mw": o.maxPowerMW
         ]
+    }
+
+    /// Serialise a `CableEmarkerInfo` as JSON. Field names mirror the
+    /// decoder structure (see `USBPDVDOModels.swift`). The structured
+    /// values let external scripts ask "is this cable's e-marker
+    /// claiming 100 W?" without re-implementing the bitfield decode.
+    private static func cableEmarkerToJSON(_ e: CableEmarkerInfo) -> [String: Any] {
+        var out: [String: Any] = [
+            "endpoint": e.endpoint == .sopPrime ? "SOP'" : "SOP''",
+            "vendor_id": e.vendorID,
+            "product_type": "\(e.productType)",
+            "product_type_label": e.productType.label,
+            "cable_vdo": [
+                "speed": "\(e.cableVDO.speed)",
+                "speed_label": e.cableVDO.speed.label,
+                "speed_max_gbps": e.cableVDO.speed.maxGbps,
+                "current": "\(e.cableVDO.current)",
+                "current_label": e.cableVDO.current.label,
+                "current_max_amps": e.cableVDO.current.maxAmps,
+                "max_volts": e.cableVDO.maxVolts,
+                "max_watts": e.cableVDO.maxWatts,
+                "cable_type": e.cableVDO.cableType == .active ? "active" : "passive",
+                "vbus_through_cable": e.cableVDO.vbusThroughCable,
+                "epr_capable": e.cableVDO.eprCapable,
+                "latency_ns": e.cableVDO.latencyNanoseconds.map { NSNumber(value: $0) } ?? NSNull(),
+                "vdo_version_encoded": e.cableVDO.vdoVersionEncoded,
+                "cable_termination_encoded": e.cableVDO.cableTerminationEncoded,
+                "decode_warnings": e.cableVDO.decodeWarnings.map { $0.label }
+            ]
+        ]
+        if let a = e.activeVDO2 {
+            out["active_cable_vdo2"] = [
+                "max_operating_temp_c": a.maxOperatingTempC,
+                "shutdown_temp_c": a.shutdownTempC,
+                "physical_connection": a.physicalConnection.label,
+                "active_element": a.activeElement.label,
+                "usb4_supported": a.usb4Supported,
+                "usb32_supported": a.usb32Supported,
+                "usb2_supported": a.usb2Supported,
+                "two_lanes_supported": a.twoLanesSupported,
+                "optically_isolated": a.opticallyIsolated,
+                "usb4_asymmetric_mode": a.usb4AsymmetricMode,
+                "usb_gen2_or_higher": a.usbGen2OrHigher,
+                "u3_to_u0_through_u3s": a.u3ToU0TransitionThroughU3S,
+                "usb2_hub_hops_consumed": a.usb2HubHopsConsumed
+            ]
+        }
+        if let c = e.certStat, c.isPresent {
+            out["cert_stat"] = ["xid": c.xid]
+        }
+        if let p = e.productVDORaw {
+            out["product_vdo"] = String(format: "0x%08X", p)
+        }
+        return out
     }
 
     private static func hostInfoJSON() -> [String: Any] {

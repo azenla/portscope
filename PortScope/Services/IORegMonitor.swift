@@ -44,6 +44,8 @@ final class IORegMonitor {
             // Different class hierarchies expose the same property schema
             // depending on the host generation, so we have to watch both.
             "AppleHPMInterfaceType10",  // M3+ / TB5 hosts
+            "AppleHPMInterfaceType12",  // M4 / additional generations
+            "AppleHPMInterfaceType18",  // MacBook Neo / A-series (per WhatCable)
             "AppleTCControllerType10",  // M1 / M2 family
             // MagSafe 3 receptacle. Fires on MagSafe insertion/removal and on
             // charger renegotiation. Same dual-class story as Type10.

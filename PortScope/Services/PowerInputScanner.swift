@@ -75,6 +75,10 @@ nonisolated enum PowerInputScanner {
                 cableVendorID: nil,
                 cableProductID: nil,
                 cableManufacturer: nil,
+                cableEmarker: nil,
+                usb3State: nil,
+                cioState: nil,
+                phyState: nil,
                 usbPD: watts > 0 ? pd : nil,
                 registryProperties: props,
                 registryPath: IORegBridge.path(of: svc)
