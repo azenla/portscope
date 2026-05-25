@@ -130,6 +130,9 @@ struct USBHubView: View {
                 Stat(label: "Power Output",
                      value: power.allocationLabel,
                      symbol: "bolt"),
+                Stat(label: "Firmware",
+                     value: usbBcdVersion(node.properties["bcdDevice"]?.asUInt),
+                     symbol: "memorychip"),
                 Stat(label: "Built-In",
                      value: (node.properties["Built-In"]?.asBool ?? false) ? "Yes" : "No",
                      symbol: "macbook")
@@ -189,6 +192,15 @@ struct USBDeviceView: View {
                 Stat(label: "VID : PID",
                      value: formatVidPid(vid: vid, pid: pid),
                      symbol: "barcode"),
+                // `bcdDevice` is the device-specific firmware revision
+                // string the kernel exposes alongside the USB protocol
+                // version. Most peripherals publish it (USB spec
+                // requires the field in the device descriptor); leaving
+                // it in Developer details hides a useful identification
+                // signal for triaging "is my firmware up to date?"
+                Stat(label: "Firmware",
+                     value: usbBcdVersion(node.properties["bcdDevice"]?.asUInt),
+                     symbol: "memorychip"),
                 Stat(label: "Power Output",
                      value: power.allocationLabel,
                      symbol: "bolt"),

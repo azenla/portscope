@@ -267,12 +267,33 @@ struct EthernetDetailView: View {
                  symbol: "cpu"),
             Stat(label: "Driver", value: driverVer, symbol: "puzzlepiece.extension"),
             Stat(label: "Firmware", value: fwVer, symbol: "memorychip"),
+            // Duplex decoded from the high half of the `IOActiveMedium`
+            // IFM_* word — half-duplex on a modern jack is almost always
+            // a misconfigured switch or a degraded cable. Surface it so
+            // the user can spot it without parsing the hex blob.
+            Stat(label: "Duplex",
+                 value: duplexLabel,
+                 symbol: "arrow.left.arrow.right"),
             Stat(label: "MTU", value: mtu, symbol: "tray.full"),
             Stat(label: "Jumbo Frames", value: jumbo, symbol: "shippingbox"),
             Stat(label: "PHY Spec",
                  value: port.catalogCapability ?? "—",
                  symbol: "rectangle.connected.to.line.below")
         ]
+    }
+
+    /// Decode `IOActiveMedium`'s IFM_FDX bit (0x00100000) into a friendly
+    /// label. Returns "—" when the link is down or the field is missing.
+    private var duplexLabel: String {
+        guard linkActive else { return "—" }
+        if case .unsigned(let u)? = props["IOActiveMedium"] {
+            return (u & 0x00100000) != 0 ? "Full" : "Half"
+        }
+        if let s = props["IOActiveMedium"]?.asString,
+           let raw = UInt64(s, radix: 16) {
+            return (raw & 0x00100000) != 0 ? "Full" : "Half"
+        }
+        return "—"
     }
 
     /// `IOMACAddress` arrives as a string like "0x00c5850fbdcb"; turn it

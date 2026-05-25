@@ -55,7 +55,9 @@ struct BatteryView: View {
                      value: temperatureLabel(temperatureCK),
                      symbol: "thermometer.medium"),
                 Stat(label: "Cycle Count",
-                     value: "\(cycleCount)",
+                     value: cycleCountValue(cycleCount: cycleCount,
+                                            designLife: node.properties["DesignCycleCount9C"]?.asUInt
+                                                ?? node.properties["DesignCycleCount"]?.asUInt),
                      symbol: "arrow.triangle.2.circlepath"),
                 Stat(label: "Time to Empty",
                      value: minuteLabel(timeRemainingValue(timeRemaining, avg: avgTimeToEmpty)),
@@ -141,6 +143,17 @@ struct BatteryView: View {
         let mm = m % 60
         if h == 0 { return "\(mm) min" }
         return "\(h)h \(mm)m"
+    }
+
+    /// Cycle count rendered with a "% of design life" suffix when the
+    /// gauge IC publishes a design cycle target (typically 1000 for
+    /// Apple Silicon batteries — Apple considers the pack serviceable
+    /// down to about 80% health). Without a design number, falls back
+    /// to the raw count so we don't pretend to know the threshold.
+    private func cycleCountValue(cycleCount: UInt64, designLife: UInt64?) -> String {
+        guard let designLife, designLife > 0 else { return "\(cycleCount)" }
+        let pct = Int((Double(cycleCount) / Double(designLife) * 100).rounded())
+        return "\(cycleCount) · \(pct)% of \(designLife)"
     }
 }
 

@@ -90,6 +90,20 @@ struct PCIDeviceView: View {
                               value: "\(pciLinkSpeedShortLabel(speed)) ×\(width)",
                               symbol: "speedometer"))
         }
+        // Link efficiency — negotiated vs max throughput, expressed as a
+        // percentage. Directly answers "is my NVMe / eGPU running at full
+        // speed?" — the most-asked PCIe question, and one the user would
+        // otherwise have to compute by hand from the two link rows above.
+        if let curS = node.linkSpeed, let curW = node.linkWidth,
+           let maxS = node.maxLinkSpeed, let maxW = node.maxLinkWidth,
+           maxS > 0, maxW > 0 {
+            let curThroughput = Double(curS) * Double(curW)
+            let maxThroughput = Double(maxS) * Double(maxW)
+            let pct = Int((curThroughput / maxThroughput * 100).rounded())
+            stats.append(Stat(label: "Link Efficiency",
+                              value: pct >= 100 ? "100% (at capability)" : "\(pct)% of capability",
+                              symbol: "chart.bar"))
+        }
         if node.isBuiltIn {
             stats.append(Stat(label: "Provenance",
                               value: "Built-in",
