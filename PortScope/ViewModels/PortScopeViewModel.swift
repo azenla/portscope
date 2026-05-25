@@ -232,6 +232,15 @@ final class PortScopeViewModel: ObservableObject {
     private func exists(id: TBNodeID) -> Bool {
         if PhysicalPortSelector.isPortID(id) { return true }
         if SystemInfoSelector.isSystemID(id) { return snapshot.internalHardware.systemInfo.hasAnyData }
+        if WiFiSelector.isWiFiID(id) { return snapshot.internalHardware.systemInfo.wifi != nil }
+        if CameraSelector.isCameraID(id) {
+            return snapshot.internalHardware.systemInfo.cameras
+                .contains { CameraSelector.id(for: $0).raw == id.raw }
+        }
+        if AudioSelector.isAudioID(id) {
+            return snapshot.internalHardware.systemInfo.audioDevices
+                .contains { AudioSelector.id(for: $0).raw == id.raw }
+        }
         if MagSafeSelector.isMagSafeID(id) { return snapshot.internalHardware.magsafe != nil }
         if BluetoothSelector.isControllerID(id) { return snapshot.bluetooth.controller != nil }
         if BluetoothSelector.isDeviceID(id) {

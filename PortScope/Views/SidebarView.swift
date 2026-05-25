@@ -165,6 +165,9 @@ struct SidebarView: View {
             if showAllDevices {
                 displaysSection
                 bluetoothSection
+                wifiSection
+                camerasSection
+                audioSection
             }
             if showBuses {
                 pcieSection
@@ -330,6 +333,39 @@ struct SidebarView: View {
                                 .tag(BluetoothSelector.id(for: dev))
                         }
                     }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var wifiSection: some View {
+        if let wifi = vm.snapshot.internalHardware.systemInfo.wifi {
+            collapsibleSection("Wi-Fi", icon: "wifi") {
+                WiFiSidebarRow(info: wifi).tag(WiFiSelector.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var camerasSection: some View {
+        let cameras = vm.snapshot.internalHardware.systemInfo.cameras
+        if !cameras.isEmpty {
+            collapsibleSection("Cameras", icon: "camera") {
+                ForEach(cameras) { cam in
+                    CameraSidebarRow(camera: cam).tag(CameraSelector.id(for: cam))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var audioSection: some View {
+        let devices = vm.snapshot.internalHardware.systemInfo.audioDevices
+        if !devices.isEmpty {
+            collapsibleSection("Audio", icon: "speaker.wave.2") {
+                ForEach(devices) { dev in
+                    AudioSidebarRow(device: dev).tag(AudioSelector.id(for: dev))
                 }
             }
         }
@@ -1361,11 +1397,12 @@ private struct SystemInfoSidebarRow: View {
     private var subtitle: String? {
         var parts: [String] = []
         if let mem = info.memoryBytes {
-            let fmt = ByteCountFormatter()
-            fmt.allowedUnits = [.useGB, .useTB]
-            fmt.countStyle = .decimal
-            fmt.includesActualByteCount = false
-            parts.append(fmt.string(fromByteCount: Int64(mem)))
+            // Memory rendered with Apple's binary-GB convention (a
+            // 137,438,953,472-byte module reads as "128 GB", not
+            // "137.44 GB"). Storage stays decimal — those two domains
+            // genuinely use different units in Apple's UI.
+            let gib = mem / (1024 * 1024 * 1024)
+            parts.append("\(gib) GB")
         }
         if let storage = info.internalStorage?.capacityBytes {
             let fmt = ByteCountFormatter()

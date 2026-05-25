@@ -55,6 +55,15 @@ struct ContentView: View {
             } else if SystemInfoSelector.isSystemID(sel) {
                 SystemInfoView(info: vm.snapshot.internalHardware.systemInfo)
                     .id(sel)
+            } else if WiFiSelector.isWiFiID(sel),
+                      let wifi = vm.snapshot.internalHardware.systemInfo.wifi {
+                ScrollView { WiFiDetailView(info: wifi) }.id(sel)
+            } else if CameraSelector.isCameraID(sel),
+                      let cam = findCamera(id: sel) {
+                CameraDetailView(camera: cam).id(sel)
+            } else if AudioSelector.isAudioID(sel),
+                      let dev = findAudio(id: sel) {
+                AudioDeviceDetailView(device: dev).id(sel)
             } else if MagSafeSelector.isMagSafeID(sel),
                       let magsafe = vm.snapshot.internalHardware.magsafe {
                 ScrollView {
@@ -117,6 +126,16 @@ struct ContentView: View {
     private func findBluetoothDevice(id: TBNodeID) -> BluetoothDevice? {
         let all = vm.snapshot.bluetooth.connected + vm.snapshot.bluetooth.paired
         return all.first { BluetoothSelector.id(for: $0).raw == id.raw }
+    }
+
+    private func findCamera(id: TBNodeID) -> CameraInfo? {
+        vm.snapshot.internalHardware.systemInfo.cameras
+            .first { CameraSelector.id(for: $0).raw == id.raw }
+    }
+
+    private func findAudio(id: TBNodeID) -> AudioDeviceInfo? {
+        vm.snapshot.internalHardware.systemInfo.audioDevices
+            .first { AudioSelector.id(for: $0).raw == id.raw }
     }
 
     private func findPCINode(id: TBNodeID, in roots: [PCINode]) -> PCINode? {

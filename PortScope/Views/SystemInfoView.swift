@@ -25,33 +25,6 @@ struct SystemInfoView: View {
                         StatGrid(stats: storageStats(storage))
                     }
                 }
-                if let wifi = info.wifi {
-                    SectionCard(title: "Wi-Fi", symbol: "wifi") {
-                        StatGrid(stats: wifiStats(wifi))
-                    }
-                }
-                if !info.cameras.isEmpty {
-                    SectionCard(title: "Cameras (\(info.cameras.count))",
-                                symbol: "camera") {
-                        VStack(spacing: 0) {
-                            ForEach(info.cameras) { cam in
-                                CameraRow(camera: cam)
-                                if cam.id != info.cameras.last?.id { Divider() }
-                            }
-                        }
-                    }
-                }
-                if !info.audioDevices.isEmpty {
-                    SectionCard(title: "Audio (\(info.audioDevices.count))",
-                                symbol: "speaker.wave.2") {
-                        VStack(spacing: 0) {
-                            ForEach(info.audioDevices) { dev in
-                                AudioRow(device: dev)
-                                if dev.id != info.audioDevices.last?.id { Divider() }
-                            }
-                        }
-                    }
-                }
                 SectionCard(title: "Software", symbol: "apple.logo") {
                     StatGrid(stats: softwareStats)
                 }
@@ -100,7 +73,7 @@ struct SystemInfoView: View {
             else { parts.append("\(cores)-core CPU") }
         }
         if let gpu = info.gpuCoreCount { parts.append("\(gpu)-core GPU") }
-        if let mem = info.memoryBytes { parts.append(formatBytes(mem)) }
+        if let mem = info.memoryBytes { parts.append(formatMemoryBytes(mem)) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -154,7 +127,7 @@ struct SystemInfoView: View {
 
     private var memoryLabel: String {
         guard let bytes = info.memoryBytes else { return "—" }
-        var parts: [String] = [formatBytes(bytes)]
+        var parts: [String] = [formatMemoryBytes(bytes)]
         if let type = info.memoryType { parts.append(type) }
         if let mfr = info.memoryManufacturer { parts.append(mfr) }
         return parts.joined(separator: " · ")
@@ -166,10 +139,17 @@ struct SystemInfoView: View {
             out.append(Stat(label: "Model", value: model, symbol: "internaldrive"))
         }
         if let cap = s.capacityBytes {
-            out.append(Stat(label: "Capacity", value: formatBytes(cap), symbol: "externaldrive"))
+            out.append(Stat(label: "Capacity", value: formatStorageBytes(cap), symbol: "externaldrive"))
         }
         if let fw = s.firmware {
-            out.append(Stat(label: "Firmware", value: fw, symbol: "memorychip"))
+            // SP formats the NVMe revision with a US thousands separator
+            // ("2,973.120"); the underlying value is the literal version
+            // string ("2973.120"). Strip the comma so the rendered value
+            // matches Apple's About This Mac UI and feels like a real
+            // version number rather than a locale-formatted figure.
+            out.append(Stat(label: "Firmware",
+                            value: fw.replacingOccurrences(of: ",", with: ""),
+                            symbol: "memorychip"))
         }
         if let bsd = s.bsdName {
             out.append(Stat(label: "BSD Name", value: bsd, symbol: "terminal"))
@@ -191,64 +171,6 @@ struct SystemInfoView: View {
                             isSecret: true))
         }
         return out
-    }
-
-    private func wifiStats(_ w: WiFiInfo) -> [Stat] {
-        var out: [Stat] = []
-        if let chipset = w.chipset {
-            out.append(Stat(label: "Chipset", value: chipset, symbol: "antenna.radiowaves.left.and.right"))
-        }
-        if let iface = w.interface {
-            out.append(Stat(label: "Interface", value: iface, symbol: "terminal"))
-        }
-        if let phys = w.supportedPHYs {
-            let tier = highestPHYTier(phys)
-            out.append(Stat(label: "Supported PHYs",
-                            value: tier.map { "\(phys) (\($0))" } ?? phys,
-                            symbol: "waveform.path"))
-        }
-        out.append(Stat(label: "6 GHz Band",
-                        value: w.supports6GHz ? "Supported" : "Not Supported",
-                        symbol: "wave.3.right"))
-        if let region = w.regulatoryRegion {
-            out.append(Stat(label: "Regulatory", value: region, symbol: "globe"))
-        }
-        if let mac = w.macAddress {
-            out.append(Stat(label: "MAC Address",
-                            value: mac.uppercased(),
-                            symbol: "barcode",
-                            isSecret: true))
-        }
-        if let status = w.status {
-            out.append(Stat(label: "Status", value: status,
-                            symbol: w.currentSSID != nil ? "checkmark.circle.fill" : "circle.dashed"))
-        }
-        if let ssid = w.currentSSID {
-            out.append(Stat(label: "Network", value: ssid,
-                            symbol: "wifi",
-                            isSecret: true))
-        }
-        if let phy = w.currentPHY {
-            out.append(Stat(label: "Active PHY", value: phy,
-                            symbol: "waveform"))
-        }
-        if let chan = w.currentChannel {
-            out.append(Stat(label: "Channel", value: chan,
-                            symbol: "dial.medium"))
-        }
-        return out
-    }
-
-    /// Map the SP "Supported PHY Modes" list ("a/b/g/n/ac/ax/be") to the
-    /// Wi-Fi marketing generation that the highest mode unlocks. "be" is
-    /// Wi-Fi 7; "ax" is Wi-Fi 6 / 6E; "ac" is Wi-Fi 5.
-    private func highestPHYTier(_ phys: String) -> String? {
-        let lower = phys.lowercased()
-        if lower.contains("/be") || lower.hasSuffix("be") { return "Wi-Fi 7" }
-        if lower.contains("/ax") || lower.hasSuffix("ax") { return "Wi-Fi 6/6E" }
-        if lower.contains("/ac") || lower.hasSuffix("ac") { return "Wi-Fi 5" }
-        if lower.contains("/n") || lower.hasSuffix("n") { return "Wi-Fi 4" }
-        return nil
     }
 
     private var softwareStats: [Stat] {
@@ -288,104 +210,28 @@ struct SystemInfoView: View {
         return out
     }
 
-    /// Decimal-units byte formatter ("128 GB", "2 TB") matching Apple's
-    /// own About this Mac convention. We don't want to surface RAM as
-    /// "119 GiB" — users compare it against Apple's spec sheet.
-    private func formatBytes(_ bytes: UInt64) -> String {
+    /// Storage capacity formatter — decimal units ("2 TB"), matching the
+    /// way Apple bins NVMe sizes in About This Mac and on the spec sheet.
+    private func formatStorageBytes(_ bytes: UInt64) -> String {
         let fmt = ByteCountFormatter()
         fmt.allowedUnits = [.useGB, .useTB]
         fmt.countStyle = .decimal
         fmt.includesActualByteCount = false
         return fmt.string(fromByteCount: Int64(bytes))
     }
-}
 
-/// One camera row inside the Cameras section. Built-in FaceTime cameras
-/// land here alongside any active Continuity / DriverKit cameras the
-/// kernel reports.
-private struct CameraRow: View {
-    let camera: CameraInfo
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "camera")
-                .foregroundStyle(.blue)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(camera.name).font(.callout.weight(.medium))
-                if let m = camera.modelID {
-                    Text(m).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
+    /// Memory formatter — base-2 units ("128 GB"). Apple's marketing
+    /// always presents RAM in binary GB even though the suffix is the
+    /// decimal one; About this Mac shows a 137,438,953,472-byte module
+    /// as "128 GB" too. Using ByteCountFormatter's decimal style here
+    /// rendered "137.44 GB", which doesn't match any user-facing source.
+    private func formatMemoryBytes(_ bytes: UInt64) -> String {
+        let gib = bytes / (1024 * 1024 * 1024)
+        if gib >= 1024 {
+            let tib = Double(bytes) / Double(1024 * 1024 * 1024 * 1024)
+            return String(format: "%.0f TB", tib)
         }
-        .padding(.vertical, 6)
-    }
-}
-
-/// One audio device row. We tag the default input + output with badges so
-/// the user can spot at a glance which device the system is currently
-/// routing through.
-private struct AudioRow: View {
-    let device: AudioDeviceInfo
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: device.transport == "Built-in"
-                  ? "macbook"
-                  : iconForTransport(device.transport))
-                .foregroundStyle(.orange)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(device.name).font(.callout.weight(.medium))
-                    if device.isDefaultOutput {
-                        badge("Default Out", color: .green)
-                    }
-                    if device.isDefaultInput {
-                        badge("Default In", color: .indigo)
-                    }
-                }
-                if let s = audioSubtitle {
-                    Text(s).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-        }
-        .padding(.vertical, 6)
-    }
-
-    private var audioSubtitle: String? {
-        var parts: [String] = []
-        if let m = device.manufacturer, !m.isEmpty { parts.append(m) }
-        if let t = device.transport, !t.isEmpty { parts.append(t) }
-        if let oc = device.outputChannels, oc > 0 {
-            parts.append("\(oc) out")
-        }
-        if let ic = device.inputChannels, ic > 0 {
-            parts.append("\(ic) in")
-        }
-        if let r = device.sampleRateHz, r > 0 {
-            parts.append("\(r / 1000) kHz")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    private func badge(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(color.opacity(0.12))
-            .clipShape(Capsule())
-    }
-
-    private func iconForTransport(_ t: String?) -> String {
-        switch t {
-        case "HDMI": return "tv"
-        case "USB": return "cable.connector"
-        case "Bluetooth": return "dot.radiowaves.left.and.right"
-        case "AirPlay": return "airplayaudio"
-        default: return "speaker.wave.2"
-        }
+        return "\(gib) GB"
     }
 }
 
