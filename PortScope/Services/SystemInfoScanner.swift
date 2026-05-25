@@ -22,7 +22,39 @@ import Foundation
 import IOKit
 
 nonisolated enum SystemInfoScanner {
+    /// Two-tier scan so launch stays fast:
+    ///
+    /// - **Cheap tier (always)**: `sysctl` + `IOPlatformExpertDevice`
+    ///   reads. Sub-millisecond on warm caches; fine to run on every full
+    ///   rescan. Populates chip, CPU cores, RAM size, kernel/macOS
+    ///   versions, model identifier, serial / UUID.
+    /// - **Heavy tier (gated)**: six `system_profiler` spawns
+    ///   (`SPDisplaysDataType` / `SPMemoryDataType` / `SPNVMeDataType` /
+    ///   `SPHardwareDataType` / `SPAirPortDataType` / `SPCameraDataType` /
+    ///   `SPAudioDataType`). Each takes 50–200 ms warm and they bottleneck
+    ///   the first paint, so we only run them when the user has opted into
+    ///   Show All Devices. The corresponding sidebar sections (Wi-Fi /
+    ///   Cameras / Audio) are gated behind the same toggle, and the
+    ///   System Overview view still renders cleanly when these fields are
+    ///   nil (showing chip / cores / RAM / OS / identifiers).
+    ///
+    /// The toggle is read straight from `UserDefaults` via the same key
+    /// `SidebarView` uses; passing it down explicitly would force every
+    /// caller (scanner pipeline, CLI dumper, tests) to learn about it.
     static func scan() -> SystemInfoSnapshot {
+        // Read the toggle's UserDefaults key directly. `SidebarVisibility`
+        // lives on the MainActor (project default isolation), and this
+        // scanner is `nonisolated` so it can be driven from
+        // `Task.detached` — pulling the constant in would force the call
+        // back onto the main actor. The key string is the single source
+        // of truth in `PortScopeApp.swift`; matched here verbatim.
+        let includeHeavy = UserDefaults.standard
+            .bool(forKey: "showAllDevices")
+        return scan(includeHeavySources: includeHeavy)
+    }
+
+    static func scan(includeHeavySources: Bool) -> SystemInfoSnapshot {
+        // Cheap tier — always populated.
         let chipName = sysctlString("machdep.cpu.brand_string")
         let physCPU = sysctlInt("hw.physicalcpu")
         let nperflevels = sysctlInt("hw.nperflevels") ?? 1
@@ -37,25 +69,27 @@ nonisolated enum SystemInfoScanner {
         let macOSBuild = sysctlString("kern.osversion")
         let hwModel = sysctlString("hw.model")
         let (uuid, serial) = platformIdentifiers()
-        let gpuInfo = parseGPUInfo()
-        let memoryInfo = parseMemoryInfo()
-        let storageInfo = parseStorageInfo()
-        let firmware = parseHardwareInfo()
-        let wifi = parseWiFiInfo()
-        let cameras = parseCameras()
-        let audioDevices = parseAudio()
         let marketingName = hwModel.flatMap { MacPortCatalog.all[$0]?.marketingName }
+
+        // Heavy tier — only when Show All Devices is on.
+        let gpuInfo = includeHeavySources ? parseGPUInfo() : (nil, nil)
+        let memoryInfo = includeHeavySources ? parseMemoryInfo() : (nil, nil)
+        let storageInfo = includeHeavySources ? parseStorageInfo() : nil
+        let firmware = includeHeavySources ? parseHardwareInfo() : nil
+        let wifi = includeHeavySources ? parseWiFiInfo() : nil
+        let cameras = includeHeavySources ? parseCameras() : []
+        let audioDevices = includeHeavySources ? parseAudio() : []
 
         return SystemInfoSnapshot(
             chipName: chipName,
             cpuCoreCount: physCPU,
             cpuPCoreCount: pCores,
             cpuECoreCount: eCores,
-            gpuCoreCount: gpuInfo.cores,
-            metalVersion: gpuInfo.metal,
+            gpuCoreCount: gpuInfo.0,
+            metalVersion: gpuInfo.1,
             memoryBytes: memBytes,
-            memoryType: memoryInfo.type,
-            memoryManufacturer: memoryInfo.manufacturer,
+            memoryType: memoryInfo.0,
+            memoryManufacturer: memoryInfo.1,
             internalStorage: storageInfo,
             wifi: wifi,
             cameras: cameras,

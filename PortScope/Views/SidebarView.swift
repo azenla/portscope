@@ -111,11 +111,13 @@ struct SidebarView: View {
         }()
 
         List(selection: $vm.selection) {
-            // System Overview is the canonical "About this Mac" landing
-            // row — always visible at the very top of the sidebar so the
-            // user can confirm what host they're inspecting without
-            // toggling Show All Devices.
-            if hw.systemInfo.hasAnyData {
+            // System Overview is gated behind Show All Devices because the
+            // heavy parts (storage, Wi-Fi, cameras, audio, firmware) come
+            // from `system_profiler` calls that add ~0.5–1 s to launch.
+            // Hiding it at startup keeps Physical Device responsive; users
+            // who want the chassis overview enable the toggle and a
+            // rescan kicks in automatically (see `onChange` below).
+            if showAllDevices && hw.systemInfo.hasAnyData {
                 collapsibleSubgroup(key: "physical:System",
                                     title: "System",
                                     collapsedSubgroups: $collapsedSubgroups) {
@@ -204,6 +206,15 @@ struct SidebarView: View {
         }
         .sheet(isPresented: $showDiagram) {
             DiagramView(snapshot: vm.snapshot)
+        }
+        .onChange(of: showAllDevices) { _, isOn in
+            // The Wi-Fi / Cameras / Audio sections + the heavy half of
+            // the System Overview view come from `system_profiler` calls
+            // that we skip at launch when this toggle is off. When the
+            // user flips it on for the first time those sections render
+            // empty until the next rescan — kick one off automatically
+            // so the data is there immediately.
+            if isOn { vm.rescan() }
         }
         .task(id: vm.snapshot.capturedAt) {
             seedExpansion(ports: ports)
