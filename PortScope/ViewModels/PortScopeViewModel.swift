@@ -282,6 +282,13 @@ final class PortScopeViewModel: ObservableObject {
         if SystemInfoSelector.isSystemID(id) { return snapshot.internalHardware.systemInfo.hasAnyData }
         if StorageSelector.isStorageID(id) { return snapshot.internalHardware.systemInfo.internalStorage != nil }
         if MemorySelector.isMemoryID(id) { return !snapshot.internalHardware.systemInfo.memoryDIMMs.isEmpty || snapshot.internalHardware.systemInfo.memoryBytes != nil }
+        if GPUSelector.isGPUID(id) { return snapshot.internalHardware.systemInfo.gpuCoreCount != nil || snapshot.internalHardware.systemInfo.metalVersion != nil }
+        if TouchIDSelector.isTouchIDID(id) { return TouchIDInfo.read().isPresent }
+        if InputDevicesSelector.isInputID(id) {
+            let i = InputDevicesInfo.read()
+            return i.trackpad != nil || i.keyboard != nil
+        }
+        if NVRAMSelector.isNVRAMID(id) { return !snapshot.internalHardware.systemInfo.nvram.allVariables.isEmpty }
         if WiFiSelector.isWiFiID(id) { return snapshot.internalHardware.systemInfo.wifi != nil }
         if CameraSelector.isCameraID(id) {
             return snapshot.internalHardware.systemInfo.cameras

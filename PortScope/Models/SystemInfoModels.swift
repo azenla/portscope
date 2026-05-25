@@ -51,6 +51,9 @@ nonisolated struct SystemInfoSnapshot: Hashable {
     /// Audio devices (built-in speakers, microphone, plus any HDMI /
     /// USB-C audio sinks). Lets the user see what their default I/O is.
     let audioDevices: [AudioDeviceInfo]
+    /// NVRAM variables — boot config, SIP state, language, FMM name.
+    /// Empty when nvram isn't readable (sandboxed builds).
+    let nvram: NVRAMSnapshot
     /// macOS marketing version — `kern.osproductversion` (e.g. "26.5").
     let macOSVersion: String?
     /// macOS build identifier — `kern.osversion` (e.g. "25F71").
@@ -74,7 +77,7 @@ nonisolated struct SystemInfoSnapshot: Hashable {
         cpuECoreCount: nil, gpuCoreCount: nil, metalVersion: nil,
         memoryBytes: nil, memoryType: nil, memoryManufacturer: nil,
         internalStorage: nil, wifi: nil, memoryDIMMs: [],
-        cameras: [], audioDevices: [],
+        cameras: [], audioDevices: [], nvram: .empty,
         macOSVersion: nil, macOSBuild: nil,
         kernelVersion: nil, systemFirmware: nil, hwModel: nil,
         marketingName: nil, systemSerial: nil, hardwareUUID: nil

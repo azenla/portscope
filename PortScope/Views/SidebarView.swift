@@ -166,6 +166,7 @@ struct SidebarView: View {
             }
 
             if showAllDevices {
+                gpuSection
                 storageSection
                 memorySection
                 displaysSection
@@ -173,6 +174,9 @@ struct SidebarView: View {
                 wifiSection
                 camerasSection
                 audioSection
+                touchIDSection
+                inputDevicesSection
+                nvramSection
             }
             if showBuses {
                 pcieSection
@@ -434,6 +438,46 @@ struct SidebarView: View {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var gpuSection: some View {
+        let info = vm.snapshot.internalHardware.systemInfo
+        if info.gpuCoreCount != nil || info.metalVersion != nil {
+            collapsibleSection("GPU", icon: "cube.transparent") {
+                GPUSidebarRow(info: info).tag(GPUSelector.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var touchIDSection: some View {
+        let info = TouchIDInfo.read()
+        if info.isPresent {
+            collapsibleSection("Touch ID", icon: "touchid") {
+                TouchIDSidebarRow(info: info).tag(TouchIDSelector.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var inputDevicesSection: some View {
+        let info = InputDevicesInfo.read()
+        if info.trackpad != nil || info.keyboard != nil {
+            collapsibleSection("Input Devices", icon: "hand.tap") {
+                InputDevicesSidebarRow(info: info).tag(InputDevicesSelector.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var nvramSection: some View {
+        let snap = vm.snapshot.internalHardware.systemInfo.nvram
+        if !snap.allVariables.isEmpty {
+            collapsibleSection("NVRAM", icon: "memorychip.fill") {
+                NVRAMSidebarRow(snapshot: snap).tag(NVRAMSelector.id)
             }
         }
     }

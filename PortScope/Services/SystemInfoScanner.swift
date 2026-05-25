@@ -94,6 +94,7 @@ nonisolated enum SystemInfoScanner {
             memoryDIMMs: heavy.memoryDIMMs,
             cameras: heavy.cameras,
             audioDevices: heavy.audio,
+            nvram: heavy.nvram,
             macOSVersion: macOSVersion,
             macOSBuild: macOSBuild,
             kernelVersion: kernelRelease,
@@ -120,6 +121,7 @@ nonisolated enum SystemInfoScanner {
         var wifi: WiFiInfo? = nil
         var cameras: [CameraInfo] = []
         var audio: [AudioDeviceInfo] = []
+        var nvram: NVRAMSnapshot = .empty
     }
 
     /// Run the six `system_profiler` data-type fetches in parallel via a
@@ -161,6 +163,9 @@ nonisolated enum SystemInfoScanner {
         }
         queue.async(group: group) {
             out.audio = parseAudio()
+        }
+        queue.async(group: group) {
+            out.nvram = NVRAMScanner.scan()
         }
         group.wait()
         return out
