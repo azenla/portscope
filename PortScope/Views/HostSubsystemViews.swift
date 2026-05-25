@@ -24,9 +24,24 @@ struct WiFiDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 hero
-                StatGrid(stats: identityStats)
-                SectionCard(title: "Current Network", symbol: "wifi") {
-                    StatGrid(stats: networkStats)
+                // Connected-network first — that's the live state the user
+                // came to see. Identity / driver / adapter capabilities
+                // follow below.
+                if info.currentSSID != nil {
+                    SectionCard(title: "Current Network", symbol: "wifi") {
+                        StatGrid(stats: networkStats)
+                    }
+                    if hasLinkQuality {
+                        SectionCard(title: "Link Quality", symbol: "wave.3.right") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                signalNoiseBar
+                                StatGrid(stats: linkQualityStats)
+                            }
+                        }
+                    }
+                }
+                SectionCard(title: "Adapter", symbol: "antenna.radiowaves.left.and.right") {
+                    StatGrid(stats: identityStats)
                 }
                 if let revision = info.firmwareRevision {
                     SectionCard(title: "Driver / Firmware", symbol: "memorychip") {
@@ -43,6 +58,81 @@ struct WiFiDetailView: View {
         }
         .frame(minWidth: 620)
         .background(.background)
+    }
+
+    private var hasLinkQuality: Bool {
+        info.rssiDBm != nil || info.noiseDBm != nil
+            || info.transmitRateMbps != nil || info.mcsIndex != nil
+    }
+
+    /// Visual SNR bar — fills proportional to a clamped 0–70 dB SNR scale.
+    /// Anything ≥40 dB is "excellent" (green); 25–40 is good (blue); 15–25
+    /// is fair (orange); <15 is poor (red).
+    @ViewBuilder
+    private var signalNoiseBar: some View {
+        let snr = (info.rssiDBm.flatMap { rssi in info.noiseDBm.map { rssi - $0 } }) ?? 0
+        let clamped = max(0, min(70, snr))
+        let frac = Double(clamped) / 70.0
+        let color: Color = clamped >= 40 ? .green
+            : clamped >= 25 ? .blue
+            : clamped >= 15 ? .orange
+            : .red
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Signal-to-Noise Ratio")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("\(snr) dB")
+                    .font(.title3.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(color)
+            }
+            .frame(width: 140, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary).frame(height: 12)
+                    Capsule()
+                        .fill(color)
+                        .frame(width: geo.size.width * frac, height: 12)
+                }
+            }
+            .frame(height: 12)
+            Text(qualityLabel(snr: snr))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(color)
+                .frame(width: 80, alignment: .trailing)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func qualityLabel(snr: Int) -> String {
+        if snr >= 40 { return "Excellent" }
+        if snr >= 25 { return "Good" }
+        if snr >= 15 { return "Fair" }
+        return "Poor"
+    }
+
+    private var linkQualityStats: [Stat] {
+        var out: [Stat] = []
+        if let rssi = info.rssiDBm {
+            out.append(Stat(label: "Signal (RSSI)",
+                            value: "\(rssi) dBm",
+                            symbol: "wave.3.right"))
+        }
+        if let noise = info.noiseDBm {
+            out.append(Stat(label: "Noise Floor",
+                            value: "\(noise) dBm",
+                            symbol: "waveform.path.ecg"))
+        }
+        if let rate = info.transmitRateMbps {
+            out.append(Stat(label: "Transmit Rate",
+                            value: "\(rate) Mbps",
+                            symbol: "speedometer"))
+        }
+        if let mcs = info.mcsIndex {
+            out.append(Stat(label: "MCS Index",
+                            value: "\(mcs)",
+                            symbol: "tag"))
+        }
+        return out
     }
 
     private var hero: some View {
@@ -130,6 +220,14 @@ struct WiFiDetailView: View {
         if let ssid = info.currentSSID {
             out.append(Stat(label: "Network", value: ssid,
                             symbol: "wifi", isSecret: true))
+        }
+        if let security = info.security {
+            out.append(Stat(label: "Security", value: security,
+                            symbol: "lock"))
+        }
+        if let type = info.networkType {
+            out.append(Stat(label: "Network Type", value: type,
+                            symbol: "network"))
         }
         if let phy = info.currentPHY {
             out.append(Stat(label: "Active PHY", value: phy, symbol: "waveform"))

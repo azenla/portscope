@@ -502,6 +502,12 @@ nonisolated enum SystemInfoScanner {
         var ssid: String?
         var currentPHY: String?
         var currentChannel: String?
+        var security: String?
+        var networkType: String?
+        var rssiDBm: Int?
+        var noiseDBm: Int?
+        var transmitRateMbps: Int?
+        var mcsIndex: Int?
 
         for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
             let raw = String(line)
@@ -530,8 +536,28 @@ nonisolated enum SystemInfoScanner {
                     currentPHY = stripPrefix(trimmed, "PHY Mode:")
                 } else if trimmed.hasPrefix("Channel:") {
                     currentChannel = stripPrefix(trimmed, "Channel:")
-                } else if !trimmed.contains(":") {
-                    // Blank or a section we don't care about — keep going.
+                } else if trimmed.hasPrefix("Security:") {
+                    security = stripPrefix(trimmed, "Security:")
+                } else if trimmed.hasPrefix("Network Type:") {
+                    networkType = stripPrefix(trimmed, "Network Type:")
+                } else if trimmed.hasPrefix("Signal / Noise:") {
+                    // "−43 dBm / −93 dBm" — split on " / " and parse the
+                    // leading numeric token of each half.
+                    let pair = stripPrefix(trimmed, "Signal / Noise:")
+                    let halves = pair.components(separatedBy: " / ")
+                    if halves.count == 2 {
+                        rssiDBm = leadingInt(halves[0])
+                        noiseDBm = leadingInt(halves[1])
+                    }
+                } else if trimmed.hasPrefix("Transmit Rate:") {
+                    transmitRateMbps = leadingInt(stripPrefix(trimmed, "Transmit Rate:"))
+                } else if trimmed.hasPrefix("MCS Index:") {
+                    mcsIndex = leadingInt(stripPrefix(trimmed, "MCS Index:"))
+                } else if trimmed == "Other Local Wi-Fi Networks:"
+                            || trimmed == "awdl0:" {
+                    // We've fallen out of the current-network stanza;
+                    // stop committing into its fields.
+                    inCurrentNetwork = false
                 }
             }
             if trimmed.hasPrefix("Card Type:") {
@@ -577,8 +603,31 @@ nonisolated enum SystemInfoScanner {
             currentSSID: ssid,
             currentPHY: currentPHY,
             currentChannel: currentChannel,
-            supports6GHz: supportedChannels?.contains("6GHz") == true
+            supports6GHz: supportedChannels?.contains("6GHz") == true,
+            security: security,
+            networkType: networkType,
+            rssiDBm: rssiDBm,
+            noiseDBm: noiseDBm,
+            transmitRateMbps: transmitRateMbps,
+            mcsIndex: mcsIndex
         )
+    }
+
+    /// Pull the leading integer (with optional `-` / `−` sign) out of a
+    /// string like "-43 dBm" or "520". Used by the Wi-Fi current-network
+    /// parser since SP formats those values with a trailing unit.
+    private static func leadingInt(_ s: String) -> Int? {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "−", with: "-")  // Unicode minus
+        var digits = ""
+        for ch in trimmed {
+            if ch == "-" || ch.isNumber {
+                digits.append(ch)
+            } else if !digits.isEmpty {
+                break
+            }
+        }
+        return Int(digits)
     }
 
     /// Apple's `Card Type` line packs "chip id: 0x11 api 1.2 firmware

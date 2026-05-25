@@ -116,6 +116,23 @@ nonisolated struct WiFiInfo: Hashable {
     let currentChannel: String?
     /// True when the radio advertises 6 GHz channels (Wi-Fi 6E / 7).
     let supports6GHz: Bool
+    /// Security mode in use ("WPA2 Personal" / "WPA3 Enterprise" / …).
+    let security: String?
+    /// Network type ("Infrastructure" / "Ad Hoc" / "AWDL"). Always
+    /// "Infrastructure" for normal Wi-Fi networks; surfaces when the user
+    /// is connected to an iPhone hotspot or AWDL link.
+    let networkType: String?
+    /// Received signal strength in dBm (e.g. -43). Closer to 0 is
+    /// stronger; below -70 is weak.
+    let rssiDBm: Int?
+    /// Noise floor in dBm (e.g. -93). Subtract from `rssiDBm` to get SNR.
+    let noiseDBm: Int?
+    /// Negotiated transmit rate in Mbps (e.g. 520). Caps out at the PHY's
+    /// max under ideal SNR; drops with interference.
+    let transmitRateMbps: Int?
+    /// 802.11ac/ax MCS index — encodes modulation + coding rate. Higher
+    /// = denser modulation = more bandwidth (but needs better SNR).
+    let mcsIndex: Int?
 }
 
 /// One camera entry from SPCameraDataType. The kernel publishes both the
