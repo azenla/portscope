@@ -172,12 +172,35 @@ nonisolated enum SensorScanner {
                 kernelClass: "AppleSmartBattery"
             ))
         }
-        if let mw = telemetry["SystemEnergyConsumed"] as? UInt64 {
+        // `AccumulatedWallEnergyEstimate` is reliably in milliwatt-seconds
+        // (mJ): 1 Wh = 3.6 MJ = 3,600,000 mJ. A sample reading of
+        // 1.9e9 → 528 Wh after a few days of uptime is the well-
+        // understood case.
+        //
+        // The previous "System Energy (since boot)" reading was
+        // *two* bugs stacked:
+        //   1. It read `SystemEnergyConsumed` (no `Accumulated`
+        //      prefix) — the **instantaneous** power reading in mW —
+        //      and then fed it through the mJ→Wh divisor, producing
+        //      tiny values like 0.001 Wh.
+        //   2. Even with the correct `AccumulatedSystemEnergyConsumed`
+        //      key, that counter's units are NOT mJ on observed
+        //      hardware: the raw value runs 5 orders of magnitude
+        //      bigger than `AccumulatedWallEnergyEstimate` on the same
+        //      machine. Treating it as mJ renders absurd values
+        //      (~63 GWh on a several-day boot). The earlier CLAUDE.md
+        //      assertion that all `Accumulated*` counters share the
+        //      same denomination was inferred, not measured, and is
+        //      wrong for at least `AccumulatedSystemEnergyConsumed`.
+        //
+        // Surface only the trustworthy one. The instant-load and
+        // wall-power-input readings are already present elsewhere.
+        if let mj = telemetry["AccumulatedWallEnergyEstimate"] as? UInt64 {
             out.append(HardwareSensor(
-                name: "System Energy (since boot)",
-                subtitle: "AppleSmartBattery · AccumulatedSystemEnergyConsumed",
+                name: "Wall Energy (since boot)",
+                subtitle: "AppleSmartBattery · AccumulatedWallEnergyEstimate",
                 category: .energy,
-                value: Double(mw) / 3_600_000.0,
+                value: Double(mj) / 3_600_000.0,
                 unit: "Wh",
                 locationID: nil,
                 kernelClass: "AppleSmartBattery"

@@ -127,11 +127,16 @@ struct ACPowerDetailView: View {
                                      formatEnergyMilliWattSeconds(wallTotal),
                                      hint: "Total energy drawn from the outlet since the Mac last started")
                     }
-                    if let sysTotal = dict["AccumulatedSystemEnergyConsumed"]?.asUInt {
-                        telemetryRow("System Energy (since boot)",
-                                     formatEnergyMilliWattSeconds(sysTotal),
-                                     hint: "Total energy used by the SoC since the Mac last started")
-                    }
+                    // `AccumulatedSystemEnergyConsumed` is intentionally
+                    // NOT rendered as Wh — empirically its raw value
+                    // runs 5+ orders of magnitude larger than
+                    // `AccumulatedWallEnergyEstimate` on the same host,
+                    // so feeding it through the mJ→Wh divisor produces
+                    // physically impossible numbers (~63 GWh on a
+                    // several-day boot). Its actual unit is not
+                    // documented and not the same mJ as the Wall
+                    // counter. The raw value remains visible in the
+                    // Developer Details disclosure below.
                 }
             }
         }
