@@ -24,7 +24,8 @@ struct BluetoothControllerView: View {
             StatGrid(stats: [
                 Stat(label: "Address",
                      value: controller.address ?? "—",
-                     symbol: "barcode"),
+                     symbol: "barcode",
+                     isSecret: controller.address != nil),
                 Stat(label: "Chipset",
                      value: controller.displayChipset,
                      symbol: "memorychip"),
@@ -209,7 +210,8 @@ struct BluetoothDeviceView: View {
         var stats: [Stat] = [
             Stat(label: "Address",
                  value: device.address ?? "—",
-                 symbol: "barcode"),
+                 symbol: "barcode",
+                 isSecret: device.address != nil),
             Stat(label: "Type",
                  value: device.minorType ?? "—",
                  symbol: device.category.symbol),

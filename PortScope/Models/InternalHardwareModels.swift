@@ -84,6 +84,23 @@ nonisolated enum SoCCoprocessorCategory: String, CaseIterable, Hashable {
         }
     }
 
+    /// Promoted section name now that these render as top-level sidebar
+    /// sections, not subgroups under a single "Internal Hardware" wrapper.
+    /// The thematic groupings carry the same intent but the labels lose the
+    /// "subgroup of internals" framing so they read like first-class
+    /// sections (`Graphics`, `Image & ML`, `Codecs`, `Coprocessors`).
+    var topLevelTitle: String {
+        switch self {
+        case .displayAndGraphics: return "Graphics"
+        case .mediaImage:         return "Image & ML"
+        case .mediaVideo:         return "Codecs"
+        case .storageMemory:      return "Storage Controllers"
+        case .securityPower:      return "Security & Power"
+        case .radios:             return "Radio Coprocessors"
+        case .other:              return "Coprocessors"
+        }
+    }
+
     var symbol: String {
         switch self {
         case .displayAndGraphics: return "rectangle.on.rectangle"

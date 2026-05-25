@@ -91,6 +91,7 @@ nonisolated enum SystemInfoScanner {
             memoryManufacturer: heavy.memoryManufacturer,
             internalStorage: heavy.storage,
             wifi: heavy.wifi,
+            memoryDIMMs: heavy.memoryDIMMs,
             cameras: heavy.cameras,
             audioDevices: heavy.audio,
             macOSVersion: macOSVersion,
@@ -113,6 +114,7 @@ nonisolated enum SystemInfoScanner {
         var metal: String? = nil
         var memoryType: String? = nil
         var memoryManufacturer: String? = nil
+        var memoryDIMMs: [MemoryDIMMInfo] = []
         var storage: InternalStorageInfo? = nil
         var firmware: String? = nil
         var wifi: WiFiInfo? = nil
@@ -142,6 +144,8 @@ nonisolated enum SystemInfoScanner {
             let m = parseMemoryInfo()
             out.memoryType = m.type
             out.memoryManufacturer = m.manufacturer
+            out.memoryDIMMs = parseMemoryDIMMs(rolledUpType: m.type,
+                                               rolledUpManufacturer: m.manufacturer)
         }
         queue.async(group: group) {
             out.storage = parseStorageInfo()
@@ -252,15 +256,121 @@ nonisolated enum SystemInfoScanner {
         return (type, manufacturer)
     }
 
+    /// Parse `SPMemoryDataType` for per-DIMM stanzas. On Apple Silicon SP
+    /// only emits a single "Memory: X · Type: Y · Manufacturer: Z" block
+    /// (unified memory, no socketed DIMMs), so we synthesise a single
+    /// `MemoryDIMMInfo` from the rolled-up fields + `hw.memsize`. On Intel
+    /// Macs SP enumerates each physical DIMM bank with size, slot, speed,
+    /// status, manufacturer, and part number — we walk the slot stanzas
+    /// and emit one entry per slot.
+    private static func parseMemoryDIMMs(rolledUpType: String?,
+                                         rolledUpManufacturer: String?) -> [MemoryDIMMInfo] {
+        let raw = runSystemProfiler("SPMemoryDataType") ?? ""
+        var out: [MemoryDIMMInfo] = []
+        var currentName: String?
+        var currentSlot: String?
+        var currentSize: UInt64?
+        var currentType: String?
+        var currentManuf: String?
+        var currentSpeed: String?
+        var currentPart: String?
+        var inSlotStanza = false
+
+        let commit = {
+            if let n = currentName {
+                out.append(MemoryDIMMInfo(
+                    name: n, slot: currentSlot, capacityBytes: currentSize,
+                    type: currentType, manufacturer: currentManuf,
+                    speed: currentSpeed, partNumber: currentPart
+                ))
+            }
+            currentName = nil; currentSlot = nil; currentSize = nil
+            currentType = nil; currentManuf = nil; currentSpeed = nil
+            currentPart = nil
+        }
+
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = String(line).trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            // Intel-style: a slot stanza starts with "BANK X/DIMM:" or
+            // "DIMM0:" — both are device-name-followed-by-colon with no
+            // additional `: value` payload on the same line.
+            if trimmed.hasSuffix(":"), !trimmed.contains(": "),
+               trimmed != "Memory:" {
+                commit()
+                currentName = String(trimmed.dropLast())
+                inSlotStanza = true
+                continue
+            }
+            guard inSlotStanza else { continue }
+            if trimmed.hasPrefix("Size:") {
+                currentSize = parseMemorySize(stripPrefix(trimmed, "Size:"))
+            } else if trimmed.hasPrefix("Type:") {
+                currentType = stripPrefix(trimmed, "Type:")
+            } else if trimmed.hasPrefix("Manufacturer:") {
+                currentManuf = stripPrefix(trimmed, "Manufacturer:")
+            } else if trimmed.hasPrefix("Speed:") {
+                currentSpeed = stripPrefix(trimmed, "Speed:")
+            } else if trimmed.hasPrefix("Part Number:") {
+                currentPart = stripPrefix(trimmed, "Part Number:")
+            } else if trimmed.hasPrefix("Slot:") {
+                currentSlot = stripPrefix(trimmed, "Slot:")
+            }
+        }
+        commit()
+
+        // Apple Silicon path: no slot stanzas were found, just the
+        // top-level rolled-up fields. Synthesise a single entry from
+        // `hw.memsize` + the rolled-up type / manufacturer so the
+        // Memory section still has something concrete to render.
+        if out.isEmpty {
+            var size: UInt64 = 0
+            var s: size_t = MemoryLayout<UInt64>.size
+            sysctlbyname("hw.memsize", &size, &s, nil, 0)
+            if size > 0 {
+                out.append(MemoryDIMMInfo(
+                    name: "Unified Memory",
+                    slot: nil,
+                    capacityBytes: size,
+                    type: rolledUpType,
+                    manufacturer: rolledUpManufacturer,
+                    speed: nil,
+                    partNumber: nil
+                ))
+            }
+        }
+        return out
+    }
+
+    /// Decode SP's "Size:" values which arrive as "16 GB" / "8 GB" /
+    /// "32 GB"-style strings. Multiply by 1024^3 because Apple sticks to
+    /// the binary-GB convention for RAM specifically (see SystemInfoView's
+    /// `formatMemoryBytes`).
+    private static func parseMemorySize(_ s: String) -> UInt64? {
+        let parts = s.split(separator: " ")
+        guard let first = parts.first, let n = UInt64(first) else { return nil }
+        if parts.count >= 2 {
+            switch parts[1].uppercased() {
+            case "GB", "GIB": return n * 1024 * 1024 * 1024
+            case "MB", "MIB": return n * 1024 * 1024
+            case "TB", "TIB": return n * 1024 * 1024 * 1024 * 1024
+            default: return n
+            }
+        }
+        return n
+    }
+
+    /// Parse `SPNVMeDataType` for the internal Apple-controller drive,
+    /// including controller name, partition map, removability, and the
+    /// list of APFS / HFS+ volumes hosted on the drive. External TB
+    /// enclosures show up as "Generic Storage Controller" in SP — we
+    /// skip those here because they're already surfaced under the dock.
     private static func parseStorageInfo() -> InternalStorageInfo? {
         let raw = runSystemProfiler("SPNVMeDataType") ?? ""
-        // We only care about the first internal Apple-controller drive.
-        // SPNVMeDataType labels external Thunderbolt enclosures separately
-        // under "Generic Storage Controller"; we ignore those here because
-        // they're already surfaced under the dock view.
         guard raw.contains("Apple SSD Controller") || raw.contains("Apple NVMe") else {
             return nil
         }
+        var controllerName: String?
         var model: String?
         var capacity: UInt64?
         var firmware: String?
@@ -268,8 +378,71 @@ nonisolated enum SystemInfoScanner {
         var bsdName: String?
         var trim: Bool?
         var smart: String?
-        for line in raw.split(separator: "\n") {
+        var partitionMap: String?
+        var removable: Bool?
+        var volumes: [VolumeInfo] = []
+        // Lightweight stanza tracker. SP uses indented sections — the
+        // controller is the outer block ("Apple SSD Controller:"), each
+        // drive is one level in ("APPLE SSD AP…:"), and "Volumes:" is
+        // the deepest block we care about. We watch for the volume sub-
+        // headers (one indent level under "Volumes:") and collect their
+        // child fields.
+        var inVolumes = false
+        var currentVolumeName: String?
+        var currentVolumeBSD: String?
+        var currentVolumeCapacity: UInt64?
+        var currentVolumeContent: String?
+
+        let commitVolume = {
+            if let n = currentVolumeName {
+                volumes.append(VolumeInfo(
+                    name: n,
+                    capacityBytes: currentVolumeCapacity,
+                    bsdName: currentVolumeBSD,
+                    content: currentVolumeContent
+                ))
+            }
+            currentVolumeName = nil; currentVolumeBSD = nil
+            currentVolumeCapacity = nil; currentVolumeContent = nil
+        }
+
+        for rawLine in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            if trimmed == "NVMExpress:" { continue }
+            if trimmed == "Volumes:" {
+                inVolumes = true
+                continue
+            }
+            if trimmed.hasSuffix(":"), !trimmed.contains(": ") {
+                // A new device-name / controller-name / volume-name stanza.
+                if inVolumes {
+                    commitVolume()
+                    currentVolumeName = String(trimmed.dropLast())
+                } else if controllerName == nil
+                            && (trimmed.contains("Controller") || trimmed.contains("NVMe")) {
+                    controllerName = String(trimmed.dropLast())
+                } else if model == nil {
+                    // Drive stanza name often matches "Model:" but we
+                    // wait for the explicit "Model:" line below; this
+                    // branch just resets the volumes tracker so a fresh
+                    // drive entry doesn't inherit the previous one's
+                    // volumes.
+                    inVolumes = false
+                }
+                continue
+            }
+            if inVolumes {
+                if trimmed.hasPrefix("Capacity:") {
+                    currentVolumeCapacity = parseCapacityBytes(stripPrefix(trimmed, "Capacity:"))
+                } else if trimmed.hasPrefix("BSD Name:") {
+                    currentVolumeBSD = stripPrefix(trimmed, "BSD Name:")
+                } else if trimmed.hasPrefix("Content:") {
+                    currentVolumeContent = stripPrefix(trimmed, "Content:")
+                }
+                continue
+            }
             if trimmed.hasPrefix("Model:"), model == nil {
                 model = stripPrefix(trimmed, "Model:")
             } else if trimmed.hasPrefix("Capacity:"), capacity == nil {
@@ -284,8 +457,15 @@ nonisolated enum SystemInfoScanner {
                 trim = stripPrefix(trimmed, "TRIM Support:").lowercased() == "yes"
             } else if trimmed.hasPrefix("S.M.A.R.T. status:"), smart == nil {
                 smart = stripPrefix(trimmed, "S.M.A.R.T. status:")
+            } else if trimmed.hasPrefix("Partition Map Type:"), partitionMap == nil {
+                partitionMap = stripPrefix(trimmed, "Partition Map Type:")
+            } else if trimmed.hasPrefix("Detachable Drive:"), removable == nil {
+                removable = stripPrefix(trimmed, "Detachable Drive:").lowercased() == "yes"
+            } else if trimmed.hasPrefix("Removable Media:"), removable == nil {
+                removable = stripPrefix(trimmed, "Removable Media:").lowercased() == "yes"
             }
         }
+        commitVolume()
         return InternalStorageInfo(
             model: model,
             capacityBytes: capacity,
@@ -293,7 +473,11 @@ nonisolated enum SystemInfoScanner {
             serial: serial,
             bsdName: bsdName,
             trimSupported: trim,
-            smartStatus: smart
+            smartStatus: smart,
+            controllerName: controllerName,
+            partitionMapType: partitionMap,
+            removable: removable,
+            volumes: volumes
         )
     }
 

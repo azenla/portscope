@@ -387,6 +387,289 @@ struct AudioSidebarRow: View {
     }
 }
 
+// MARK: - Storage
+
+struct StorageDetailView: View {
+    let storage: InternalStorageInfo
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                hero
+                StatGrid(stats: stats)
+                if !storage.volumes.isEmpty {
+                    SectionCard(title: "Volumes (\(storage.volumes.count))",
+                                symbol: "externaldrive.connected.to.line.below") {
+                        VStack(spacing: 0) {
+                            ForEach(storage.volumes) { v in
+                                VolumeRow(volume: v)
+                                if v.id != storage.volumes.last?.id { Divider() }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minWidth: 620)
+        .background(.background)
+    }
+
+    private var hero: some View {
+        HStack(alignment: .center, spacing: 16) {
+            ZStack {
+                Circle().fill(Color.green.opacity(0.15)).frame(width: 84, height: 84)
+                Image(systemName: "internaldrive").font(.system(size: 32))
+                    .foregroundStyle(.green)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(storage.model ?? "Internal SSD").font(.title2).bold()
+                if let cn = storage.controllerName {
+                    Text(cn).foregroundStyle(.secondary).font(.callout)
+                }
+                if let cap = storage.capacityBytes {
+                    Text(formatBytes(cap)).foregroundStyle(.secondary).font(.callout)
+                }
+            }
+            Spacer()
+            if let smart = storage.smartStatus {
+                Text(smart)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(smart == "Verified" ? .green : .orange)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background((smart == "Verified" ? Color.green : Color.orange).opacity(0.12))
+                    .clipShape(Capsule())
+            }
+        }
+    }
+
+    private var stats: [Stat] {
+        var out: [Stat] = []
+        if let m = storage.model {
+            out.append(Stat(label: "Model", value: m, symbol: "internaldrive"))
+        }
+        if let c = storage.controllerName {
+            out.append(Stat(label: "Controller", value: c, symbol: "cpu"))
+        }
+        if let cap = storage.capacityBytes {
+            out.append(Stat(label: "Capacity", value: formatBytes(cap),
+                            symbol: "externaldrive"))
+        }
+        if let fw = storage.firmware {
+            out.append(Stat(label: "Firmware",
+                            value: fw.replacingOccurrences(of: ",", with: ""),
+                            symbol: "memorychip"))
+        }
+        if let bsd = storage.bsdName {
+            out.append(Stat(label: "BSD Name", value: bsd, symbol: "terminal"))
+        }
+        if let trim = storage.trimSupported {
+            out.append(Stat(label: "TRIM",
+                            value: trim ? "Supported" : "Not Supported",
+                            symbol: "scissors"))
+        }
+        if let smart = storage.smartStatus {
+            out.append(Stat(label: "S.M.A.R.T.", value: smart,
+                            symbol: "heart.text.square"))
+        }
+        if let map = storage.partitionMapType {
+            out.append(Stat(label: "Partition Map", value: map, symbol: "tablecells"))
+        }
+        if let rm = storage.removable {
+            out.append(Stat(label: "Removable",
+                            value: rm ? "Yes" : "No",
+                            symbol: "eject"))
+        }
+        if let s = storage.serial {
+            out.append(Stat(label: "Serial", value: s,
+                            symbol: "barcode", isSecret: true))
+        }
+        return out
+    }
+
+    private func formatBytes(_ bytes: UInt64) -> String {
+        let fmt = ByteCountFormatter()
+        fmt.allowedUnits = [.useGB, .useTB]
+        fmt.countStyle = .decimal
+        return fmt.string(fromByteCount: Int64(bytes))
+    }
+}
+
+private struct VolumeRow: View {
+    let volume: VolumeInfo
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: volumeSymbol)
+                .foregroundStyle(.green)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(volume.name).font(.callout.weight(.medium))
+                    if let bsd = volume.bsdName {
+                        Text(bsd).font(.caption2.monospaced())
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                if let s = subtitle, !s.isEmpty {
+                    Text(s).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if let cap = volume.capacityBytes {
+                Text(formatVolumeBytes(cap))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var volumeSymbol: String {
+        switch volume.content {
+        case "Apple_APFS_ISC": return "shield.lefthalf.filled"
+        case "Apple_APFS_Recovery": return "lifepreserver"
+        case "Apple_APFS": return "internaldrive"
+        default: return "doc"
+        }
+    }
+    private var subtitle: String? { volume.content }
+
+    private func formatVolumeBytes(_ bytes: UInt64) -> String {
+        let fmt = ByteCountFormatter()
+        fmt.allowedUnits = [.useMB, .useGB, .useTB]
+        fmt.countStyle = .decimal
+        return fmt.string(fromByteCount: Int64(bytes))
+    }
+}
+
+struct StorageSidebarRow: View {
+    let storage: InternalStorageInfo
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "internaldrive").foregroundStyle(.green).frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(storage.model ?? "Internal SSD").lineLimit(1)
+                if let cap = storage.capacityBytes {
+                    Text(formatCapacity(cap))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func formatCapacity(_ bytes: UInt64) -> String {
+        let fmt = ByteCountFormatter()
+        fmt.allowedUnits = [.useGB, .useTB]
+        fmt.countStyle = .decimal
+        return fmt.string(fromByteCount: Int64(bytes))
+    }
+}
+
+// MARK: - Memory
+
+struct MemoryDetailView: View {
+    let dimms: [MemoryDIMMInfo]
+    let totalBytes: UInt64?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                hero
+                ForEach(dimms) { dimm in
+                    SectionCard(title: dimm.slot.map { "\(dimm.name) · \($0)" } ?? dimm.name,
+                                symbol: "memorychip") {
+                        StatGrid(stats: dimmStats(dimm))
+                    }
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minWidth: 620)
+        .background(.background)
+    }
+
+    private var hero: some View {
+        HStack(alignment: .center, spacing: 16) {
+            ZStack {
+                Circle().fill(Color.indigo.opacity(0.15)).frame(width: 84, height: 84)
+                Image(systemName: "memorychip").font(.system(size: 32))
+                    .foregroundStyle(.indigo)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(totalBytes.map { formatMemoryBytes($0) } ?? "Memory")
+                    .font(.title2).bold()
+                Text("\(dimms.count) module\(dimms.count == 1 ? "" : "s")")
+                    .foregroundStyle(.secondary).font(.callout)
+            }
+            Spacer()
+        }
+    }
+
+    private func dimmStats(_ d: MemoryDIMMInfo) -> [Stat] {
+        var out: [Stat] = []
+        if let cap = d.capacityBytes {
+            out.append(Stat(label: "Capacity", value: formatMemoryBytes(cap),
+                            symbol: "memorychip"))
+        }
+        if let t = d.type {
+            out.append(Stat(label: "Type", value: t,
+                            symbol: "rectangle.connected.to.line.below"))
+        }
+        if let m = d.manufacturer {
+            out.append(Stat(label: "Manufacturer", value: m, symbol: "building.2"))
+        }
+        if let s = d.speed {
+            out.append(Stat(label: "Speed", value: s, symbol: "speedometer"))
+        }
+        if let p = d.partNumber {
+            out.append(Stat(label: "Part Number", value: p, symbol: "barcode"))
+        }
+        if let slot = d.slot {
+            out.append(Stat(label: "Slot", value: slot, symbol: "tray"))
+        }
+        return out
+    }
+
+    private func formatMemoryBytes(_ bytes: UInt64) -> String {
+        let gib = bytes / (1024 * 1024 * 1024)
+        if gib >= 1024 {
+            let tib = Double(bytes) / Double(1024 * 1024 * 1024 * 1024)
+            return String(format: "%.0f TB", tib)
+        }
+        return "\(gib) GB"
+    }
+}
+
+struct MemorySidebarRow: View {
+    let info: SystemInfoSnapshot
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "memorychip").foregroundStyle(.indigo).frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(memoryTitle).lineLimit(1)
+                if let s = memorySubtitle, !s.isEmpty {
+                    Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private var memoryTitle: String {
+        guard let bytes = info.memoryBytes else { return "Memory" }
+        let gib = bytes / (1024 * 1024 * 1024)
+        return "\(gib) GB"
+    }
+
+    private var memorySubtitle: String? {
+        var parts: [String] = []
+        if let t = info.memoryType { parts.append(t) }
+        if let m = info.memoryManufacturer { parts.append(m) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
 // MARK: - Synthetic selectors
 
 /// Sidebar selection for the Wi-Fi adapter row. Single-instance per host.
@@ -410,6 +693,18 @@ enum CameraSelector {
     static func isCameraID(_ id: TBNodeID) -> Bool {
         (id.raw & 0xFFFF_FFFF_0000_0000) == mask
     }
+}
+
+enum StorageSelector {
+    private static let mask: UInt64 = 0x5700_DA7A_0000_0001
+    static let id = TBNodeID(raw: mask)
+    static func isStorageID(_ id: TBNodeID) -> Bool { id.raw == mask }
+}
+
+enum MemorySelector {
+    private static let mask: UInt64 = 0x5757_DEAD_0000_0001
+    static let id = TBNodeID(raw: mask)
+    static func isMemoryID(_ id: TBNodeID) -> Bool { id.raw == mask }
 }
 
 /// Same trick for audio device rows. The device name (which SP always

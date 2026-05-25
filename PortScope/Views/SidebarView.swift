@@ -165,6 +165,8 @@ struct SidebarView: View {
             }
 
             if showAllDevices {
+                storageSection
+                memorySection
                 displaysSection
                 bluetoothSection
                 wifiSection
@@ -182,13 +184,24 @@ struct SidebarView: View {
         .navigationTitle("PortScope")
         .frame(minWidth: 280)
         .toolbar {
+            // Expand-all / collapse-all over the visible disclosure rows.
+            // Operates on the sidebar's expansion state directly so the
+            // user can either blow open every TB / USB tree at once or
+            // collapse them back to the section headers.
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    showDiagram = true
+                    if expanded.isEmpty {
+                        expanded = collectAllExpandableIDs(ports: ports)
+                    } else {
+                        expanded.removeAll()
+                    }
                 } label: {
-                    Label("Diagram", systemImage: "point.3.connected.trianglepath.dotted")
+                    Label(expanded.isEmpty ? "Expand All" : "Collapse All",
+                          systemImage: expanded.isEmpty
+                            ? "rectangle.expand.vertical"
+                            : "rectangle.compress.vertical")
                 }
-                .help("Show topology diagram")
+                .help(expanded.isEmpty ? "Expand every disclosure row" : "Collapse every disclosure row")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -202,6 +215,23 @@ struct SidebarView: View {
                 }
                 .help("Re-scan IORegistry")
                 .disabled(vm.isScanning)
+            }
+            // Triple-dot menu for additional panels. Topology lives here
+            // now; future panels (bandwidth heatmap, power timeline, hop-
+            // table inspector, etc.) get added to the same menu so the
+            // main toolbar stays uncluttered.
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button {
+                        showDiagram = true
+                    } label: {
+                        Label("Thunderbolt Topology",
+                              systemImage: "point.3.connected.trianglepath.dotted")
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
             }
         }
         .sheet(isPresented: $showDiagram) {
@@ -245,6 +275,55 @@ struct SidebarView: View {
                              flattenHubs: flattenHubs,
                              pcieByPortID: pcieByPortID)
         }
+    }
+
+    /// Walk every tree the sidebar can render and collect each disclosure
+    /// row's id. Used by the toolbar Expand-All action so the user can
+    /// blow open every TB / USB / PCIe / coprocessor subtree in one
+    /// click. Physical-port synthetic ids and TB device ids are included
+    /// alongside the IORegistry-backed ones; collapse-all just clears
+    /// the expansion set, no enumeration needed.
+    private func collectAllExpandableIDs(ports: [PhysicalPort]) -> Set<TBNodeID> {
+        var out: Set<TBNodeID> = []
+        let allDisplays = vm.snapshot.displays.displays
+        for p in ports {
+            out.insert(PhysicalPortSelector.id(for: p))
+            if let dev = p.connectedDevice {
+                walkConnected(dev, into: &out)
+            }
+            for root in p.usbDeviceRoots { walkNode(root, into: &out) }
+            for output in displayOutputsAttributed(to: p,
+                                                   allPorts: ports,
+                                                   allDisplays: allDisplays) {
+                if let id = output.adapter?.id { out.insert(id) }
+            }
+        }
+        for ctrl in vm.tbSnapshot.controllers { walkNode(ctrl, into: &out) }
+        for ctrl in vm.usbSnapshot.controllers { walkNode(ctrl, into: &out) }
+        for root in vm.snapshot.pcie.roots { walkPCI(root, into: &out) }
+        let hw = vm.snapshot.internalHardware
+        for b in hw.i2cBuses { walkNode(b, into: &out) }
+        for b in hw.spiBuses { walkNode(b, into: &out) }
+        for g in hw.coprocessorGroups {
+            for c in g.coprocessors { walkNode(c, into: &out) }
+        }
+        if let bm = hw.batteryManager { walkNode(bm, into: &out) }
+        return out
+    }
+
+    private func walkNode(_ node: TBNode, into set: inout Set<TBNodeID>) {
+        set.insert(node.id)
+        for c in node.children { walkNode(c, into: &set) }
+    }
+
+    private func walkPCI(_ node: PCINode, into set: inout Set<TBNodeID>) {
+        set.insert(node.id)
+        for c in node.children { walkPCI(c, into: &set) }
+    }
+
+    private func walkConnected(_ device: ConnectedDevice, into set: inout Set<TBNodeID>) {
+        set.insert(device.id)
+        for c in device.daisyChained { walkConnected(c, into: &set) }
     }
 
     /// Auto-open the rows the user almost certainly wants to see on first
@@ -350,6 +429,25 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
+    private var storageSection: some View {
+        if let storage = vm.snapshot.internalHardware.systemInfo.internalStorage {
+            collapsibleSection("Storage", icon: "internaldrive") {
+                StorageSidebarRow(storage: storage).tag(StorageSelector.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var memorySection: some View {
+        let info = vm.snapshot.internalHardware.systemInfo
+        if !info.memoryDIMMs.isEmpty || info.memoryBytes != nil {
+            collapsibleSection("Memory", icon: "memorychip") {
+                MemorySidebarRow(info: info).tag(MemorySelector.id)
+            }
+        }
+    }
+
+    @ViewBuilder
     private var wifiSection: some View {
         if let wifi = vm.snapshot.internalHardware.systemInfo.wifi {
             collapsibleSection("Wi-Fi", icon: "wifi") {
@@ -394,40 +492,35 @@ struct SidebarView: View {
         }
     }
 
+    /// Replaces the old single "Internal Hardware" wrapper with one
+    /// top-level Section per subsystem. The user wanted each thematic
+    /// bucket (I²C, SPI, display / image-ML / video codec / storage /
+    /// security / radio coprocessors) directly visible at the top level
+    /// instead of buried under a single collapsible header — easier to
+    /// scan, easier to deep-link, and consistent with how Displays /
+    /// Bluetooth / Wi-Fi already render.
     @ViewBuilder
     private var internalHardwareSection: some View {
         let hw = vm.snapshot.internalHardware
-        // MagSafe and the battery moved to the Physical Device → Power
-        // subgroup; this section now covers the remaining internal-fabric
-        // hardware (I²C / SPI buses + SoC coprocessors grouped thematically).
-        let hasAny = !hw.i2cBuses.isEmpty
-            || !hw.spiBuses.isEmpty
-            || !hw.coprocessorGroups.isEmpty
-        if hasAny {
-            collapsibleSection("Internal Hardware", icon: "cpu") {
-                if !hw.i2cBuses.isEmpty || !hw.spiBuses.isEmpty {
-                    collapsibleSubgroup(key: "ih:Buses",
-                                        title: "Buses",
-                                        icon: "point.3.connected.trianglepath.dotted",
-                                        collapsedSubgroups: $collapsedSubgroups) {
-                        ForEach(hw.i2cBuses, id: \.id) { bus in
-                            FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
-                        }
-                        ForEach(hw.spiBuses, id: \.id) { bus in
-                            FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
-                        }
-                    }
+        if !hw.i2cBuses.isEmpty {
+            collapsibleSection("I²C Buses", icon: "point.3.connected.trianglepath.dotted") {
+                ForEach(hw.i2cBuses, id: \.id) { bus in
+                    FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
                 }
-
-                ForEach(hw.coprocessorGroups) { group in
-                    collapsibleSubgroup(key: "ih:\(group.category.title)",
-                                        title: group.category.title,
-                                        icon: group.category.symbol,
-                                        collapsedSubgroups: $collapsedSubgroups) {
-                        ForEach(group.coprocessors, id: \.id) { block in
-                            FullTopologyRow(node: block, depth: 0, expanded: $expanded)
-                        }
-                    }
+            }
+        }
+        if !hw.spiBuses.isEmpty {
+            collapsibleSection("SPI Buses", icon: "wave.3.right") {
+                ForEach(hw.spiBuses, id: \.id) { bus in
+                    FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
+                }
+            }
+        }
+        ForEach(hw.coprocessorGroups) { group in
+            collapsibleSection(group.category.topLevelTitle,
+                               icon: group.category.symbol) {
+                ForEach(group.coprocessors, id: \.id) { block in
+                    FullTopologyRow(node: block, depth: 0, expanded: $expanded)
                 }
             }
         }

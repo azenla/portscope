@@ -55,6 +55,14 @@ struct ContentView: View {
             } else if SystemInfoSelector.isSystemID(sel) {
                 SystemInfoView(info: vm.snapshot.internalHardware.systemInfo)
                     .id(sel)
+            } else if StorageSelector.isStorageID(sel),
+                      let storage = vm.snapshot.internalHardware.systemInfo.internalStorage {
+                StorageDetailView(storage: storage).id(sel)
+            } else if MemorySelector.isMemoryID(sel) {
+                MemoryDetailView(
+                    dimms: vm.snapshot.internalHardware.systemInfo.memoryDIMMs,
+                    totalBytes: vm.snapshot.internalHardware.systemInfo.memoryBytes
+                ).id(sel)
             } else if WiFiSelector.isWiFiID(sel),
                       let wifi = vm.snapshot.internalHardware.systemInfo.wifi {
                 ScrollView { WiFiDetailView(info: wifi) }.id(sel)

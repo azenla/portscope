@@ -41,6 +41,9 @@ nonisolated struct SystemInfoSnapshot: Hashable {
     /// Wi-Fi adapter facts (chipset, MAC, country, supported PHYs,
     /// connected network). Nil when no Wi-Fi interface is available.
     let wifi: WiFiInfo?
+    /// Physical memory modules. Apple Silicon publishes one entry for
+    /// the unified-memory pool; Intel Macs publish one per DIMM bank.
+    let memoryDIMMs: [MemoryDIMMInfo]
     /// Built-in + connected cameras as published by SPCameraDataType.
     /// External / Continuity cameras (e.g. "Prism Camera" from a paired
     /// iPhone) show up here too.
@@ -70,7 +73,8 @@ nonisolated struct SystemInfoSnapshot: Hashable {
         chipName: nil, cpuCoreCount: nil, cpuPCoreCount: nil,
         cpuECoreCount: nil, gpuCoreCount: nil, metalVersion: nil,
         memoryBytes: nil, memoryType: nil, memoryManufacturer: nil,
-        internalStorage: nil, wifi: nil, cameras: [], audioDevices: [],
+        internalStorage: nil, wifi: nil, memoryDIMMs: [],
+        cameras: [], audioDevices: [],
         macOSVersion: nil, macOSBuild: nil,
         kernelVersion: nil, systemFirmware: nil, hwModel: nil,
         marketingName: nil, systemSerial: nil, hardwareUUID: nil
@@ -167,4 +171,51 @@ nonisolated struct InternalStorageInfo: Hashable {
     let trimSupported: Bool?
     /// macOS S.M.A.R.T. roll-up status, when available.
     let smartStatus: String?
+    /// Apple SSD controller marketing name (e.g. "Apple SSD Controller").
+    let controllerName: String?
+    /// Partition map type (e.g. "GPT (GUID Partition Table)").
+    let partitionMapType: String?
+    /// True when SP reports the drive as removable / detachable.
+    let removable: Bool?
+    /// APFS / HFS+ volumes hosted on the drive.
+    let volumes: [VolumeInfo]
+}
+
+/// One logical volume on the internal NVMe drive, as published by
+/// `SPNVMeDataType`'s "Volumes:" sub-block. Apple Silicon stock layout
+/// has four volumes (iSCPreboot, Macintosh HD, Recovery, Update) plus
+/// any extra user-created APFS volumes.
+nonisolated struct VolumeInfo: Hashable, Identifiable {
+    var id: String { bsdName ?? name }
+    let name: String
+    let capacityBytes: UInt64?
+    let bsdName: String?
+    /// APFS role string ("Apple_APFS_ISC", "Apple_APFS", "Apple_APFS_Recovery"
+    /// …). Useful for separating user data from system + recovery volumes.
+    let content: String?
+}
+
+/// One memory module / DIMM. On Apple Silicon there's a single unified
+/// memory pool (no replaceable DIMMs), so this is a single entry. On
+/// Intel Macs SP enumerated each physical DIMM with size, type, speed,
+/// status, manufacturer; we mirror that schema so the same view code
+/// handles both.
+nonisolated struct MemoryDIMMInfo: Hashable, Identifiable {
+    var id: String { slot ?? name }
+    /// Bank / module name. On Apple Silicon: "Onboard Memory" since
+    /// there's only one. On Intel: "DIMM0", "DIMM1", …
+    let name: String
+    /// Slot identifier. May be nil on Apple Silicon (no physical slot).
+    let slot: String?
+    /// Capacity in bytes.
+    let capacityBytes: UInt64?
+    /// "LPDDR5" / "DDR4" / etc.
+    let type: String?
+    /// "Samsung" / "Micron" / "SK hynix" / …
+    let manufacturer: String?
+    /// Operating speed when published ("6400 MHz" on M-series LPDDR5).
+    let speed: String?
+    /// Part number when the kernel publishes one. Usually only on Intel
+    /// DIMMs that came through the SMBIOS path.
+    let partNumber: String?
 }

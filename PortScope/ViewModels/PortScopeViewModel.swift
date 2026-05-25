@@ -280,6 +280,8 @@ final class PortScopeViewModel: ObservableObject {
     private func exists(id: TBNodeID) -> Bool {
         if PhysicalPortSelector.isPortID(id) { return true }
         if SystemInfoSelector.isSystemID(id) { return snapshot.internalHardware.systemInfo.hasAnyData }
+        if StorageSelector.isStorageID(id) { return snapshot.internalHardware.systemInfo.internalStorage != nil }
+        if MemorySelector.isMemoryID(id) { return !snapshot.internalHardware.systemInfo.memoryDIMMs.isEmpty || snapshot.internalHardware.systemInfo.memoryBytes != nil }
         if WiFiSelector.isWiFiID(id) { return snapshot.internalHardware.systemInfo.wifi != nil }
         if CameraSelector.isCameraID(id) {
             return snapshot.internalHardware.systemInfo.cameras
