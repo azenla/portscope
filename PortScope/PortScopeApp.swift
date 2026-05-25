@@ -25,16 +25,38 @@ enum PortScopeMain {
 
     private static func runCLI(request: CLIRequest) {
         let snapshot: SystemSnapshot = {
+            // TB / USB / accessories always scan — they're what `--simple`
+            // and the bare default emit, and they're fast (no `Process`
+            // spawns). The other scanners are gated on the flags that
+            // would surface their data in the dump:
+            //   * `bluetooth` spawns `system_profiler SPBluetoothDataType`
+            //     and routinely takes 10+ seconds. Only meaningful when
+            //     `--all` is set (output gates the `bluetooth` key the
+            //     same way).
+            //   * `displays` is moderate but only emitted under `--all`.
+            //   * `pcie` is cheap but only emitted under `--buses`.
+            //   * `InternalHardwareScanner` always runs (used by the
+            //     Physical Device summary), but its heavy `SystemInfo`
+            //     half is gated by `includeHeavyHostInfo: request.showAll`.
             let tb = ThunderboltScanner.scan()
             let usb = USBScanner.scan()
             let accessories = AccessoryScanner.scan()
                 + SDCardScanner.scan()
                 + PowerInputScanner.scan()
                 + EthernetScanner.scan()
-            let internalHardware = InternalHardwareScanner.scan(accessories: accessories)
-            let bluetooth = BluetoothScanner.scan()
-            let displays = DisplayScanner.scan()
-            let pcie = PCIScanner.scan()
+            let internalHardware = InternalHardwareScanner.scan(
+                accessories: accessories,
+                includeHeavyHostInfo: request.showAll
+            )
+            let bluetooth = request.showAll
+                ? BluetoothScanner.scan()
+                : BluetoothSnapshot.empty
+            let displays = request.showAll
+                ? DisplayScanner.scan()
+                : DisplaySnapshot.empty
+            let pcie = request.showBuses
+                ? PCIScanner.scan()
+                : PCISnapshot.empty
             return SystemSnapshot(
                 tb: tb, usb: usb, accessories: accessories,
                 internalHardware: internalHardware,

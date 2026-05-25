@@ -12,7 +12,18 @@ import Foundation
 import IOKit
 
 nonisolated enum InternalHardwareScanner {
+    /// Default entry point — reads the Show-All-Devices toggle from
+    /// `UserDefaults` so the GUI keeps working without an explicit pass-
+    /// through. CLI callers should use `scan(accessories:includeHeavyHostInfo:)`
+    /// with the `--all` flag value so the dump doesn't depend on whatever
+    /// state the GUI happened to leave in UserDefaults.
     static func scan(accessories: [PortAccessoryInfo]) -> InternalHardwareSnapshot {
+        let heavy = UserDefaults.standard.bool(forKey: "showAllDevices")
+        return scan(accessories: accessories, includeHeavyHostInfo: heavy)
+    }
+
+    static func scan(accessories: [PortAccessoryInfo],
+                     includeHeavyHostInfo: Bool) -> InternalHardwareSnapshot {
         let arm = scanARMDevices()
         let battery = scanBatteryManager()
         let magsafe = accessories.first { port in
@@ -20,7 +31,7 @@ nonisolated enum InternalHardwareScanner {
             return false
         }
         let groups = groupCoprocessors(arm.coprocessors)
-        let systemInfo = SystemInfoScanner.scan()
+        let systemInfo = SystemInfoScanner.scan(includeHeavySources: includeHeavyHostInfo)
         return InternalHardwareSnapshot(
             systemInfo: systemInfo,
             i2cBuses: arm.i2c,
