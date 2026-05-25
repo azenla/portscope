@@ -621,23 +621,47 @@ private struct UpstreamLinkCard: View {
 /// Per-category breakdown (DP / USB / PCIe rows) below the aggregate
 /// bandwidth bar — lets the user see which class of traffic is eating the
 /// reservation. Renders nothing when no class has a real reservation.
-private struct TunnelBreakdownList: View {
+///
+/// `consumers` is the per-tunnel-class device attribution (displays
+/// for DP, USB endpoints for USB, etc). The kernel doesn't expose a
+/// per-device tunnel reservation, so consumers are listed beneath the
+/// class with a name + lightweight subtitle rather than a hard wattage.
+struct TunnelBreakdownList: View {
     let tunnels: [PortTunnel]
     let linkBandwidth: UInt64
+    var consumers: [PortTunnel.Kind: [TunnelConsumer]] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("By tunnel class")
+                Text("What's using this link")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
             ForEach(tunnels, id: \.self) { t in
-                TunnelBreakdownRow(tunnel: t, linkBandwidth: linkBandwidth)
+                VStack(alignment: .leading, spacing: 4) {
+                    TunnelBreakdownRow(tunnel: t, linkBandwidth: linkBandwidth)
+                    if let list = consumers[t.kind], !list.isEmpty {
+                        ForEach(list) { c in
+                            TunnelConsumerRow(consumer: c,
+                                              kind: t.kind)
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+/// One device (or chassis-level placeholder) attributed to a tunnel class.
+/// The kernel doesn't publish per-device tunnel reservations, so we just
+/// surface the device's name + a one-line hint about what it is — enough
+/// for the user to recognise which physical thing is using the dock link.
+struct TunnelConsumer: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let subtitle: String?
 }
 
 private struct TunnelBreakdownRow: View {
@@ -670,6 +694,130 @@ private struct TunnelBreakdownRow: View {
             }
         }
     }
+}
+
+private struct TunnelConsumerRow: View {
+    let consumer: TunnelConsumer
+    let kind: PortTunnel.Kind
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Indented past the tunnel-class icon column so the consumers
+            // visually hang off the category row above.
+            Rectangle().fill(Color.clear).frame(width: 18, height: 1)
+            Image(systemName: consumerSymbol)
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+                .font(.caption2)
+            Text(consumer.title)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            if let s = consumer.subtitle, !s.isEmpty {
+                Text("· \(s)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(.leading, 4)
+    }
+
+    private var consumerSymbol: String {
+        switch kind {
+        case .displayPort: return "display"
+        case .usb: return "cable.connector"
+        case .pcie: return "square.stack.3d.up"
+        }
+    }
+}
+
+/// Build the per-tunnel-class consumer attribution for a physical port.
+/// DP gets the displays attributed to the port; USB gets the top non-hub
+/// devices under the port; PCIe is left empty unless we discover the dock
+/// publishes PCIe descendants in IOKit (it usually doesn't on Apple Silicon,
+/// since the dock's NVMe is hidden behind a vendor-bridged enclosure that
+/// only enumerates over USB).
+@MainActor
+func tunnelConsumers(forPort port: PhysicalPort,
+                     displays: [DisplayInfo],
+                     maxUSBListed: Int = 4) -> [PortTunnel.Kind: [TunnelConsumer]] {
+    var out: [PortTunnel.Kind: [TunnelConsumer]] = [:]
+
+    // DisplayPort → displays attributed to this port. Adapter ID is unique
+    // when the kernel exposes one; otherwise fall back to the display ID.
+    if !displays.isEmpty {
+        out[.displayPort] = displays.map { d in
+            TunnelConsumer(id: "dp-\(d.id.raw)",
+                           title: d.title,
+                           subtitle: displaySubtitle(d))
+        }
+    }
+
+    // USB → the meaningful endpoint devices on the port. Skip hubs (the
+    // dock's internals) and per-interface entries; the user wants to see
+    // "what's the storage / mouse / NIC eating the link", not the dock's
+    // hub fabric. Cap the list so a busy dock doesn't dominate the card.
+    let usbEndpoints = port.attachedUSBDevices
+        .filter { $0.kind == .usbDevice }
+        .filter { isMeaningfulUSBEndpoint($0) }
+    if !usbEndpoints.isEmpty {
+        let listed = usbEndpoints.prefix(maxUSBListed)
+        var rows: [TunnelConsumer] = listed.map { dev in
+            TunnelConsumer(id: "usb-\(dev.id.raw)",
+                           title: usbEndpointTitle(dev),
+                           subtitle: usbEndpointSubtitle(dev))
+        }
+        let remaining = usbEndpoints.count - listed.count
+        if remaining > 0 {
+            rows.append(TunnelConsumer(id: "usb-more",
+                                       title: "… and \(remaining) more",
+                                       subtitle: nil))
+        }
+        out[.usb] = rows
+    }
+
+    return out
+}
+
+private func displaySubtitle(_ d: DisplayInfo) -> String? {
+    var parts: [String] = []
+    if let w = d.widthPixels, let h = d.heightPixels, w > 0, h > 0 {
+        parts.append("\(w) × \(h)")
+    }
+    if let mx = d.maxRefreshHz {
+        parts.append("\(Int(mx.rounded())) Hz")
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+}
+
+private func isMeaningfulUSBEndpoint(_ node: TBNode) -> Bool {
+    // Filter out the dock's own internal USB controller / hub passthroughs
+    // (BillBoard descriptors, the dock-internal "Anker Prime Docking Station"
+    // hub entries published on the USB tree, Apple's HID composite bus, etc.).
+    // Anything that's classified as a hub is already skipped at the call
+    // site; here we drop a few specific endpoints that aren't real "things
+    // plugged into the dock".
+    let title = node.title.lowercased()
+    if title.contains("billboard") { return false }
+    if title == "usb hub" || title.hasSuffix(" hub") { return false }
+    return true
+}
+
+private func usbEndpointTitle(_ node: TBNode) -> String {
+    node.title
+}
+
+private func usbEndpointSubtitle(_ node: TBNode) -> String? {
+    let speed = node.properties["Device Speed"]?.asUInt
+        ?? node.properties["kUSBCurrentSpeed"]?.asUInt
+    let vendor = node.properties["kUSBVendorString"]?.asString
+        ?? node.properties["USB Vendor Name"]?.asString
+    var parts: [String] = []
+    if let v = vendor, !v.isEmpty { parts.append(v) }
+    if let s = speed, s > 0 { parts.append(usbSpeedShortLabel(s)) }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
 nonisolated private func tunnelCategoryColor(_ kind: PortTunnel.Kind) -> Color {
@@ -1098,9 +1246,15 @@ struct BandwidthBar: View {
         let req = Double(required)
         let maxD = Double(maximum)
         let reqFrac = total > 0 ? min(req / total, 1.0) : 0
+        // "Max planned" is the per-adapter kernel `Maximum Bandwidth Allocated`
+        // summed across all active function adapters. It's a worst-case
+        // ceiling — the TB scheduler arbitrates so the link's tunnels never
+        // all peak at once, and on docks the sum routinely exceeds link
+        // capacity. We surface the ceiling as a marker, not as a parallel
+        // fill, and we don't paint it as an error condition.
         let maxFrac = total > 0 ? min(maxD / total, 1.0) : 0
-        let overage = maximum > linkBandwidth
-        let overFrac = overage ? Double(maximum - linkBandwidth) / Double(maximum) : 0
+        let peakOverflows = maximum > linkBandwidth
+        let showPeakMarker = maximum > required && maximum > 0
 
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -1116,18 +1270,17 @@ struct BandwidthBar: View {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule()
-                            .fill(Color.yellow.opacity(0.55))
-                            .frame(width: geo.size.width * maxFrac)
-                        Capsule()
                             .fill(Color.orange)
                             .frame(width: geo.size.width * reqFrac)
-                        if overage {
-                            // Hatched red overlay on the right edge to indicate the
-                            // planned ceiling exceeds capacity.
-                            Capsule()
-                                .stroke(Color.red, lineWidth: 1.5)
-                                .frame(width: max(geo.size.width * overFrac, 16))
-                                .offset(x: geo.size.width - max(geo.size.width * overFrac, 16))
+                        if showPeakMarker {
+                            // Slim dashed marker at the "peak planned" position
+                            // — readable against the orange + quaternary
+                            // backdrop, distinct from the bar fill so the eye
+                            // doesn't read it as additional usage.
+                            Rectangle()
+                                .fill(Color.yellow.opacity(0.85))
+                                .frame(width: 2, height: 22)
+                                .offset(x: geo.size.width * maxFrac - 1)
                         }
                     }
                 }
@@ -1136,9 +1289,11 @@ struct BandwidthBar: View {
 
             HStack(spacing: 16) {
                 BWLegend(color: .orange, label: "Reserved", value: tbBandwidthLabel(required))
-                BWLegend(color: Color.yellow.opacity(0.55), label: "Max planned",
-                         value: tbBandwidthLabel(maximum),
-                         tint: overage ? .red : nil)
+                if showPeakMarker {
+                    BWLegend(color: Color.yellow.opacity(0.85),
+                             label: "Peak planned",
+                             value: tbBandwidthLabel(maximum))
+                }
                 Spacer()
                 Text(total > 0 ? String(format: "%.0f%% reserved", reqFrac * 100) : "")
                     .font(.caption.monospacedDigit())
@@ -1146,14 +1301,10 @@ struct BandwidthBar: View {
             }
             .font(.caption)
 
-            if overage {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text("Planned bandwidth (\(tbBandwidthLabel(maximum))) exceeds link capacity by \(tbBandwidthLabel(maximum - linkBandwidth)).")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.caption)
+            if peakOverflows {
+                Text("Peak planned (\(tbBandwidthLabel(maximum))) sums per-adapter ceilings, so it can exceed link capacity — the TB scheduler arbitrates so tunnels never all peak together.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
     }

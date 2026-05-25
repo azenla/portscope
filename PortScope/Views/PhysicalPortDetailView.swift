@@ -192,6 +192,14 @@ struct PhysicalPortDetailView: View {
                                      required: s.reserved,
                                      maximum: s.max)
                             .padding(.top, 6)
+                        if !s.perTunnel.isEmpty {
+                            Divider().padding(.vertical, 2)
+                            TunnelBreakdownList(
+                                tunnels: s.perTunnel,
+                                linkBandwidth: s.linkBandwidth,
+                                consumers: tunnelConsumers(forPort: port,
+                                                           displays: displays))
+                        }
                     }
                 }
             }

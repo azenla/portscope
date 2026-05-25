@@ -87,11 +87,11 @@ nonisolated private func makeAdapterInfo(controller: TBNode,
     let linkActive = ((cprops["IOLinkStatus"]?.asUInt ?? 0) & 0x1) == 0x1
     let speedMbps = decodeEthernetSpeedMbps(cprops["IOActiveMedium"])
     let usbProps = usbDevice?.properties
-    let productName = usbProps?["USB Product Name"]?.asString
-        ?? usbProps?["kUSBProductString"]?.asString
+    // Prefer `kUSBProductString` over `USB Product Name` — the latter is the
+    // sanitised entry-name mirror (slashes → underscores on some devices).
+    let productName = (usbProps.flatMap { NodeFormatter.usbProductName($0) })
         ?? usbDevice?.title
-    let usbVendor = usbProps?["USB Vendor Name"]?.asString
-        ?? usbProps?["kUSBVendorString"]?.asString
+    let usbVendor = (usbProps.flatMap { NodeFormatter.usbVendorName($0) })
     return USBEthernetAdapterInfo(
         interfaceID: iface.id,
         bsdName: bsd,

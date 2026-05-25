@@ -729,9 +729,14 @@ nonisolated enum TopologyMapper {
         let cfg = node.properties["kUSBConfigurationCurrentOverride"]?.asUInt
         let primary = alloc ?? cap ?? cfg ?? 0
         guard primary > 0 else { return nil }
-        let name = node.properties["USB Product Name"]?.asString
-            ?? node.properties["kUSBProductString"]?.asString
-            ?? node.title
+        // Prefer `kUSBProductString` — that's the raw USB string descriptor
+        // ("USB 10/100/1G/2.5G LAN"). Apple's `USB Product Name` mirror has
+        // slashes replaced with underscores on some devices because the
+        // string also becomes the IORegistry entry name (which can't contain
+        // "/"), so reading it directly gives "USB 10_100_1G_2_5G LAN" —
+        // technically accurate to the registry, but ugly in the UI. Same
+        // preference order as `NodeFormatter.usbProductName`.
+        let name = NodeFormatter.usbProductName(node.properties) ?? node.title
         return PortSinkConsumer(
             id: node.id,
             name: name,

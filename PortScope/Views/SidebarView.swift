@@ -75,28 +75,20 @@ struct SidebarView: View {
         let builtInDisplay: DisplayInfo? = showBuiltinDevices
             ? vm.snapshot.displays.displays.first { $0.isBuiltIn }
             : nil
-        // When neither sidebar toggle is on, Physical Device is the only
-        // top-level section visible. Render its contents naked (no section
-        // header / chevron) so the sidebar isn't dominated by a single
-        // collapsible group that has nothing to be distinguished from.
-        let needsTopLevelHeader = showBuses || showAllDevices
-
+        // Each Physical Device subgroup (Power / USB-C / USB-A / HDMI / …)
+        // is its own Section, so SwiftUI's `List` can manage cell identity
+        // cleanly across power-poll refreshes (a flat sequence of buttons +
+        // rows used to leak text from one row onto the next when the list
+        // re-rendered). With subgroup Sections doing the visual grouping, a
+        // top-level "Physical Device" wrapper isn't needed — and nesting
+        // Section inside Section in a sidebar List doesn't render the inner
+        // headers anyway.
         List(selection: $vm.selection) {
-            if needsTopLevelHeader {
-                collapsibleSection("Physical Device", icon: "powerplug.fill") {
-                    physicalDeviceContent(ports: ports,
-                                          hw: hw,
-                                          batteryNode: batteryNode,
-                                          builtInDisplay: builtInDisplay,
-                                          flattenHubs: !showIntermediateHubs)
-                }
-            } else {
-                physicalDeviceContent(ports: ports,
-                                      hw: hw,
-                                      batteryNode: batteryNode,
-                                      builtInDisplay: builtInDisplay,
-                                      flattenHubs: !showIntermediateHubs)
-            }
+            physicalDeviceContent(ports: ports,
+                                  hw: hw,
+                                  batteryNode: batteryNode,
+                                  builtInDisplay: builtInDisplay,
+                                  flattenHubs: !showIntermediateHubs)
 
             if showBuses {
                 collapsibleSection("Thunderbolt", icon: "bolt.horizontal.circle") {
@@ -349,10 +341,13 @@ struct SidebarView: View {
             if !isCollapsed { content() }
         } header: {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    if isCollapsed { collapsedSections.remove(name) }
-                    else { collapsedSections.insert(name) }
-                }
+                // No `withAnimation` here: animating row inserts/removes
+                // inside a SwiftUI sidebar `List` causes ghost frames where
+                // text from one row paints on top of another. The chevron
+                // has its own rotation animation, so the affordance still
+                // feels live without the broken row transition.
+                if isCollapsed { collapsedSections.remove(name) }
+                else { collapsedSections.insert(name) }
             } label: {
                 HStack(spacing: 6) {
                     DisclosureChevron(isExpanded: !isCollapsed, style: .section)
@@ -535,9 +530,21 @@ struct DisclosureChevron: View {
 /// Inline collapsible subgroup. Used inside top-level sections to label
 /// related rows (POWER / USB-C / Buses / Connected …). Header is a clickable
 /// chevron + uppercase title; on collapse, the content closure is skipped
-/// entirely so the rows disappear from the List. Lives at file scope so
-/// both `SidebarView` and the nested `PortsByConnector` struct can call it
-/// against the shared `collapsedSubgroups` state owned by `SidebarView`.
+/// entirely so the rows disappear from the List.
+///
+/// Implemented as a `Section { rows } header: { button }` rather than a flat
+/// `Button + rows` sequence so that SwiftUI's `List` treats the header as a
+/// section affordance instead of a sibling cell. The previous flat layout
+/// produced visible ghosting during sidebar refreshes — when the power-poll
+/// re-rendered the list, cell reuse could leave a row's text from one
+/// subgroup briefly painted on top of the next subgroup's row (most easily
+/// seen as "SD Card Slot" bleeding through the HDMI row).
+///
+/// Toggling the collapse state deliberately does not use `withAnimation` —
+/// animating row insertion/removal inside a SwiftUI sidebar `List` is the
+/// other half of the same ghosting bug. The chevron has its own rotation
+/// animation, so the user still sees a smooth affordance.
+///
 /// `key` is namespaced (e.g. `"physical:Power"`, `"ih:Buses"`) so subgroup
 /// titles that happen to match top-level section names don't share state.
 @ViewBuilder
@@ -549,32 +556,31 @@ fileprivate func collapsibleSubgroup<Content: View>(
     @ViewBuilder content: () -> Content
 ) -> some View {
     let isCollapsed = collapsedSubgroups.wrappedValue.contains(key)
-    Button {
-        withAnimation(.easeInOut(duration: 0.18)) {
+    Section {
+        if !isCollapsed { content() }
+    } header: {
+        Button {
             if isCollapsed { collapsedSubgroups.wrappedValue.remove(key) }
             else { collapsedSubgroups.wrappedValue.insert(key) }
-        }
-    } label: {
-        HStack(spacing: 6) {
-            DisclosureChevron(isExpanded: !isCollapsed, style: .subgroup)
-            if let icon {
-                Image(systemName: icon)
-                    .font(.caption2)
+        } label: {
+            HStack(spacing: 6) {
+                DisclosureChevron(isExpanded: !isCollapsed, style: .subgroup)
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 14, alignment: .center)
+                }
+                Text(title)
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
-                    .frame(width: 14, alignment: .center)
+                    .textCase(.uppercase)
+                Spacer()
             }
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .textCase(.uppercase)
-            Spacer()
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
     }
-    .buttonStyle(.plain)
-    .padding(.top, 4)
-
-    if !isCollapsed { content() }
 }
 
 private struct PortBranch: View {
