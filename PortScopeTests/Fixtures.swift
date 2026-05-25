@@ -137,9 +137,14 @@ enum Fix {
             heightPixels: 2160,
             minRefreshHz: 60,
             maxRefreshHz: 60,
+            currentRefreshHz: 60,
             colorBitDepth: 10,
+            pixelEncoding: "RGB",
+            colorSpace: "sRGB",
             colorAccuracyIndex: nil,
             supportsHDR: false,
+            variableRefreshCapable: false,
+            variableRefreshActive: false,
             timingModeCount: 1
         )
     }

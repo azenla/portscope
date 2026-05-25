@@ -76,21 +76,54 @@ struct DisplayDetailView: View {
                               value: "\(w) × \(h)",
                               symbol: "rectangle.expand.vertical"))
         }
-        if let maxHz = display.maxRefreshHz {
+        if let curr = display.currentRefreshHz {
+            stats.append(Stat(label: "Current Refresh",
+                              value: formatHz(curr),
+                              symbol: "metronome"))
+        }
+        if let maxHz = display.maxRefreshHz, let minHz = display.minRefreshHz {
             let value: String
-            if let minHz = display.minRefreshHz, abs(maxHz - minHz) > 1 {
+            if abs(maxHz - minHz) > 1 {
                 value = "\(Int(minHz.rounded())) – \(Int(maxHz.rounded())) Hz"
             } else {
                 value = "\(Int(maxHz.rounded())) Hz"
             }
-            stats.append(Stat(label: "Refresh",
+            stats.append(Stat(label: "Supported Range",
                               value: value,
-                              symbol: "metronome"))
+                              symbol: "arrow.left.and.right"))
+        }
+        if display.variableRefreshCapable || display.variableRefreshActive {
+            let value: String
+            if display.variableRefreshActive {
+                value = "Active"
+            } else if display.variableRefreshCapable {
+                value = "Capable"
+            } else {
+                value = "—"
+            }
+            stats.append(Stat(label: "Variable Refresh",
+                              value: value,
+                              symbol: "waveform.path"))
+        }
+        if let encoding = display.pixelEncoding {
+            stats.append(Stat(label: "Pixel Encoding",
+                              value: encoding,
+                              symbol: "square.grid.3x3"))
         }
         if let depth = display.colorBitDepth {
             stats.append(Stat(label: "Color Depth",
                               value: "\(depth)-bit",
                               symbol: "paintpalette"))
+        }
+        if let space = display.colorSpace {
+            stats.append(Stat(label: "Color Space",
+                              value: space,
+                              symbol: "drop.halffull"))
+        }
+        if display.supportsHDR {
+            stats.append(Stat(label: "HDR",
+                              value: "Capable",
+                              symbol: "sparkles"))
         }
         if let accuracy = display.colorAccuracyIndex {
             stats.append(Stat(label: "Color Accuracy Index",
@@ -102,12 +135,17 @@ struct DisplayDetailView: View {
                               value: "\(display.timingModeCount)",
                               symbol: "rectangle.stack"))
         }
-        if display.supportsHDR {
-            stats.append(Stat(label: "HDR / EDR",
-                              value: "Supported",
-                              symbol: "sparkles"))
-        }
         return stats
+    }
+
+    /// Refresh-rate formatter — round to integer for normal panels (60,
+    /// 120, 144), keep two decimals on cinema-pace rates (23.98, 29.97,
+    /// 47.95) so the format-conformant numbers stay visible.
+    private func formatHz(_ hz: Double) -> String {
+        if hz < 30 { return String(format: "%.2f Hz", hz) }
+        let rounded = hz.rounded()
+        if abs(hz - rounded) > 0.05 { return String(format: "%.2f Hz", hz) }
+        return "\(Int(rounded)) Hz"
     }
 
     /// Pull a compact list of unique resolution / refresh entries out of

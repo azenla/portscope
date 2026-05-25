@@ -145,7 +145,12 @@ enum SnapshotDumper {
             "height_pixels": d.heightPixels.map { NSNumber(value: $0) } ?? NSNull(),
             "min_refresh_hz": d.minRefreshHz.map { NSNumber(value: $0) } ?? NSNull(),
             "max_refresh_hz": d.maxRefreshHz.map { NSNumber(value: $0) } ?? NSNull(),
+            "current_refresh_hz": d.currentRefreshHz.map { NSNumber(value: $0) } ?? NSNull(),
+            "variable_refresh_capable": d.variableRefreshCapable,
+            "variable_refresh_active": d.variableRefreshActive,
             "color_bit_depth": d.colorBitDepth.map { NSNumber(value: $0) } ?? NSNull(),
+            "pixel_encoding": d.pixelEncoding ?? NSNull(),
+            "color_space": d.colorSpace ?? NSNull(),
             "color_accuracy_index": d.colorAccuracyIndex.map { NSNumber(value: $0) } ?? NSNull(),
             "supports_hdr": d.supportsHDR,
             "timing_mode_count": d.timingModeCount,
@@ -833,8 +838,17 @@ private final class PrettyPrinter {
             line("   \(icon) \(bold(d.title))\(d.subtitle.map { dim(" · \($0)") } ?? "")")
             if d.isConnected {
                 var bits: [String] = []
-                if let depth = d.colorBitDepth { bits.append("\(depth)-bit") }
-                if d.supportsHDR { bits.append("HDR") }
+                if let depth = d.colorBitDepth {
+                    if let enc = d.pixelEncoding {
+                        bits.append("\(depth)-bit \(enc)")
+                    } else {
+                        bits.append("\(depth)-bit")
+                    }
+                }
+                if let space = d.colorSpace { bits.append(space) }
+                if d.supportsHDR { bits.append("HDR capable") }
+                if d.variableRefreshActive { bits.append("VRR active") }
+                else if d.variableRefreshCapable { bits.append("VRR capable") }
                 if d.timingModeCount > 0 { bits.append("\(d.timingModeCount) modes") }
                 if !bits.isEmpty {
                     line("      " + dim(bits.joined(separator: " · ")))

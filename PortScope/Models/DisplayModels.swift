@@ -174,21 +174,42 @@ nonisolated struct DisplayInfo: Hashable, Identifiable {
     let widthPixels: UInt64?
     let heightPixels: UInt64?
 
-    /// Refresh rate range in Hz, when reported. The DCP publishes the
-    /// allowed minimum and maximum together — variable-refresh panels (the
-    /// MacBook Pro's ProMotion XDR) cover 10..120 Hz, fixed displays
-    /// publish min == max.
+    /// Refresh rate range in Hz across all timing modes the panel advertises.
+    /// Fixed-refresh panels publish min == max; ProMotion / FreeSync panels
+    /// have a wide span.
     let minRefreshHz: Double?
     let maxRefreshHz: Double?
+    /// Refresh rate the engine is currently driving the panel at — pulled
+    /// from the `IsPreferred` timing element (the DCP's active mode).
+    let currentRefreshHz: Double?
 
-    /// Color-element depth (typically 8 or 10) parsed from the preferred
-    /// ColorModes entry when available.
+    /// Color-element depth (typically 8 or 10) for the highest-preference
+    /// color mode the engine has negotiated, parsed from `ColorElements[0]`.
     let colorBitDepth: UInt64?
+    /// Decoded pixel-encoding for the negotiated mode — "RGB",
+    /// "YCbCr 4:4:4", "YCbCr 4:2:2", "YCbCr 4:2:0", or nil when unknown.
+    let pixelEncoding: String?
+    /// Color space for the negotiated mode (sRGB, BT.709, BT.2020, …).
+    /// Decoded from the Colorimetry code in `ColorElements[0]`.
+    let colorSpace: String?
     /// Apple's "color-accuracy-index" — 98 on the XDR panel.
     let colorAccuracyIndex: UInt64?
 
-    /// Whether the engine reports HDR support (IOMFBSupportsHDR, etc.).
+    /// Whether the engine reports HDR *support* (any ColorElement has
+    /// `DynamicRange = 1`, or `IOMFBSupportsHDR` is true). This is a
+    /// static capability — there's no reliable IOMFB property for
+    /// "HDR is currently being driven", because the SDR-vs-HDR choice
+    /// lives in user-space (System Settings) and only NSScreen's
+    /// `maximumExtendedDynamicRangeColorComponentValue` reflects it.
     let supportsHDR: Bool
+
+    /// True when the panel advertises a refresh range wider than 1 Hz —
+    /// i.e. it's variable-refresh / ProMotion / FreeSync capable.
+    let variableRefreshCapable: Bool
+    /// True when QMS / VRR mode is currently enabled on the engine
+    /// (`QMSVRREnableConfig != 0`). Distinct from capability — capable
+    /// panels may still be driven at a fixed rate when nothing's animating.
+    let variableRefreshActive: Bool
 
     /// Number of distinct timing modes the panel advertises (i.e. unique
     /// resolution/refresh entries in `TimingElements`).

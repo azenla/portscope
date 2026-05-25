@@ -300,18 +300,12 @@ struct SidebarView: View {
     /// the expansion set, no enumeration needed.
     private func collectAllExpandableIDs(ports: [PhysicalPort]) -> Set<TBNodeID> {
         var out: Set<TBNodeID> = []
-        let allDisplays = vm.snapshot.displays.displays
         for p in ports {
             out.insert(PhysicalPortSelector.id(for: p))
             if let dev = p.connectedDevice {
                 walkConnected(dev, into: &out)
             }
             for root in p.usbDeviceRoots { walkNode(root, into: &out) }
-            for output in displayOutputsAttributed(to: p,
-                                                   allPorts: ports,
-                                                   allDisplays: allDisplays) {
-                if let id = output.adapter?.id { out.insert(id) }
-            }
         }
         for ctrl in vm.tbSnapshot.controllers { walkNode(ctrl, into: &out) }
         for ctrl in vm.usbSnapshot.controllers { walkNode(ctrl, into: &out) }
@@ -932,73 +926,26 @@ private struct PortBranch: View {
     }
 }
 
-/// One DP/HDMI output row. Adapter-backed outputs expand into the panel(s)
-/// attributed to them — the dock's HDMI / DP jack becomes a tangible row
-/// in the sidebar with the display nested below. Direct-attach outputs
-/// don't have an adapter to click into, so we just render the display
-/// row directly without an enclosing disclosure.
+/// One DP/HDMI output row. Renders each attributed display directly under
+/// the port (or under the dock device row), with the dock adapter port
+/// number folded into the display row's subtitle when applicable. The
+/// previous design had an intermediate "Display Output N · DP/HDMI ·
+/// adapter port N" wrapper row, but that row carried no information the
+/// display row couldn't carry — the user has to drill into the display
+/// for anything actionable, and the kernel can't disambiguate DP vs HDMI
+/// on the dock anyway. So we flatten.
+///
+/// Empty outputs (an active DP/HDMI adapter on the dock with no display
+/// the heuristic could attribute) render nothing — the dock row's PCIe
+/// / USB lists already make the dock's existence obvious.
 private struct DisplayOutputBranch: View {
     let output: PortDisplayOutput
     @Binding var expanded: Set<TBNodeID>
 
     var body: some View {
-        if let adapter = output.adapter {
-            DisclosureGroup(
-                isExpanded: Binding(
-                    get: { expanded.contains(adapter.id) },
-                    set: { isOn in
-                        if isOn { expanded.insert(adapter.id) }
-                        else { expanded.remove(adapter.id) }
-                    }
-                )
-            ) {
-                ForEach(output.displays, id: \.id) { d in
-                    DisplaySidebarRow(display: d).tag(d.id)
-                }
-            } label: {
-                DisplayOutputRow(output: output).tag(adapter.id)
-            }
-            .tag(adapter.id)
-        } else {
-            ForEach(output.displays, id: \.id) { d in
-                DisplaySidebarRow(display: d).tag(d.id)
-            }
+        ForEach(output.displays, id: \.id) { d in
+            DisplaySidebarRow(display: d, adapter: output.adapter).tag(d.id)
         }
-    }
-}
-
-/// Sidebar row for an active DP/HDMI function adapter. Reads as a chassis
-/// output (e.g. "Display Output 1") with a subtitle clarifying the source
-/// — the dock's adapter port number — and a "DP/HDMI" hint so the user
-/// knows the kernel can't tell which physical jack it is.
-private struct DisplayOutputRow: View {
-    let output: PortDisplayOutput
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "display")
-                .foregroundStyle(.pink)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Display Output \(output.ordinal)")
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    private var subtitle: String {
-        var parts: [String] = ["DP / HDMI"]
-        if let adapter = output.adapter,
-           let n = adapter.properties["Port Number"]?.asUInt {
-            parts.append("adapter port \(n)")
-        }
-        if output.displays.isEmpty {
-            parts.append("no display attributed")
-        }
-        return parts.joined(separator: " · ")
     }
 }
 
@@ -1656,6 +1603,11 @@ private struct BluetoothDeviceRow: View {
 
 private struct DisplaySidebarRow: View {
     let display: DisplayInfo
+    /// Optional dock-side DP/HDMI function adapter that this display is
+    /// routed through. When non-nil, the adapter's chassis port number is
+    /// appended to the subtitle so the user can see which dock jack the
+    /// display is wired to without an intermediate sidebar row.
+    var adapter: TBNode? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1664,13 +1616,23 @@ private struct DisplaySidebarRow: View {
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(display.title).lineLimit(1)
-                if let s = display.subtitle, !s.isEmpty {
+                if let s = subtitleText, !s.isEmpty {
                     Text(s).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 } else {
                     Text("Idle").font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
+    }
+
+    private var subtitleText: String? {
+        var parts: [String] = []
+        if let s = display.subtitle, !s.isEmpty { parts.append(s) }
+        if let adapter,
+           let n = adapter.properties["Port Number"]?.asUInt {
+            parts.append("dock port \(n)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 

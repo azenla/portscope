@@ -56,15 +56,22 @@ nonisolated enum DisplayScanner {
         let isBuiltIn = deviceTreeName == "disp0" || deviceTreeName.hasPrefix("disp0")
         let isConnected = hasResolution
 
-        // Refresh range from the TimingElements list. Each element's
-        // `VerticalAttributes.PreciseSyncRate` is a 16.16 fixed-point Hz
-        // value (e.g. 7864320 ≈ 120 Hz, 3932160 = 60 Hz). We pick the
-        // lowest and highest unique rates we see across all modes — the
-        // `IOMFBDisplayRefresh` dict has refresh-step / idle-interval
-        // numbers but they're internal pacing knobs, not the panel's
-        // actual range.
+        // Refresh range + currently-active rate from TimingElements.
+        // Each element's `VerticalAttributes.PreciseSyncRate` is a 16.16
+        // fixed-point Hz value (7864320 ≈ 120 Hz, 3932160 = 60 Hz). The
+        // kernel publishes the *active* timing's `ID` separately in
+        // `DPTimingModeId` — that's what System Settings / system_profiler
+        // read to display the current refresh. Don't use `IsPreferred`
+        // for this: PreferredTimingElements is the EDID-declared default
+        // list (often 60 Hz), not the currently-driven mode.
+        //
+        // `IOMFBDisplayRefresh` has its own min/max numbers, but those
+        // are internal DCP pacing knobs and don't match what the user
+        // sees in Settings.
+        let activeTimingID = props["DPTimingModeId"]?.asUInt
         var minHz: Double? = nil
         var maxHz: Double? = nil
+        var currentHz: Double? = nil
         if case let .array(arr) = props["TimingElements"] {
             for elem in arr {
                 guard case let .dictionary(elemKV) = elem else { continue }
@@ -76,18 +83,27 @@ nonisolated enum DisplayScanner {
                 if hz <= 0 { continue }
                 minHz = min(minHz ?? hz, hz)
                 maxHz = max(maxHz ?? hz, hz)
+                if let activeID = activeTimingID,
+                   elemDict["ID"]?.asUInt == activeID {
+                    currentHz = hz
+                }
             }
         }
 
-        // Pull the preferred timing's ColorMode for the bit depth.
-        var bitDepth: UInt64? = nil
-        if case let .array(arr) = props["PreferredTimingElements"], case let .dictionary(elementKV) = arr.first {
-            let elem = Dictionary(elementKV, uniquingKeysWith: { a, _ in a })
-            if case let .array(modes) = elem["ColorModes"], case let .dictionary(modeKV) = modes.first {
-                let mode = Dictionary(modeKV, uniquingKeysWith: { a, _ in a })
-                bitDepth = mode["Depth"]?.asUInt
-            }
-        }
+        // Negotiated color mode — `ColorElements[0]` is the first entry
+        // in the engine's preference-ordered list. *Not* a reliable
+        // indicator of what's currently lighting the panel: the kernel
+        // sorts by an internal Score that often puts HDR-capable modes
+        // first regardless of whether HDR is enabled in System
+        // Settings. So we surface depth / encoding / color space (which
+        // are typically the same across all modes in the list and
+        // accurate either way) and skip the dynamic-range field
+        // entirely. Falls back to PreferredTimingElements[0].ColorModes
+        // when ColorElements is absent.
+        let activeMode = activeColorMode(props)
+        let bitDepth = activeMode?.depth
+        let pixelEncoding = activeMode.flatMap { decodePixelEncoding($0.pixelEncoding) }
+        let colorSpace = activeMode.flatMap { decodeColorSpace($0.colorimetry) }
 
         let timingCount: Int
         if case let .array(arr) = props["TimingElements"] {
@@ -97,17 +113,45 @@ nonisolated enum DisplayScanner {
         }
 
         let accuracy = props["color-accuracy-index"]?.asUInt
-        let supportsHDR = (props["IOMFBSupportsICC"]?.asBool ?? false)
+        // HDR support: any ColorElement in the negotiated list with
+        // DynamicRange = 1, or the kernel's HDR-support flags. This is
+        // capability-only — see the model comment for why we don't
+        // claim "HDR active" from the kernel side.
+        let hasHDRElement: Bool = {
+            guard case let .array(arr) = props["ColorElements"] else { return false }
+            for elem in arr {
+                guard case let .dictionary(kv) = elem else { continue }
+                let d = Dictionary(kv, uniquingKeysWith: { a, _ in a })
+                if d["DynamicRange"]?.asUInt == 1 { return true }
+            }
+            return false
+        }()
+        let supportsHDR = hasHDRElement
+            || (props["IOMFBSupportsICC"]?.asBool ?? false)
             || (props["IOMFBSupportsHDR"]?.asBool ?? false)
             || (props["IOMFBSupportsGPLite"]?.asBool ?? false)
 
-        // Title / subtitle.
+        // VRR: capability comes from a wider-than-1Hz refresh range
+        // (fixed panels publish min == max). Currently-enabled state
+        // comes from `QMSVRREnableConfig`, which the DCP flips when
+        // adaptive sync is live on the panel.
+        let vrrCapable: Bool
+        if let lo = minHz, let hi = maxHz {
+            vrrCapable = (hi - lo) > 1
+        } else {
+            vrrCapable = false
+        }
+        let vrrActive = (props["QMSVRREnableConfig"]?.asUInt ?? 0) != 0
+
+        // Title / subtitle. Subtitle shows the *current* refresh rate
+        // (not the range — that goes in the detail view), keeping the
+        // sidebar row to one tight line.
         let title: String
         let subtitle: String?
         if isBuiltIn {
             title = "Built-in Display"
             if hasResolution {
-                subtitle = "\(width!) × \(height!)\(refreshBadge(minHz, maxHz))"
+                subtitle = "\(width!) × \(height!)\(refreshBadge(currentHz, minHz, maxHz))"
             } else {
                 subtitle = nil
             }
@@ -118,7 +162,7 @@ nonisolated enum DisplayScanner {
             let idx = externalIndex(from: deviceTreeName)
             title = idx.map { "External Display \($0)" } ?? "External Display"
             subtitle = hasResolution
-                ? "\(width!) × \(height!)\(refreshBadge(minHz, maxHz))"
+                ? "\(width!) × \(height!)\(refreshBadge(currentHz, minHz, maxHz))"
                 : nil
         } else {
             let idx = externalIndex(from: deviceTreeName)
@@ -138,11 +182,85 @@ nonisolated enum DisplayScanner {
             heightPixels: height,
             minRefreshHz: minHz,
             maxRefreshHz: maxHz,
+            currentRefreshHz: currentHz,
             colorBitDepth: bitDepth,
+            pixelEncoding: pixelEncoding,
+            colorSpace: colorSpace,
             colorAccuracyIndex: accuracy,
             supportsHDR: supportsHDR,
+            variableRefreshCapable: vrrCapable,
+            variableRefreshActive: vrrActive,
             timingModeCount: timingCount
         )
+    }
+
+    /// One ColorElements entry — the kernel's highest-preference mode.
+    /// Fields are 1:1 from the kernel dict.
+    private struct ActiveColorMode {
+        let depth: UInt64
+        let pixelEncoding: UInt64
+        let colorimetry: UInt64
+    }
+
+    /// Pull the kernel's preferred color mode. `ColorElements` is sorted
+    /// by an internal Score; entry 0 is the engine's preference, *not*
+    /// necessarily what macOS is driving the panel with (the SDR-vs-HDR
+    /// choice lives in user-space). We use this for depth / encoding /
+    /// color-space metadata — values that are stable across the
+    /// negotiated list — and ignore the DynamicRange flag at the
+    /// element level. Falls back to PreferredTimingElements →
+    /// ColorModes when ColorElements is missing.
+    private static func activeColorMode(_ props: [String: IORegValue]) -> ActiveColorMode? {
+        let arr: [IORegValue]
+        if case let .array(a) = props["ColorElements"] {
+            arr = a
+        } else if case let .array(timings) = props["PreferredTimingElements"],
+                  case let .dictionary(timingKV) = timings.first,
+                  case let .array(modes) = Dictionary(timingKV, uniquingKeysWith: { a, _ in a })["ColorModes"] {
+            arr = modes
+        } else {
+            return nil
+        }
+        guard case let .dictionary(kv) = arr.first else { return nil }
+        let d = Dictionary(kv, uniquingKeysWith: { a, _ in a })
+        guard let depth = d["Depth"]?.asUInt else { return nil }
+        return ActiveColorMode(
+            depth: depth,
+            pixelEncoding: d["PixelEncoding"]?.asUInt ?? 0,
+            colorimetry: d["Colorimetry"]?.asUInt ?? 0
+        )
+    }
+
+    /// IOMobileFramebuffer's `PixelEncoding` enum — observed values across
+    /// Apple Silicon framebuffers. 0 = RGB is the desktop default; the
+    /// YCbCr variants are picked up when an HDMI sink can't sustain RGB
+    /// at the negotiated bandwidth (e.g. 4K60 over HDMI 2.0).
+    private static func decodePixelEncoding(_ raw: UInt64) -> String? {
+        switch raw {
+        case 0: return "RGB"
+        case 1: return "YCbCr 4:4:4"
+        case 2: return "YCbCr 4:2:2"
+        case 3: return "YCbCr 4:2:0"
+        default: return "Encoding \(raw)"
+        }
+    }
+
+    /// Apple's `Colorimetry` code — the color-space identifier embedded in
+    /// each ColorElements entry. Values observed on Apple Silicon: 0/1
+    /// are the CEA-861 SDTV/HDTV codes; 9 is BT.2020 (HDR signalling); 10
+    /// is sRGB on external displays; 16 is Apple's Display P3 code used
+    /// by the built-in Liquid Retina XDR panel. Unknown codes fall
+    /// through with the raw value so future panels surface something
+    /// rather than going silent.
+    private static func decodeColorSpace(_ raw: UInt64) -> String? {
+        switch raw {
+        case 0: return "BT.601"
+        case 1: return "BT.709"
+        case 9: return "BT.2020"
+        case 10: return "sRGB"
+        case 16: return "Display P3"
+        default: return "Colorimetry \(raw)"
+        }
     }
 
     private static func externalIndex(from name: String) -> Int? {
@@ -152,7 +270,15 @@ nonisolated enum DisplayScanner {
         return Int(name.dropFirst(prefix.count))
     }
 
-    private static func refreshBadge(_ minHz: Double?, _ maxHz: Double?) -> String {
+    /// Subtitle refresh badge. Prefer the currently-driven rate; fall
+    /// back to the min–max range (for capability rows where the kernel
+    /// hasn't marked a `IsPreferred` timing) and finally to the max.
+    private static func refreshBadge(_ currentHz: Double?,
+                                     _ minHz: Double?,
+                                     _ maxHz: Double?) -> String {
+        if let curr = currentHz {
+            return " · \(Int(curr.rounded())) Hz"
+        }
         guard let maxHz else { return "" }
         if let minHz, abs(maxHz - minHz) > 1 {
             return " · \(Int(minHz.rounded()))–\(Int(maxHz.rounded())) Hz"
