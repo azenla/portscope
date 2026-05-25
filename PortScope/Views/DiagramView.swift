@@ -417,7 +417,7 @@ private struct MiniBandwidthBar: View {
 /// Short descriptor for the negotiated link state — used in the LinkSegment
 /// header as a tertiary hint. Falls back gracefully when the kernel reports
 /// values that don't map cleanly to a marketing TB generation.
-nonisolated private func linkSpeedDescriptor(port: PhysicalPort) -> String {
+private func linkSpeedDescriptor(port: PhysicalPort) -> String {
     let width = port.laneAdapter.properties["Current Link Width"]?.asUInt ?? 0
     if width == 0 { return "" }
     return "\(width) lanes"
@@ -528,12 +528,14 @@ private struct TunnelRowMini: View {
                     .foregroundStyle(.tertiary)
                 Spacer()
                 if anyReal {
-                    Text("\(headlineLabel) ")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    + Text(tbBandwidthLabel(headlineValue))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(category.color)
+                    HStack(spacing: 4) {
+                        Text(headlineLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(tbBandwidthLabel(headlineValue))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(category.color)
+                    }
                 } else {
                     Text("Active")
                         .font(.caption2.weight(.medium))
