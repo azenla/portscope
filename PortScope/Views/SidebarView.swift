@@ -47,10 +47,11 @@ struct SidebarView: View {
     /// port and the actual device. Flip on to surface the raw hub chain.
     @AppStorage(SidebarVisibility.showIntermediateHubsKey) private var showIntermediateHubs: Bool = false
     /// Persistent preference (Settings → Show Built-in Devices). Default
-    /// off. When off, the internal battery and built-in display are hidden
-    /// from the Physical Device section so the list reads as "things you
-    /// can plug into". Flip on to surface them.
-    @AppStorage(SidebarVisibility.showBuiltinDevicesKey) private var showBuiltinDevices: Bool = false
+    /// ON — internal battery and built-in display are part of the
+    /// chassis the user is looking at and belong in the default view.
+    /// Toggle off to focus the Physical Device section on receptacles
+    /// you can plug into.
+    @AppStorage(SidebarVisibility.showBuiltinDevicesKey) private var showBuiltinDevices: Bool = true
 
     var body: some View {
         let ports = TopologyMapper.physicalPorts(from: vm.snapshot)

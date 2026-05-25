@@ -193,7 +193,7 @@ private struct SettingsView: View {
     @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = false
     @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
     @AppStorage(SidebarVisibility.showIntermediateHubsKey) private var showIntermediateHubs: Bool = false
-    @AppStorage(SidebarVisibility.showBuiltinDevicesKey) private var showBuiltinDevices: Bool = false
+    @AppStorage(SidebarVisibility.showBuiltinDevicesKey) private var showBuiltinDevices: Bool = true
 
     var body: some View {
         Form {
@@ -212,7 +212,7 @@ private struct SettingsView: View {
 
             Toggle("Show Built-in Devices", isOn: $showBuiltinDevices)
                 .padding(.top, 8)
-            Text("Also show the internal battery and built-in display in the Physical Device section. Off by default so the list focuses on receptacles you can plug into.")
+            Text("Show the internal battery and built-in display in the Physical Device section. On by default — turn off to focus the list on receptacles you can plug into.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -245,9 +245,10 @@ enum SidebarVisibility {
     static let showIntermediateHubsKey = "showIntermediateHubs"
     /// Gates the chassis-built-in non-port devices in the Physical Device
     /// section: the internal battery (laptops) and the built-in display
-    /// (laptop lid / iMac panel). Default off — they're hidden so the
-    /// Physical Device list focuses on receptacles the user can actually
-    /// plug into.
+    /// (laptop lid / iMac panel). Default ON — these are part of the
+    /// chassis the user is looking at, so they belong in the default
+    /// view. Toggle off to focus the list on receptacles you can plug
+    /// into.
     static let showBuiltinDevicesKey = "showBuiltinDevices"
 }
 
