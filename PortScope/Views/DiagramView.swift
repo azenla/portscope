@@ -23,16 +23,41 @@ struct DiagramView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            ScrollView([.horizontal, .vertical]) {
-                topology
-                    .padding(28)
-                    .frame(minWidth: 1000, alignment: .top)
+            ScrollView(.vertical) {
+                GeometryReader { geo in
+                    topology(availableWidth: geo.size.width)
+                        .padding(28)
+                        .frame(width: geo.size.width, alignment: .top)
+                }
+                // GeometryReader has no intrinsic height — give it one so
+                // the ScrollView can scroll the topology vertically when
+                // many ports wrap to multiple rows.
+                .frame(minHeight: topologyContentHeight())
             }
             .background(Color.black.opacity(0.04))
             Divider()
             footer
         }
         .frame(minWidth: 1100, minHeight: 720)
+    }
+
+    /// Rough estimate of how tall the topology drawing wants to be, given
+    /// the port count + row wrap. Used to size the GeometryReader-wrapped
+    /// content inside the vertical ScrollView (GeometryReader collapses to
+    /// zero height otherwise). Doesn't need to be pixel-perfect — the
+    /// ScrollView clips and scrolls past any overshoot.
+    private func topologyContentHeight() -> CGFloat {
+        let ports = TopologyMapper.physicalPorts(from: snapshot)
+            .filter { $0.connector == .usbC }
+        let macBlock: CGFloat = 70
+        // Each port row is roughly: trunk (32) + port box (60) + link card
+        // (110) + connected device card when present (~150).
+        let perRow: CGFloat = ports.contains(where: { $0.connectedDevice != nil }) ? 380 : 200
+        // Conservatively assume the row wraps at 3 columns; we'll always
+        // make the ScrollView at least this tall so wrapping rows are
+        // reachable.
+        let rows = max(1, Int(ceil(Double(ports.count) / 3.0)))
+        return macBlock + CGFloat(rows) * perRow + 80
     }
 
     private var header: some View {
@@ -75,10 +100,21 @@ struct DiagramView: View {
     }
 
     @ViewBuilder
-    private var topology: some View {
+    private func topology(availableWidth: CGFloat) -> some View {
         let ports = TopologyMapper.physicalPorts(from: snapshot)
             .filter { $0.connector == .usbC }
             .sorted { $0.number < $1.number }
+
+        // Wrap ports into rows of `columnsPerRow` so chassis with more
+        // ports than the sheet can fit horizontally (Mac Studio / Mac Pro)
+        // still render legibly without horizontal scrolling. The minimum
+        // 1 keeps the layout sane on absurdly narrow windows.
+        let columnW: CGFloat = 300
+        let gap: CGFloat = 32
+        let interior = max(availableWidth - 56, columnW) // 28 padding each side
+        let columnsPerRow = max(1, Int(floor((interior + gap) / (columnW + gap))))
+        let rows: [[PhysicalPort]] = stride(from: 0, to: ports.count, by: columnsPerRow)
+            .map { Array(ports[$0..<min($0 + columnsPerRow, ports.count)]) }
 
         VStack(spacing: 0) {
             MacBlock(controllerCount: snapshot.tb.controllers.count)
@@ -87,42 +123,66 @@ struct DiagramView: View {
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 40)
             } else {
-                // Trunk descender from the Mac block.
-                Rectangle()
-                    .fill(Color.blue.opacity(0.45))
-                    .frame(width: 2, height: 14)
-                // Horizontal bus spanning the centres of the port columns
-                // below. Drawn as a thin background line behind a row of
-                // spacers sized identically to the columns, so the line
-                // endpoints land exactly on the first and last column
-                // centres regardless of port count.
-                ZStack {
-                    HStack(spacing: 32) {
-                        ForEach(0..<ports.count, id: \.self) { _ in
-                            Color.clear.frame(width: 300, height: 2)
-                        }
-                    }
-                    GeometryReader { geo in
-                        let columnW: CGFloat = 300
-                        let gap: CGFloat = 32
-                        let totalW = CGFloat(ports.count) * columnW
-                                   + CGFloat(max(ports.count - 1, 0)) * gap
-                        let startX = (geo.size.width - totalW) / 2 + columnW / 2
-                        let endX = startX + CGFloat(max(ports.count - 1, 0)) * (columnW + gap)
-                        Path { p in
-                            p.move(to: CGPoint(x: startX, y: 1))
-                            p.addLine(to: CGPoint(x: endX, y: 1))
-                        }
-                        .stroke(Color.blue.opacity(0.45), lineWidth: 2)
-                    }
-                }
-                .frame(height: 2)
-                HStack(alignment: .top, spacing: 32) {
-                    ForEach(ports, id: \.id) { port in
-                        PortColumn(port: port)
-                    }
+                ForEach(Array(rows.enumerated()), id: \.offset) { idx, rowPorts in
+                    PortRowGroup(ports: rowPorts,
+                                 columnW: columnW,
+                                 gap: gap,
+                                 isFirst: idx == 0)
                 }
             }
+        }
+    }
+}
+
+// MARK: - One wrapped row of port columns
+
+/// A row of port columns with its own trunk descender + horizontal bus
+/// line. First row connects to the Mac block above with a short descender;
+/// subsequent rows use the same descender so visually the rows look like
+/// independent branches off the host. The bus line spans the centres of
+/// the first and last column in the row so the geometry stays clean even
+/// when the row has fewer ports than the full per-row width.
+private struct PortRowGroup: View {
+    let ports: [PhysicalPort]
+    let columnW: CGFloat
+    let gap: CGFloat
+    let isFirst: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Trunk descender — taller on the first row to give the Mac
+            // block some breathing room, slim on continuation rows so the
+            // wrap reads as a continuation rather than a new branch.
+            Rectangle()
+                .fill(Color.blue.opacity(0.45))
+                .frame(width: 2, height: isFirst ? 14 : 24)
+            // Horizontal bus line spanning the centres of the first and
+            // last port column in this row.
+            ZStack {
+                HStack(spacing: gap) {
+                    ForEach(0..<ports.count, id: \.self) { _ in
+                        Color.clear.frame(width: columnW, height: 2)
+                    }
+                }
+                GeometryReader { geo in
+                    let totalW = CGFloat(ports.count) * columnW
+                               + CGFloat(max(ports.count - 1, 0)) * gap
+                    let startX = (geo.size.width - totalW) / 2 + columnW / 2
+                    let endX = startX + CGFloat(max(ports.count - 1, 0)) * (columnW + gap)
+                    Path { p in
+                        p.move(to: CGPoint(x: startX, y: 1))
+                        p.addLine(to: CGPoint(x: endX, y: 1))
+                    }
+                    .stroke(Color.blue.opacity(0.45), lineWidth: 2)
+                }
+            }
+            .frame(height: 2)
+            HStack(alignment: .top, spacing: gap) {
+                ForEach(ports, id: \.id) { port in
+                    PortColumn(port: port)
+                }
+            }
+            .padding(.bottom, 24)
         }
     }
 }
