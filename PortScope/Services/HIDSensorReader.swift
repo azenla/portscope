@@ -32,6 +32,24 @@ nonisolated private func _IOHIDEventSystemClientCreate(
     _ allocator: CFAllocator?
 ) -> Unmanaged<AnyObject>?
 
+/// The default `Create` returns a "Simple" client (type 4) that can't
+/// read events — `IOHIDServiceClientCopyEvent` returns nil for every
+/// query. To read sensor values we need a Monitor (type 1) client.
+/// The function takes a client type and an attributes dictionary; on
+/// macOS Sonoma+ both can be nil for the Monitor client.
+@_silgen_name("IOHIDEventSystemClientCreateWithType")
+nonisolated private func _IOHIDEventSystemClientCreateWithType(
+    _ allocator: CFAllocator?,
+    _ type: Int32,
+    _ attributes: CFDictionary?
+) -> Unmanaged<AnyObject>?
+
+@_silgen_name("IOHIDEventSystemClientSetMatching")
+nonisolated private func _IOHIDEventSystemClientSetMatching(
+    _ client: AnyObject,
+    _ matching: CFDictionary?
+) -> Int32
+
 @_silgen_name("IOHIDEventSystemClientCopyServices")
 nonisolated private func _IOHIDEventSystemClientCopyServices(
     _ client: AnyObject
@@ -90,10 +108,22 @@ nonisolated struct HIDSensorReader {
     /// session. Keyed by the kernel's HID service `RegistryID` so the
     /// caller can join against the IORegistry walk used elsewhere.
     static func readAll() -> [UInt64: Reading] {
-        guard let clientUM = _IOHIDEventSystemClientCreate(kCFAllocatorDefault) else {
-            return [:]
-        }
+        // `kIOHIDEventSystemClientTypeMonitor = 1`. The basic
+        // `IOHIDEventSystemClientCreate` defaults to "Simple" which
+        // can't read events; Monitor is the read-events-as-a-user
+        // client type. Admin (type 0) requires root and isn't needed.
+        guard let clientUM = _IOHIDEventSystemClientCreateWithType(
+            kCFAllocatorDefault, 1, nil
+        ) else { return [:] }
         let client = clientUM.takeRetainedValue()
+        // Match every service on the Apple Vendor usage page (0xff00).
+        // Without the matching dict the kernel returns the full HID
+        // device list and most of those services don't carry typed
+        // sensor events — we'd waste time querying keyboards / mice
+        // for a temperature reading.
+        let matching: [String: Any] = ["PrimaryUsagePage": 0xff00]
+        _ = _IOHIDEventSystemClientSetMatching(client, matching as CFDictionary)
+
         guard let servicesUM = _IOHIDEventSystemClientCopyServices(client) else {
             return [:]
         }
@@ -107,6 +137,9 @@ nonisolated struct HIDSensorReader {
             // service references for its lifetime, so we don't retain.
             let service: AnyObject = unsafeBitCast(raw, to: AnyObject.self)
             guard let regID = registryID(of: service) else { continue }
+            // Each service is one specific sensor. Try the three event
+            // types we know how to interpret; the first that returns
+            // a finite value wins.
             if let r = readTemperature(service: service, regID: regID) {
                 out[regID] = r
                 continue
@@ -132,10 +165,10 @@ nonisolated struct HIDSensorReader {
         let event = eventUM.takeRetainedValue()
         let v = _IOHIDEventGetFloatValue(event, HIDEventField.temperatureLevel)
         // Apple Silicon publishes thermal readings in degrees Celsius.
-        // Filter obviously-noise values — the kernel returns 0 for
-        // sensors not yet calibrated; NaN occurs when the service is
-        // offline.
-        guard v.isFinite, v > -50, v < 200, v != 0 else { return nil }
+        // Reject NaN / infinity and obviously-impossible readings, but
+        // keep low values — calibration sensors and idle cores can sit
+        // near 0 °C and that's a legitimate reading.
+        guard v.isFinite, v > -50, v < 200 else { return nil }
         return Reading(serviceID: regID, value: v, unit: "°C", eventType: "Temperature")
     }
 
