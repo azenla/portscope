@@ -1918,12 +1918,6 @@ private struct DownstreamTree: View {
                 DownstreamColumn(label: "USB",
                                  accent: AdapterKind.usb.color) {
                     USBTreeView(nodes: usbTree)
-                        // Bound the FlowLayout's width so a busy
-                        // dock wraps to a grid instead of stretching
-                        // into a thousands-pt-wide single row that
-                        // hangs the layout system. ~3 blocks per
-                        // row at 180 wide.
-                        .frame(maxWidth: 600, alignment: .leading)
                 }
             }
             if !pcieLeaves.isEmpty {
@@ -1953,101 +1947,219 @@ private struct DownstreamColumn<Content: View>: View {
     }
 }
 
-/// USB tree renderer. Recursive but uses FlowLayout (wrapping
-/// horizontal stack) instead of a plain HStack so a dock with 10+
-/// devices doesn't stretch into a 3000-pt-wide strip. Hubs render
-/// as a small labeled section with their child devices indented
-/// below, which also avoids the deep nested-HStack layout cycle
-/// that was triggering the StackLayout.resize hangs.
-///
-/// Caps recursion at `maxDepth` so a pathological hub-of-hub chain
-/// can't blow up the layout. Beyond the cap, descendant counts are
-/// summarised as a small "(+N more)" chip.
+/// USB tree renderer. Flattens the hierarchy into a list of rows
+/// up front (linear walk, O(N)) and renders as a single VStack
+/// where each row carries its own indent + trunk drawing. No
+/// recursion in the view tree — eliminates the StackLayout proposal
+/// cycle that was hanging on deep dock chains. Rows size to their
+/// content (no truncation, no width caps) and the tree shows every
+/// hub at every depth.
 private struct USBTreeView: View {
     let nodes: [USBNode]
-    var depth: Int = 0
-    /// Max levels of nesting we render before collapsing. Three is
-    /// enough to see the dock's hub → sub-hub → device chain, which
-    /// is the longest real-world layout.
-    private let maxDepth = 3
 
     var body: some View {
-        let leaves = nodes.filter { !$0.isHub }
-        let hubs = nodes.filter { $0.isHub }
-        VStack(alignment: .leading, spacing: 6) {
-            if !leaves.isEmpty {
-                FlowChips {
-                    ForEach(leaves) { USBNodeBlock(node: $0) }
-                }
-            }
-            ForEach(hubs) { hub in
-                hubSection(hub)
+        let rows = USBTreeLayout.flatten(nodes)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(rows) { row in
+                USBRow(row: row)
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func hubSection(_ hub: USBNode) -> some View {
-        let hubLeafCount = countLeaves(under: hub)
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: hub.symbol)
-                    .font(.system(size: 10))
-                    .foregroundStyle(AdapterKind.usb.color.opacity(0.7))
-                Text(hub.title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if hubLeafCount > 0 {
-                    Text("· \(hubLeafCount)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(AdapterKind.usb.color.opacity(0.6))
-                }
-            }
-            if depth + 1 < maxDepth {
-                USBTreeView(nodes: hub.children, depth: depth + 1)
-                    .padding(.leading, 14)
-            } else if hubLeafCount > 0 {
-                Text("(+\(hubLeafCount) more, expand depth in sidebar)")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 14)
+/// One flattened tree row carrying the metadata its renderer needs
+/// to draw the indent stripes correctly:
+/// - `depth`: how many trunk columns to draw on the left.
+/// - `ancestorOpen`: for each ancestor depth, true if the ancestor
+///   has a sibling after it (draw `│`) or false if it was the last
+///   one (draw blank). Reading this right-to-left tells the row
+///   which columns to fill.
+/// - `isLastSibling`: which corner glyph (`└` vs `├`) goes in this
+///   row's own column.
+private struct USBTreeRow: Identifiable {
+    let id: TBNodeID
+    let node: USBNode
+    let depth: Int
+    let ancestorOpen: [Bool]
+    let isLastSibling: Bool
+    /// Count of non-hub leaves reachable from a hub. Set on hub rows
+    /// so the user sees "USB2.0 Hub · 5 devices" without expanding.
+    let leafCount: Int?
+}
+
+private enum USBTreeLayout {
+    static func flatten(_ nodes: [USBNode],
+                        depth: Int = 0,
+                        ancestors: [Bool] = []) -> [USBTreeRow] {
+        var out: [USBTreeRow] = []
+        for (i, node) in nodes.enumerated() {
+            let isLast = i == nodes.count - 1
+            out.append(USBTreeRow(
+                id: node.id,
+                node: node,
+                depth: depth,
+                ancestorOpen: ancestors,
+                isLastSibling: isLast,
+                leafCount: node.isHub ? leafCount(under: node) : nil
+            ))
+            if !node.children.isEmpty {
+                // Ancestor stays "open" — needs a `│` column on
+                // child rows — only when this node has a sibling
+                // coming after it. The last sibling's ancestor
+                // column is blank.
+                out.append(contentsOf: flatten(node.children,
+                                               depth: depth + 1,
+                                               ancestors: ancestors + [!isLast]))
             }
         }
+        return out
     }
 
-    /// Count of non-hub descendants under this hub at any depth.
-    /// Used as the hub's chip label so the user can see at a glance
-    /// how many devices live behind a collapsed hub.
-    private func countLeaves(under hub: USBNode) -> Int {
+    private static func leafCount(under node: USBNode) -> Int {
         var n = 0
-        for c in hub.children {
-            if c.isHub {
-                n += countLeaves(under: c)
-            } else {
-                n += 1
-            }
+        for c in node.children {
+            if c.isHub { n += leafCount(under: c) } else { n += 1 }
         }
         return n
     }
 }
 
-/// Common block geometry. Fixed width avoids the
-/// maxWidth+Spacer expand-then-cap dance that triggers
-/// `StackLayout.UnmanagedImplementation.resize` hangs when the tree
-/// is deep — the recursive USB layout used to re-propose sizes
-/// dozens of times per frame.
+/// Width of one indent column. Trunk lines are drawn at the middle
+/// of this column.
+private enum USBRowMetrics {
+    static let indentWidth: CGFloat = 18
+    static let trunkColor: Color = AdapterKind.usb.color.opacity(0.45)
+}
+
+/// A single row in the flattened USB tree. Draws its own indent
+/// stripes (vertical `│`s where an ancestor still has siblings
+/// to come, blank otherwise) followed by a `├` / `└` corner glyph
+/// at its own depth, then the device / hub block.
+private struct USBRow: View {
+    let row: USBTreeRow
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 0) {
+            // Ancestor trunk columns — one per depth above us.
+            ForEach(0..<row.depth, id: \.self) { d in
+                trunkColumn(open: row.ancestorOpen[d])
+            }
+            // Our own corner: ├ if more siblings follow, └ if last.
+            if row.depth > 0 {
+                cornerColumn(isLast: row.isLastSibling)
+            }
+            // The block itself — sizes to content, no truncation.
+            block
+        }
+        .padding(.vertical, 1)
+    }
+
+    /// A full-height column. `open` controls whether to draw the
+    /// vertical trunk (an ancestor with siblings still to come) or
+    /// leave blank (an ancestor that was the last sibling).
+    @ViewBuilder
+    private func trunkColumn(open: Bool) -> some View {
+        ZStack {
+            if open {
+                Rectangle()
+                    .fill(USBRowMetrics.trunkColor)
+                    .frame(width: 1)
+            }
+        }
+        .frame(width: USBRowMetrics.indentWidth)
+    }
+
+    /// The corner column at this row's own depth — vertical above
+    /// the row's mid-line (always), horizontal stub to the right,
+    /// and (for non-last siblings) a continuation below.
+    @ViewBuilder
+    private func cornerColumn(isLast: Bool) -> some View {
+        GeometryReader { geo in
+            let mid = geo.size.height / 2
+            Path { p in
+                // Vertical line down from the top to the mid-line.
+                p.move(to: CGPoint(x: USBRowMetrics.indentWidth / 2, y: 0))
+                p.addLine(to: CGPoint(x: USBRowMetrics.indentWidth / 2, y: mid))
+                // Horizontal stub from mid-line to the right edge.
+                p.addLine(to: CGPoint(x: USBRowMetrics.indentWidth,
+                                      y: mid))
+                // For ├ rows, continue the vertical down to the
+                // bottom so the trunk meets the next sibling.
+                if !isLast {
+                    p.move(to: CGPoint(x: USBRowMetrics.indentWidth / 2,
+                                       y: mid))
+                    p.addLine(to: CGPoint(x: USBRowMetrics.indentWidth / 2,
+                                          y: geo.size.height))
+                }
+            }
+            .stroke(USBRowMetrics.trunkColor, lineWidth: 1)
+        }
+        .frame(width: USBRowMetrics.indentWidth)
+    }
+
+    /// The actual device / hub block. Hubs read as a lighter row
+    /// with the device count appended; devices have the solid block
+    /// styling so leaves stand out.
+    @ViewBuilder
+    private var block: some View {
+        if row.node.isHub {
+            HStack(spacing: 6) {
+                Image(systemName: row.node.symbol)
+                    .font(.caption)
+                    .foregroundStyle(AdapterKind.usb.color.opacity(0.7))
+                Text(row.node.title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let n = row.leafCount, n > 0 {
+                    Text("· \(n) device\(n == 1 ? "" : "s")")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(AdapterKind.usb.color.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 4)
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: row.node.symbol)
+                    .font(.caption)
+                    .foregroundStyle(AdapterKind.usb.color)
+                    .frame(width: 14)
+                Text(row.node.title)
+                    .font(.caption.weight(.medium))
+                if let sub = row.node.subtitle {
+                    Text(sub)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .fixedSize()
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
+                    .fill(AdapterKind.usb.color.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
+                    .stroke(AdapterKind.usb.color.opacity(0.40),
+                            lineWidth: 1)
+            )
+        }
+    }
+}
+
+/// Shared block geometry. Removed the fixed-width cap so blocks
+/// reflow to their content; the FlowLayout (or VStack) parent
+/// handles wrapping. Only the corner radius is kept as a metric.
 private enum BlockMetrics {
-    static let width: CGFloat = 180
     static let cornerRadius: CGFloat = 6
 }
 
-/// Shared compact block layout. Used by USB / Display / PCIe leaves
-/// so they share the same proposal geometry — keeps SwiftUI's layout
-/// system happy when the tree is wide.
+/// Shared compact block layout. Used by Display / PCIe leaves —
+/// USB rows render through `USBRow` because they need the indent
+/// trunk lines. Sizes to content; truncation would defeat the
+/// "show everything" requirement.
 private struct LeafBlock<Title: View, Sub: View>: View {
     let symbol: String
     let accent: Color
-    let hub: Bool
     @ViewBuilder var title: () -> Title
     @ViewBuilder var subtitle: () -> Sub
 
@@ -2055,49 +2167,21 @@ private struct LeafBlock<Title: View, Sub: View>: View {
         HStack(alignment: .center, spacing: 6) {
             Image(systemName: symbol)
                 .font(.caption)
-                .foregroundStyle(hub ? accent.opacity(0.7) : accent)
+                .foregroundStyle(accent)
                 .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                title()
-                subtitle()
-            }
+            title()
+            subtitle()
         }
+        .fixedSize()
         .padding(.horizontal, 8).padding(.vertical, 5)
-        .frame(width: BlockMetrics.width, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
-                .fill(accent.opacity(hub ? 0.05 : 0.12))
+                .fill(accent.opacity(0.12))
         )
         .overlay(
             RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
-                .stroke(accent.opacity(hub ? 0.25 : 0.40),
-                        style: StrokeStyle(lineWidth: 1,
-                                           dash: hub ? [3, 3] : []))
+                .stroke(accent.opacity(0.40), lineWidth: 1)
         )
-    }
-}
-
-/// One USB device or hub rendered as a compact block.
-private struct USBNodeBlock: View {
-    let node: USBNode
-
-    var body: some View {
-        LeafBlock(symbol: node.symbol,
-                  accent: AdapterKind.usb.color,
-                  hub: node.isHub) {
-            Text(node.title)
-                .font(.caption.weight(node.isHub ? .regular : .medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
-        } subtitle: {
-            if let sub = node.subtitle {
-                Text(sub)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-        }
     }
 }
 
@@ -2106,18 +2190,14 @@ private struct DisplayBlock: View {
     let display: DisplayLeaf
     var body: some View {
         LeafBlock(symbol: AdapterKind.dp.icon,
-                  accent: AdapterKind.dp.color,
-                  hub: false) {
+                  accent: AdapterKind.dp.color) {
             Text(display.title)
                 .font(.caption.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
         } subtitle: {
             if let sub = display.subtitle {
                 Text(sub)
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
         }
     }
@@ -2128,18 +2208,14 @@ private struct PCIeBlock: View {
     let leaf: PCIeLeaf
     var body: some View {
         LeafBlock(symbol: AdapterKind.pcie.icon,
-                  accent: AdapterKind.pcie.color,
-                  hub: false) {
+                  accent: AdapterKind.pcie.color) {
             Text(leaf.title)
                 .font(.caption.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
         } subtitle: {
             if let sub = leaf.subtitle {
                 Text(sub)
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
         }
     }
