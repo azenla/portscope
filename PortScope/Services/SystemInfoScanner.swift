@@ -93,6 +93,7 @@ nonisolated enum SystemInfoScanner {
             wifi: heavy.wifi,
             memoryDIMMs: heavy.memoryDIMMs,
             cameras: heavy.cameras,
+            cameraISP: heavy.cameraISP,
             audioDevices: heavy.audio,
             nvram: heavy.nvram,
             hidDevices: heavy.hidDevices,
@@ -105,8 +106,45 @@ nonisolated enum SystemInfoScanner {
             hwModel: hwModel,
             marketingName: marketingName,
             systemSerial: serial,
-            hardwareUUID: uuid
+            hardwareUUID: uuid,
+            security: scanSecurityPosture()
         )
+    }
+
+    // MARK: - Security posture
+
+    /// Eight cheap `IOServiceMatching` probes — each one looks up whether
+    /// a service of the given class is registered with the IOKit matching
+    /// dispatch. Returns existence as a Bool; doesn't read any properties
+    /// or children. Sub-millisecond total. See `SecurityPosture` for what
+    /// each class signals.
+    private static func scanSecurityPosture() -> SecurityPosture {
+        return SecurityPosture(
+            lockdownAvailable:      hasService("AppleLockdownMode"),
+            bootPolicyMatched:      hasService("BootPolicy"),
+            amfiActive:             hasService("AppleMobileFileIntegrity"),
+            systemPolicyActive:     hasService("AppleSystemPolicy"),
+            endpointSecurityActive: hasService("EndpointSecurityDriver"),
+            // M5+ only — `ExclaveSEPManagerProxy` doesn't exist on M3,
+            // so the probe simply returns false there and the chip just
+            // doesn't render.
+            exclaveSepActive:       hasService("ExclaveSEPManagerProxy"),
+            hardwareAESPresent:     hasService("AppleS8000AESAccelerator"),
+            hardwareTRNGPresent:    hasService("RTBuddyEntropyEndpoint")
+        )
+    }
+
+    /// One-shot "does an IOService with this class exist on this host"
+    /// check. Releases the iterator immediately — we just want the first
+    /// match's existence. Returns false on lookup failure too (matches
+    /// the "service is absent" semantic the caller wants).
+    private static func hasService(_ className: String) -> Bool {
+        let svc = IOServiceGetMatchingService(
+            kIOMainPortDefault, IOServiceMatching(className)
+        )
+        guard svc != 0 else { return false }
+        IOObjectRelease(svc)
+        return true
     }
 
     /// Bundle of the heavy-tier results so the parallel parser has one
@@ -123,6 +161,7 @@ nonisolated enum SystemInfoScanner {
         var firmware: String? = nil
         var wifi: WiFiInfo? = nil
         var cameras: [CameraInfo] = []
+        var cameraISP: CameraISPInfo? = nil
         var audio: [AudioDeviceInfo] = []
         var nvram: NVRAMSnapshot = .empty
         var hidDevices: HIDDevicesSnapshot = .empty
@@ -166,6 +205,9 @@ nonisolated enum SystemInfoScanner {
         }
         queue.async(group: group) {
             out.cameras = parseCameras()
+        }
+        queue.async(group: group) {
+            out.cameraISP = scanCameraISP()
         }
         queue.async(group: group) {
             out.audio = parseAudio()
@@ -812,5 +854,52 @@ nonisolated enum SystemInfoScanner {
         guard proc.terminationStatus == 0 else { return nil }
         return String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
                       encoding: .utf8)
+    }
+
+    // MARK: - Camera ISP
+
+    /// Look up the built-in camera's ISP front-end driver. Apple bumps
+    /// the class suffix with each silicon generation (`AppleH13CamIn`
+    /// on M3 / T6031, `AppleH16CamIn` on M5 / T6050, presumably `H17`
+    /// on whatever ships next), so we sweep a small candidate list
+    /// rather than hard-coding one. The properties dictionary is
+    /// stable across the generations — see
+    /// `design/IOService-Updates.md` H1 for the full schema.
+    ///
+    /// Returns nil when no candidate matches (chassis with no built-in
+    /// camera, or a future silicon revision we haven't catalogued yet).
+    private static func scanCameraISP() -> CameraISPInfo? {
+        // Candidate classes ordered newest-first so an M-series host
+        // with two matching kexts loaded (rare) prefers the newer one.
+        let candidates = [
+            "AppleH17CamIn",   // speculative — future-proofing the lookup
+            "AppleH16CamIn",   // M5 / T6050
+            "AppleH15CamIn",   // unobserved but consistent with the naming
+            "AppleH14CamIn",   // unobserved
+            "AppleH13CamIn"    // M3 / T6031
+        ]
+        for cls in candidates {
+            let svc = IOServiceGetMatchingService(
+                kIOMainPortDefault, IOServiceMatching(cls)
+            )
+            guard svc != 0 else { continue }
+            defer { IOObjectRelease(svc) }
+            let props = IORegBridge.properties(of: svc)
+            let id = IORegBridge.entryID(of: svc) ?? 0
+            return CameraISPInfo(
+                kextClass: cls,
+                firmwareVersion: props["ISPFirmwareVersion"]?.asString,
+                firmwareLinkDate: props["ISPFirmwareLinkDate"]?.asString,
+                firmwareLoaded: props["FirmwareLoaded"]?.asBool ?? false,
+                frontCameraModuleSerial: props["FrontCameraModuleSerialNumString"]?.asString,
+                frontIRProjectorSerial: props["FrontIRStructuredLightProjectorSerialNumString"]?.asString,
+                frontCameraExpected: props["FrontCameraExpected"]?.asBool ?? false,
+                frontCameraActive: props["FrontCameraActive"]?.asBool ?? false,
+                frontCameraStreaming: props["FrontCameraStreaming"]?.asBool ?? false,
+                isExclaveIsolated: props["IOExclaveProxy"]?.asBool ?? false,
+                backingID: TBNodeID(raw: id)
+            )
+        }
+        return nil
     }
 }

@@ -1088,6 +1088,7 @@ private final class PrettyPrinter {
         case .batteryManager: return "🔋"
         case .battery:        return "🔋"
         case .socCoprocessor: return "◈ "
+        case .exclaveProxy:   return "🔒"
         case .localNode:      return "🏠"
         case .domain:         return "🌐"
         case .other:          return "·"

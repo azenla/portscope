@@ -28,7 +28,50 @@ nonisolated enum DisplayScanner {
             if $0.isConnected != $1.isConnected { return $0.isConnected && !$1.isConnected }
             return $0.deviceTreeName < $1.deviceTreeName
         }
-        return DisplaySnapshot(displays: out)
+        return DisplaySnapshot(
+            displays: out,
+            hdcpChannels: scanHDCPChannels()
+        )
+    }
+
+    /// Walk every `AppleHDCPInterface` and decode it into a typed
+    /// `HDCPChannelState`. The kernel publishes one interface per
+    /// potentially-protected output (14 on M5 Max — one per DCP plus
+    /// the HDMI / eDP paths); only a subset reports `Role == Transmitter`
+    /// at any given time. Channel ordering is stable, so sorting by
+    /// channel ID gives the user a predictable table.
+    private static func scanHDCPChannels() -> [HDCPChannelState] {
+        var out: [HDCPChannelState] = []
+        for svc in IORegBridge.services(matchingClass: "AppleHDCPInterface") {
+            defer { IOObjectRelease(svc) }
+            let props = IORegBridge.properties(of: svc)
+            guard let chan = props["HDCPChannel"]?.asUInt else { continue }
+            let role = props["HDCPRole"]?.asString
+            let transport = Int(props["HDCPTransport"]?.asUInt ?? 0)
+            let mask = Int(props["HDCPCapabilityMask"]?.asUInt ?? 0)
+            out.append(HDCPChannelState(
+                channel: Int(chan),
+                isTransmitter: role?.lowercased() == "transmitter",
+                roleRaw: role,
+                transport: transport,
+                capabilityMask: mask,
+                txProtocols: readProtocolsArray(props["HDCPTXCapabilities"]),
+                rxProtocols: readProtocolsArray(props["HDCPRXCapabilities"])
+            ))
+        }
+        return out.sorted { $0.channel < $1.channel }
+    }
+
+    /// `HDCPTXCapabilities` / `HDCPRXCapabilities` are dicts shaped
+    /// `{ Protocols = (1, 2) }` — extract the numeric array.
+    private static func readProtocolsArray(_ value: IORegValue?) -> [Int] {
+        guard case let .dictionary(kv) = value else { return [] }
+        for (k, v) in kv where k == "Protocols" {
+            if case let .array(arr) = v {
+                return arr.compactMap { $0.asUInt.map(Int.init) }
+            }
+        }
+        return []
     }
 
     private static func scanClass(_ className: String) -> [DisplayInfo] {

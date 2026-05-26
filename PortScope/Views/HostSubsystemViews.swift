@@ -243,18 +243,44 @@ struct WiFiDetailView: View {
 
 struct CameraDetailView: View {
     let camera: CameraInfo
+    /// Optional ISP front-end info — supplied by the snapshot, used
+    /// when this row represents the built-in camera (i.e. not a
+    /// Continuity / iPhone webcam).
+    var isp: CameraISPInfo? = nil
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 hero
                 StatGrid(stats: stats)
+                if isBuiltInCamera, let isp = isp {
+                    SectionCard(title: "Image Signal Processor",
+                                symbol: "viewfinder.circle") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if isp.isExclaveIsolated {
+                                ExclaveBadge()
+                            }
+                            StatGrid(stats: ispStats(isp))
+                        }
+                    }
+                }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minWidth: 620)
         .background(.background)
+    }
+
+    /// Continuity webcams (paired iPhone, etc.) report an Apple device
+    /// model identifier like `"iPhone18,2"`. Built-in cameras either
+    /// don't publish a modelID at all or use a "Camera"-suffixed string
+    /// like `"FaceTime HD Camera (Built-in)"`. Anything `iPhone…` or
+    /// `iPad…` is treated as external; everything else is built-in.
+    private var isBuiltInCamera: Bool {
+        guard let m = camera.modelID else { return true }
+        let lower = m.lowercased()
+        return !(lower.hasPrefix("iphone") || lower.hasPrefix("ipad"))
     }
 
     private var hero: some View {
@@ -287,6 +313,74 @@ struct CameraDetailView: View {
                             symbol: "number", isSecret: true))
         }
         return out
+    }
+
+    private func ispStats(_ isp: CameraISPInfo) -> [Stat] {
+        var out: [Stat] = []
+        // ISP kext class doubles as the silicon-generation tell
+        // ("AppleH16CamIn" → M5/T6050 class). Useful when correlating
+        // with the chip / system-firmware version on this page.
+        out.append(Stat(label: "Driver", value: isp.kextClass,
+                        symbol: "cpu"))
+        if let v = isp.firmwareVersion {
+            out.append(Stat(label: "Firmware", value: v,
+                            symbol: "memorychip"))
+        }
+        if let d = isp.firmwareLinkDate {
+            out.append(Stat(label: "Firmware Link Date", value: d,
+                            symbol: "calendar"))
+        }
+        out.append(Stat(label: "Firmware Loaded",
+                        value: isp.firmwareLoaded ? "Yes" : "No",
+                        symbol: "checkmark.circle"))
+        if isp.frontCameraExpected {
+            out.append(Stat(label: "Camera",
+                            value: cameraStateLabel(isp),
+                            symbol: "video.fill"))
+        }
+        if let s = isp.frontCameraModuleSerial, !s.isEmpty {
+            out.append(Stat(label: "Module Serial", value: s,
+                            symbol: "barcode", isSecret: true))
+        }
+        if let s = isp.frontIRProjectorSerial, !s.isEmpty, s != "XXXXXXXX" {
+            // The MacBook Pro chassis publishes a placeholder
+            // ("XXXXXXXX") for the IR projector serial because it
+            // doesn't actually have a structured-light projector.
+            // Skip the row when the placeholder is in effect — only
+            // chassis with Face ID-class IR populate this for real.
+            out.append(Stat(label: "IR Projector Serial", value: s,
+                            symbol: "dot.radiowaves.left.and.right",
+                            isSecret: true))
+        }
+        return out
+    }
+
+    private func cameraStateLabel(_ isp: CameraISPInfo) -> String {
+        if isp.frontCameraStreaming { return "Streaming" }
+        if isp.frontCameraActive { return "Active (idle)" }
+        return "Powered down"
+    }
+}
+
+/// Small "Exclave-isolated" pill, rendered alongside any node whose
+/// kernel object reports `IOExclaveProxy = Yes` on M5 / T6050+ hosts.
+/// Reused across detail views so the visual is consistent.
+struct ExclaveBadge: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.shield.fill")
+            Text("Isolated by Exclaves")
+                .font(.caption.weight(.medium))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .foregroundStyle(Color.purple)
+        .background(
+            Capsule().fill(Color.purple.opacity(0.12))
+        )
+        .help("This engine runs in the secure-world Exclaves domain. "
+              + "The kernel communicates with it only through a proxy "
+              + "service rather than touching its memory directly.")
     }
 }
 

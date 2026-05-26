@@ -19,6 +19,19 @@ nonisolated enum NodeFormatter {
     /// SPI controller, GPIO, DART, etc. The `device_type` IORegistry property
     /// would be more authoritative but isn't available at classify time.
     static func classify(_ cls: String, name: String = "") -> TBNodeKind {
+        // Exclave-world proxies are the kernel's handle to engines that
+        // actually run in the secure-world side of T6050 / M5+ hosts.
+        // The base class is `IOExclaveProxy`; Apple subclasses it per
+        // domain (`ANEExclaveProxy`, `ExclaveSEPManagerProxy`,
+        // `SecureRTBuddyProxy(AOP-EXCLAVE)`). Match the suffix rather
+        // than enumerating every subclass so future-Apple additions
+        // (DCP/ISP proxies, etc.) land here automatically. The check is
+        // first so it wins over more permissive class-name patterns
+        // below.
+        if cls == "IOExclaveProxy" || cls.hasSuffix("ExclaveProxy")
+            || cls == "SecureRTBuddyProxy" {
+            return .exclaveProxy
+        }
         if cls == "IOThunderboltLocalNode" { return .localNode }
         if cls.contains("ThunderboltControllerType")
             || (cls.contains("ThunderboltController") && !cls.contains("Apple")) {
@@ -214,6 +227,19 @@ nonisolated enum NodeFormatter {
 
         case .domain:
             return ("Thunderbolt Domain", nil)
+        case .exclaveProxy:
+            // Translate the kernel's exclave-proxy class names into something
+            // a non-IOKit-fluent user can read. The proxies have almost no
+            // properties of their own — their presence *is* the data — so
+            // the subtitle just names the secure-world domain they front.
+            let title: String
+            switch cls {
+            case "ANEExclaveProxy":         title = "Neural Engine Exclave"
+            case "ExclaveSEPManagerProxy":  title = "Secure Enclave Exclave"
+            case "SecureRTBuddyProxy":      title = "RTKit Exclave Proxy"
+            default:                        title = "Exclave Proxy"
+            }
+            return (title, "Routes calls through the secure world")
         case .other:
             return (name, nil)
         }
@@ -306,6 +332,9 @@ nonisolated enum NodeFormatter {
     private static let exactCoprocessor: [String: String] = [
         "sep": "Secure Enclave Processor",
         "aop": "Always-On Processor",
+        // M5 added a second AOP for low-power voice + ML inference. Both
+        // surface as their own AppleARMIODevice nubs.
+        "aop2": "Always-On Processor 2",
         "pmp": "Power Management Processor",
         "smc": "System Management Controller",
         "ans": "NAND Storage Controller",
@@ -319,7 +348,23 @@ nonisolated enum NodeFormatter {
         "mcc": "Memory Cache Controller",
         "sgx": "Graphics (SGX)",
         "pmgr": "Power Manager",
-        "aic": "Interrupt Controller"
+        "aic": "Interrupt Controller",
+        // M5+ — discovered by walking AppleARMIODevice nubs on a live
+        // T6050 host; documented in design/IOService-M5Max-MacBookPro.md.
+        // The kernel publishes one nub per block under arm-io/ with these
+        // device-tree names.
+        "auss-cpu0": "Apple USB SuperSpeed Coprocessor",
+        "iop-voicetrigger-controller": "Voice Trigger Coprocessor",
+        "apple-processor-trace": "Processor Trace",
+        // SoC fault handler. Same nub name (`error-handler`) on T6031
+        // (AppleH15PlatformErrorHandler driver, M3) and T6050
+        // (AppleSoCErrorHandler driver, M5+) — Apple renamed the kext but
+        // kept the device-tree token stable.
+        "error-handler": "SoC Error Handler",
+        // Self-service repair endpoint — present on every M-series Mac
+        // (`AppleSecureRepair` driver matches `secure-repair,1`). Lets
+        // the user see that Self-Service Repair is wired up on this chassis.
+        "secure-repair": "Self-Service Repair Endpoint"
     ]
 
     /// Name-prefix table. The numeric tail (when present) becomes part of the

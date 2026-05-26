@@ -28,6 +28,11 @@ struct SystemInfoView: View {
                 SectionCard(title: "Software", symbol: "apple.logo") {
                     StatGrid(stats: softwareStats)
                 }
+                if !info.security.isEmpty {
+                    SectionCard(title: "Security Posture", symbol: "lock.shield") {
+                        SecurityChipRow(posture: info.security)
+                    }
+                }
                 SectionCard(title: "Identifiers", symbol: "barcode") {
                     StatGrid(stats: identifierStats)
                 }
@@ -242,4 +247,85 @@ enum SystemInfoSelector {
     private static let mask: UInt64 = 0x5757_0070_0000_0001
     static let id = TBNodeID(raw: mask)
     static func isSystemID(_ id: TBNodeID) -> Bool { id.raw == mask }
+}
+
+/// Compact row of "is-present" chips for the eight security-posture
+/// signals. Each chip lights up when the corresponding IOService is
+/// matchable at scan time; absent chips render dimmed so the user can
+/// see *which* piece of the stack is missing rather than just an
+/// abridged list. M5-specific chips (Exclave SEP, Hardware Entropy)
+/// dim gracefully on M3 / earlier hosts.
+private struct SecurityChipRow: View {
+    let posture: SecurityPosture
+
+    private struct Chip: Identifiable {
+        let id = UUID()
+        let label: String
+        let icon: String
+        let on: Bool
+        let help: String
+    }
+
+    private var chips: [Chip] {
+        [
+            Chip(label: "Lockdown Mode",
+                 icon: "shield.lefthalf.filled.badge.checkmark",
+                 on: posture.lockdownAvailable,
+                 help: "AppleLockdownMode service present"),
+            Chip(label: "Boot Policy",
+                 icon: "lock.doc",
+                 on: posture.bootPolicyMatched,
+                 help: "BootPolicy service matched at boot"),
+            Chip(label: "AMFI",
+                 icon: "checkmark.seal",
+                 on: posture.amfiActive,
+                 help: "AppleMobileFileIntegrity active"),
+            Chip(label: "System Policy",
+                 icon: "person.badge.shield.checkmark",
+                 on: posture.systemPolicyActive,
+                 help: "AppleSystemPolicy (Gatekeeper) active"),
+            Chip(label: "Endpoint Security",
+                 icon: "eye.trianglebadge.exclamationmark",
+                 on: posture.endpointSecurityActive,
+                 help: "EndpointSecurityDriver loaded"),
+            Chip(label: "Exclave SEP",
+                 icon: "lock.square.stack",
+                 on: posture.exclaveSepActive,
+                 help: "ExclaveSEPManagerProxy present (M5+ / T6050+)"),
+            Chip(label: "Hardware AES",
+                 icon: "key.horizontal",
+                 on: posture.hardwareAESPresent,
+                 help: "AppleS8000AESAccelerator present"),
+            Chip(label: "Hardware Entropy",
+                 icon: "dice",
+                 on: posture.hardwareTRNGPresent,
+                 help: "RTBuddyEntropyEndpoint present (M5+)")
+        ]
+    }
+
+    private let columns = [GridItem(.adaptive(minimum: 170), spacing: 10)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+            ForEach(chips) { c in
+                HStack(spacing: 8) {
+                    Image(systemName: c.icon)
+                        .foregroundStyle(c.on ? Color.green : Color.secondary)
+                        .frame(width: 18)
+                    Text(c.label)
+                        .font(.callout)
+                        .foregroundStyle(c.on ? .primary : .secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(c.on ? Color.green.opacity(0.12)
+                                   : Color.secondary.opacity(0.08))
+                )
+                .help(c.help)
+            }
+        }
+    }
 }

@@ -37,6 +37,13 @@ nonisolated enum TBNodeKind: String {
     case batteryManager // AppleSmartBatteryManager
     case battery       // AppleSmartBattery
     case socCoprocessor // AppleARMIODevice for a named SoC block (sep / aop / ane / isp / dcp / ans / smc / wlan / bluetooth / …)
+    /// Exclave-world proxy nub. On M5+/T6050 the kernel talks to the SEP /
+    /// ANE / AOP / ISP / DCP through `IOExclaveProxy` / `ANEExclaveProxy`
+    /// / `ExclaveSEPManagerProxy` / `SecureRTBuddyProxy` services rather
+    /// than directly — the real engine lives in a hardware-isolated
+    /// secure world. M3 and earlier hosts have no such services and this
+    /// kind simply never appears.
+    case exclaveProxy
     case other
 
     var sfSymbol: String {
@@ -61,6 +68,7 @@ nonisolated enum TBNodeKind: String {
         case .batteryManager: return "battery.100.bolt"
         case .battery: return "battery.100"
         case .socCoprocessor: return "cpu.fill"
+        case .exclaveProxy: return "lock.shield"
         case .other: return "questionmark.circle"
         }
     }
@@ -86,6 +94,7 @@ nonisolated enum TBNodeKind: String {
         case .batteryManager: return .green
         case .battery: return .green
         case .socCoprocessor: return .indigo
+        case .exclaveProxy: return .purple
         case .other: return .gray
         }
     }
@@ -179,6 +188,23 @@ nonisolated struct TBNode: Identifiable, Hashable {
 }
 
 nonisolated extension TBNode {
+    /// True when this node runs in (or is fronted by) the Exclaves secure
+    /// world introduced on T6050 / M5+ hosts. Two signals:
+    ///
+    /// 1. The node *is* an exclave-proxy service (kind == .exclaveProxy).
+    /// 2. The node carries a `"IOExclaveProxy" = Yes` boolean — that's how
+    ///    engines like `AppleH16CamIn` (the M5 camera ISP) advertise that
+    ///    their real work happens behind the exclave boundary even though
+    ///    the kext object lives in the kernel.
+    ///
+    /// Used by detail views to render a small "Exclave-isolated" badge.
+    /// Always false on M3 and earlier (none of those nodes publish the
+    /// flag, and the kind never appears).
+    var isExclaveIsolated: Bool {
+        if kind == .exclaveProxy { return true }
+        return properties["IOExclaveProxy"]?.asBool == true
+    }
+
     /// Pretty-format a property value with TB-specific knowledge.
     static func formatValue(_ key: String, _ value: IORegValue) -> String {
         switch key {

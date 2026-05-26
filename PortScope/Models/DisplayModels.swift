@@ -17,11 +17,75 @@ nonisolated struct DisplaySnapshot {
     /// `IOFramebuffer` (Intel). Sorted with built-in first, then connected
     /// externals, then idle slots.
     let displays: [DisplayInfo]
+    /// Per-channel HDCP state pulled from `AppleHDCPInterface` siblings
+    /// of the DCP pipelines. Apple publishes one channel per
+    /// potentially-protected output; only a subset has `Role =
+    /// Transmitter` at any given time (those are the actively-protected
+    /// links). Channel-to-display attribution isn't published anywhere
+    /// stable, so we surface the channel list aggregate rather than per-
+    /// display — keeps the data honest. Empty on Intel hosts.
+    let hdcpChannels: [HDCPChannelState]
 
-    static let empty = DisplaySnapshot(displays: [])
+    static let empty = DisplaySnapshot(displays: [], hdcpChannels: [])
 
     var connectedCount: Int { displays.filter { $0.isConnected }.count }
     var totalCount: Int { displays.count }
+}
+
+/// One `AppleHDCPInterface` channel decoded into typed fields. Documented
+/// in `design/IOService-Updates.md` H2; field shapes confirmed live on
+/// an M5 Max where the channels span 0–13 (14 total).
+nonisolated struct HDCPChannelState: Hashable, Identifiable {
+    var id: UInt64 { UInt64(channel) }
+    /// `HDCPChannel` — kernel-assigned channel ID. Stable across reboot
+    /// on a given chassis but not portable across machines.
+    let channel: Int
+    /// True when `HDCPRole == "Transmitter"`. That's the kernel's
+    /// signal that an output is actively negotiating HDCP. Inactive
+    /// channels report `"(None - Not Open)"`.
+    let isTransmitter: Bool
+    /// Raw role string for the developer-details disclosure.
+    let roleRaw: String?
+    /// `HDCPTransport` — 0 = DisplayPort path (USB-C alt-mode + TB
+    /// tunnels), 1 = HDMI / embedded DisplayPort (internal panel link
+    /// + HDMI receptacle). Lets the view classify channels even when
+    /// none are active.
+    let transport: Int
+    /// `HDCPCapabilityMask` — bitmask: bit `1` = HDCP 1.x available,
+    /// bit `2` = HDCP 2.x available. Most channels expose both;
+    /// HDMI-only outputs sometimes mask off 1.x.
+    let capabilityMask: Int
+    /// Decoded host-side protocol support (TX side of the link).
+    /// `(1, 2)` = HDCP 1.x + 2.x, `()` = unsupported (idle channel).
+    let txProtocols: [Int]
+    /// Decoded downstream protocol support (RX side — the connected
+    /// sink). `()` until a sink is attached and authenticated.
+    let rxProtocols: [Int]
+}
+
+extension HDCPChannelState {
+    /// Short transport label — "DP / USB-C" for transport 0, "HDMI /
+    /// eDP" for transport 1. Used in the chip + table rows.
+    var transportLabel: String {
+        switch transport {
+        case 0: return "DP / USB-C"
+        case 1: return "HDMI / eDP"
+        default: return "Transport \(transport)"
+        }
+    }
+    /// Highest HDCP revision the host advertises as TX-capable on this
+    /// channel ("HDCP 2.x", "HDCP 1.x"), or nil when the channel
+    /// advertises nothing (truly disabled).
+    var txMaxLabel: String? {
+        if txProtocols.contains(2) { return "HDCP 2.x" }
+        if txProtocols.contains(1) { return "HDCP 1.x" }
+        return nil
+    }
+    var rxMaxLabel: String? {
+        if rxProtocols.contains(2) { return "HDCP 2.x" }
+        if rxProtocols.contains(1) { return "HDCP 1.x" }
+        return nil
+    }
 }
 
 /// One DisplayPort / HDMI output rooted at a physical port, with the

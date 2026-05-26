@@ -78,6 +78,10 @@ enum Fix {
             cableVendorID: cableVendorID,
             cableProductID: cableProductID,
             cableManufacturer: cableManufacturer,
+            cableEmarker: nil,
+            usb3State: nil,
+            cioState: nil,
+            phyState: nil,
             usbPD: usbPD,
             registryProperties: registryProperties,
             registryPath: registryPath

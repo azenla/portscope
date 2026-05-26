@@ -68,7 +68,11 @@ struct USBFormattersTests {
         // (not "Inactive") — the mode being .thunderbolt means we know it
         // is, even if we can't read a link speed yet.
         #expect(PhysicalPortMode.thunderbolt(linkSpeed: 0).label == "Thunderbolt")
-        #expect(PhysicalPortMode.thunderbolt(linkSpeed: 8).label == "TB5")
+        // Per the corrected WhatCable encoding: 0x2 = TB5, 0x4 = TB4,
+        // 0x8 = TB3. The previous mapping (8 = TB5) was empirically
+        // wrong on every TB5-class host and has been replaced.
+        #expect(PhysicalPortMode.thunderbolt(linkSpeed: 0x2).label == "TB5")
+        #expect(PhysicalPortMode.thunderbolt(linkSpeed: 0x8).label == "TB3")
         #expect(PhysicalPortMode.usbOnly(speed: nil).label == "USB")
         #expect(PhysicalPortMode.usbOnly(speed: 5).label == "USB 3.2×2")
     }

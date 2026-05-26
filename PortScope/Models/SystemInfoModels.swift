@@ -48,6 +48,13 @@ nonisolated struct SystemInfoSnapshot: Hashable {
     /// External / Continuity cameras (e.g. "Prism Camera" from a paired
     /// iPhone) show up here too.
     let cameras: [CameraInfo]
+    /// Kernel-side ISP front-end for the built-in camera, pulled from
+    /// `AppleH13CamIn` (M3) / `AppleH16CamIn` (M5). Carries firmware
+    /// version, module serial, active/streaming state, and exclave
+    /// isolation flag. Nil when the host has no built-in camera or the
+    /// kext class isn't present (e.g. on a future-silicon Mac before
+    /// the catalogue learns about it).
+    let cameraISP: CameraISPInfo?
     /// Audio devices (built-in speakers, microphone, plus any HDMI /
     /// USB-C audio sinks). Lets the user see what their default I/O is.
     let audioDevices: [AudioDeviceInfo]
@@ -80,17 +87,23 @@ nonisolated struct SystemInfoSnapshot: Hashable {
     let systemSerial: String?
     /// Hardware UUID — `IOPlatformUUID`.
     let hardwareUUID: String?
+    /// Snapshot of the host's security plumbing: Lockdown Mode
+    /// availability, Boot Policy match, AMFI / System Policy / Endpoint
+    /// Security presence, and the M5+ exclave + hardware-entropy
+    /// extensions. Populated cheaply on every full scan.
+    let security: SecurityPosture
 
     static let empty = SystemInfoSnapshot(
         chipName: nil, cpuCoreCount: nil, cpuPCoreCount: nil,
         cpuECoreCount: nil, gpuCoreCount: nil, metalVersion: nil,
         memoryBytes: nil, memoryType: nil, memoryManufacturer: nil,
         internalStorage: nil, wifi: nil, memoryDIMMs: [],
-        cameras: [], audioDevices: [], nvram: .empty,
+        cameras: [], cameraISP: nil, audioDevices: [], nvram: .empty,
         hidDevices: .empty, touchID: .empty, inputDevices: .empty,
         macOSVersion: nil, macOSBuild: nil,
         kernelVersion: nil, systemFirmware: nil, hwModel: nil,
-        marketingName: nil, systemSerial: nil, hardwareUUID: nil
+        marketingName: nil, systemSerial: nil, hardwareUUID: nil,
+        security: .empty
     )
 
     var hasAnyData: Bool {
@@ -160,6 +173,55 @@ nonisolated struct CameraInfo: Hashable, Identifiable {
     /// Device-unique camera ID. Surfaced for parity with the kernel
     /// `unique_id`; treated as sensitive.
     let uniqueID: String?
+}
+
+/// Built-in camera ISP (Image Signal Processor) front-end driver state.
+/// Pulled from `AppleH13CamIn` (M3 / T6031) or `AppleH16CamIn` (M5 /
+/// T6050) — Apple bumps the class suffix per silicon generation but the
+/// property schema is stable. Only the built-in camera has an ISP card
+/// (Continuity / external cameras don't route through this block), so
+/// the snapshot carries a single optional. Pulled once during the heavy
+/// scan tier; static across a session.
+///
+/// Documented in `design/IOService-Updates.md` H1.
+nonisolated struct CameraISPInfo: Hashable {
+    /// IOKit class name observed on this host, e.g. `"AppleH16CamIn"`.
+    /// Doubles as the silicon-generation tell (`H13` = M3-class, `H16` =
+    /// M5-class). Surfaced verbatim in Developer Details.
+    let kextClass: String
+    /// ISP firmware version string, e.g. `"5.502"`.
+    let firmwareVersion: String?
+    /// Firmware link-date string baked into the kext, e.g.
+    /// `"Apr 27 2026 - 21:14:34"`. Reflects the macOS build that
+    /// shipped the kext, not anything the user can change.
+    let firmwareLinkDate: String?
+    /// True when the kernel reports the firmware has been loaded into
+    /// the ISP. Distinct from "the camera is streaming" — the firmware
+    /// stays resident as soon as the engine is powered.
+    let firmwareLoaded: Bool
+    /// Front (FaceTime / built-in) camera module's serial number, when
+    /// the kernel publishes it. Treated as sensitive — masked by
+    /// default in the view layer.
+    let frontCameraModuleSerial: String?
+    /// IR structured-light projector serial when present. M-series
+    /// MacBook Pros publish a placeholder ("XXXXXXXX") here; iPads /
+    /// future Macs with Face ID would populate it for real.
+    let frontIRProjectorSerial: String?
+    /// True when the chassis is expected to have a front camera (i.e.
+    /// the camera isn't physically disabled at the factory).
+    let frontCameraExpected: Bool
+    /// True when the kernel has the camera powered up. Spikes from
+    /// `false` → `true` when an app starts a capture session.
+    let frontCameraActive: Bool
+    /// True while the ISP is actually streaming pixels. Distinct from
+    /// `active` — a powered-on but idle camera is `active && !streaming`.
+    let frontCameraStreaming: Bool
+    /// True when the ISP is fronted by an Exclave proxy (`IOExclaveProxy
+    /// = Yes` on the kext object). M5 / T6050+; absent on M3 and earlier.
+    let isExclaveIsolated: Bool
+    /// IORegistry entry ID of the ISP node so callers can pull the raw
+    /// property table for Developer Details disclosure.
+    let backingID: TBNodeID
 }
 
 /// One audio device from SPAudioDataType. Covers built-in speakers / mic
@@ -248,4 +310,73 @@ nonisolated struct MemoryDIMMInfo: Hashable, Identifiable {
     /// Part number when the kernel publishes one. Usually only on Intel
     /// DIMMs that came through the SMBIOS path.
     let partNumber: String?
+}
+
+/// Presence flags for the host's security plumbing. Each Bool is the
+/// answer to "does an `IOServiceMatching(<class>)` lookup find anything
+/// at boot" — a cheap probe (no property reads, no children walk) that
+/// returns within microseconds. The flags collectively answer "is this
+/// Mac running the standard macOS security stack" without claiming any
+/// runtime state (e.g. whether Lockdown Mode is *enabled*, only whether
+/// the capability is *available*). The richer runtime state lives in
+/// user-space prefs and outside the IOKit plane.
+///
+/// Documented in `design/IOService-Updates.md` H5; classes selected
+/// from the M3 Max + M5 Max audits in the adjacent design files.
+nonisolated struct SecurityPosture: Hashable {
+    /// `AppleLockdownMode` service — the Lockdown Mode subsystem is
+    /// present and matchable. Says nothing about whether the user has
+    /// actually turned it on (that's in `~/Library/Preferences`).
+    let lockdownAvailable: Bool
+    /// `BootPolicy` — Apple's signed-boot policy module is matched.
+    /// Always true on a stock-config Mac; absence is the diagnostic
+    /// signal that something is wrong with secure boot.
+    let bootPolicyMatched: Bool
+    /// `AppleMobileFileIntegrity` — AMFI enforcing code-signing for
+    /// the kernel + userspace executables.
+    let amfiActive: Bool
+    /// `AppleSystemPolicy` — Gatekeeper / system-policy enforcement.
+    let systemPolicyActive: Bool
+    /// `EndpointSecurityDriver` — the ES framework KEXT used by
+    /// EDR-style tools (and macOS's own daemons).
+    let endpointSecurityActive: Bool
+    /// `ExclaveSEPManagerProxy` — the Secure Enclave is fronted by an
+    /// exclave-world proxy. M5 / T6050+ only; absent on M3 and earlier.
+    let exclaveSepActive: Bool
+    /// `AppleS8000AESAccelerator` — hardware AES used for FileVault /
+    /// storage encryption. Present on every Apple Silicon Mac so far.
+    let hardwareAESPresent: Bool
+    /// `RTBuddyEntropyEndpoint` — RTKit-hosted hardware TRNG endpoint.
+    /// Surfaced as M5+ but the class may show up on future silicon
+    /// retro-fitted to M-series hosts.
+    let hardwareTRNGPresent: Bool
+
+    /// Boolean chip count for compact rendering ("4 of 8 enforced").
+    var enforcedCount: Int {
+        var c = 0
+        if lockdownAvailable     { c += 1 }
+        if bootPolicyMatched     { c += 1 }
+        if amfiActive            { c += 1 }
+        if systemPolicyActive    { c += 1 }
+        if endpointSecurityActive { c += 1 }
+        if exclaveSepActive      { c += 1 }
+        if hardwareAESPresent    { c += 1 }
+        if hardwareTRNGPresent   { c += 1 }
+        return c
+    }
+
+    static let empty = SecurityPosture(
+        lockdownAvailable: false,
+        bootPolicyMatched: false,
+        amfiActive: false,
+        systemPolicyActive: false,
+        endpointSecurityActive: false,
+        exclaveSepActive: false,
+        hardwareAESPresent: false,
+        hardwareTRNGPresent: false
+    )
+
+    var isEmpty: Bool {
+        return enforcedCount == 0
+    }
 }

@@ -78,7 +78,15 @@ struct ContentView: View {
                 ScrollView { WiFiDetailView(info: wifi) }.id(sel)
             } else if CameraSelector.isCameraID(sel),
                       let cam = findCamera(id: sel) {
-                CameraDetailView(camera: cam).id(sel)
+                // Pass the ISP info for *every* camera row — the view
+                // decides whether to render the card based on the
+                // camera's identity (Continuity vs built-in). Built-in
+                // is detected by the absence of an iPhone-style
+                // `modelID`.
+                CameraDetailView(
+                    camera: cam,
+                    isp: vm.snapshot.internalHardware.systemInfo.cameraISP
+                ).id(sel)
             } else if AudioSelector.isAudioID(sel),
                       let dev = findAudio(id: sel) {
                 AudioDeviceDetailView(device: dev).id(sel)
@@ -112,7 +120,8 @@ struct ContentView: View {
                 .frame(minWidth: 620)
                 .id(sel)
             } else if let display = vm.snapshot.displays.displays.first(where: { $0.id == sel }) {
-                DisplayDetailView(display: display).id(sel)
+                DisplayDetailView(display: display,
+                                  hdcpChannels: vm.snapshot.displays.hdcpChannels).id(sel)
             } else if let pciNode = findPCINode(id: sel, in: vm.snapshot.pcie.roots) {
                 PCIDeviceView(node: pciNode,
                               ancestors: vm.ancestors(of: sel),

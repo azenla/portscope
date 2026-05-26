@@ -89,7 +89,27 @@ nonisolated enum InternalHardwareScanner {
         if radioPrefixes.contains(where: { matches(name: name, prefix: $0) }) {
             return .radios
         }
-        return .other
+        // M5+ device-tree names that don't fit the historical prefix
+        // shape but still belong in known categories. Discovered from
+        // walking AppleARMIODevice nubs on a live T6050 host; documented
+        // in design/IOService-M5Max-MacBookPro.md.
+        switch name {
+        case "error-handler", "secure-repair", "apple-processor-trace":
+            return .securityPower
+        case "iop-voicetrigger-controller":
+            // Voice Trigger is an ML inference path running on the AOP
+            // for always-on "Hey Siri"; sits next to ANE in the user's
+            // mental model.
+            return .mediaImage
+        case "auss-cpu0":
+            // Internal USB SuperSpeed root. Not really "storage" but the
+            // bucket is "Storage & Memory" / "Storage Controllers" which
+            // is the closest user-facing fit for a host-side bus
+            // controller. Could earn its own category later.
+            return .storageMemory
+        default:
+            return .other
+        }
     }
 
     private static func matches(name: String, prefix: String) -> Bool {

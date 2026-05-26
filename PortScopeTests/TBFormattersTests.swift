@@ -22,25 +22,33 @@ struct TBFormattersTests {
         #expect(tbBandwidthLabel(1200) == "120 Gb/s")
     }
 
-    @Test("tbGenerationShortLabel covers the speeds we've seen in the wild")
+    @Test("tbGenerationShortLabel uses the WhatCable-anchored encoding")
     func generationShort() {
+        // Per CLAUDE.md, the `Current Link Speed` encoding is:
+        //   0   = inactive
+        //   0x2 = TB5 / USB4 v2 (40 Gb/s/lane)
+        //   0x4 = TB4 / USB4 v1 (20 Gb/s/lane)
+        //   0x8 = TB3 (10 Gb/s/lane)
+        // The earlier mapping that called `8 = TB5` was empirically wrong
+        // and was replaced — these assertions track the corrected codes.
         #expect(tbGenerationShortLabel(0) == "Inactive")
-        #expect(tbGenerationShortLabel(1) == "TB3 Gen 1")
-        #expect(tbGenerationShortLabel(2) == "TB3 Gen 2")
-        #expect(tbGenerationShortLabel(4) == "TB4")
-        #expect(tbGenerationShortLabel(8) == "TB5")
-        #expect(tbGenerationShortLabel(14) == "TB5 async")
-        // Unknown values fall back to a numeric label so a future kernel
-        // adding a new code doesn't produce an empty string.
-        #expect(tbGenerationShortLabel(99) == "Speed 99")
+        #expect(tbGenerationShortLabel(0x2) == "TB5")
+        #expect(tbGenerationShortLabel(0x4) == "TB4")
+        #expect(tbGenerationShortLabel(0x8) == "TB3")
+        // Bitmask combinations (used for Target/Supported, not Current)
+        // fall through to tbSupportedLinkSpeedLabel.
+        #expect(tbGenerationShortLabel(0xE) == "TB5 · TB4 · TB3")
     }
 
     @Test("tbLinkSpeedLabel is the long-form counterpart")
     func linkSpeed() {
         #expect(tbLinkSpeedLabel(0) == "Inactive")
-        #expect(tbLinkSpeedLabel(8).contains("80 Gb/s"))
-        #expect(tbLinkSpeedLabel(14).contains("120 Gb/s tx"))
-        #expect(tbLinkSpeedLabel(255).contains("255"))
+        #expect(tbLinkSpeedLabel(0x2).contains("40 Gb/s per lane"))
+        #expect(tbLinkSpeedLabel(0x4).contains("20 Gb/s per lane"))
+        #expect(tbLinkSpeedLabel(0x8).contains("10 Gb/s per lane"))
+        // Bitmask values (Target/Supported style) fall through to the
+        // supported-link label.
+        #expect(tbLinkSpeedLabel(0xE) == "TB5 · TB4 · TB3")
     }
 
     @Test("TBAdapterType decodes the stable codes and labels them")

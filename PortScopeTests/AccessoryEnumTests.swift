@@ -88,11 +88,20 @@ struct AccessoryEnumTests {
         }
     }
 
-    @Test("displayPortPinAssignmentLabel covers all USB-IF pin assignments")
+    @Test("displayPortPinAssignmentLabel uses Apple's compact encoding")
     func pinAssignment() {
+        // Per CLAUDE.md, Apple's kernel publishes a 5-entry encoding
+        // (0 = no DP, 1 = C, 2 = D, 3 = E, 4 = F) rather than the full
+        // USB-IF spec (A..F). The old PortScope mapping (1=A...6=F) was
+        // misleading on every Apple Silicon host and has been replaced.
         #expect(displayPortPinAssignmentLabel(0) == "None")
-        #expect(displayPortPinAssignmentLabel(1).hasPrefix("A"))
-        #expect(displayPortPinAssignmentLabel(6).hasPrefix("F"))
+        #expect(displayPortPinAssignmentLabel(1).hasPrefix("C"))
+        #expect(displayPortPinAssignmentLabel(2).hasPrefix("D"))
+        #expect(displayPortPinAssignmentLabel(3).hasPrefix("E"))
+        #expect(displayPortPinAssignmentLabel(4).hasPrefix("F"))
+        // Anything outside 0..4 isn't in Apple's published set; fall
+        // back to a numeric label so the data isn't lost if a future
+        // kernel adds a new code.
         #expect(displayPortPinAssignmentLabel(7) == "Assignment 7")
     }
 
