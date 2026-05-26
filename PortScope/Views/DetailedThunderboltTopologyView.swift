@@ -93,6 +93,20 @@ private struct DeviceRouter: Identifiable {
     let adapters: [Adapter]
     let tunnels: [Tunnel]       // tunnels rooted on this router's function adapters
     let daisyChained: [DeviceRouter]
+    /// Displays attached to this router's DP/HDMI tunnels. Each is
+    /// rendered as a separate downstream block (not as a leaf inside
+    /// the router card) so the graph reads top-down: router → output
+    /// → display.
+    let displays: [DisplayLeaf]
+    /// USB subtree tunneled through this router. Hubs are kept as
+    /// nodes with children — the topology view always shows the
+    /// full hub chain regardless of the global Show Intermediate
+    /// Hubs setting (which only affects the sidebar / CLI).
+    let usbTree: [USBNode]
+    /// PCIe endpoints tunneled through this router. Rare on Apple
+    /// Silicon docks (storage usually tunnels over USB) but kept
+    /// for completeness.
+    let pcieLeaves: [PCIeLeaf]
 
     var totalTunnels: Int {
         tunnels.count + daisyChained.reduce(0) { $0 + $1.totalTunnels }
@@ -100,6 +114,31 @@ private struct DeviceRouter: Identifiable {
     var totalRouterCount: Int {
         1 + daisyChained.reduce(0) { $0 + $1.totalRouterCount }
     }
+}
+
+/// Recursive USB node — covers both hub services (with downstream
+/// children) and leaf devices (mice / keyboards / storage / NICs).
+private struct USBNode: Identifiable, Hashable {
+    let id: TBNodeID
+    let title: String
+    let subtitle: String?
+    let symbol: String          // SF Symbol picked from device class
+    let isHub: Bool
+    let children: [USBNode]
+}
+
+/// One external display block attached to a DP/HDMI tunnel.
+private struct DisplayLeaf: Identifiable, Hashable {
+    let id: TBNodeID
+    let title: String
+    let subtitle: String?       // "2560 × 1440 · 120 Hz"
+}
+
+/// One PCIe endpoint tunneled through a router.
+private struct PCIeLeaf: Identifiable, Hashable {
+    let id: TBNodeID
+    let title: String
+    let subtitle: String?
 }
 
 private struct Adapter: Identifiable, Hashable {
@@ -181,20 +220,6 @@ private struct Tunnel: Identifiable, Hashable {
     let reservedBW: UInt64      // 100 Mb/s units
     let maxBW: UInt64
     let hopCount: Int           // length of the Hop Table
-    /// User-visible endpoints attributed to this tunnel — the
-    /// displays / USB peripherals / PCIe devices it's actually
-    /// carrying. Lets the topology read as "this DP tunnel drives
-    /// Display 0" rather than just "100 Mb/s reserved on the wire".
-    let leaves: [TunnelLeaf]
-}
-
-/// One endpoint hanging off a tunnel — a display attached to a DP
-/// tunnel, a USB peripheral attached to a USB tunnel, etc.
-private struct TunnelLeaf: Identifiable, Hashable {
-    let id: TBNodeID            // backing IORegistry id
-    let title: String           // user-facing label (vendor + product)
-    let subtitle: String?       // resolution / speed / class
-    let symbol: String          // SF Symbol to color-code the leaf
 }
 
 // MARK: - Topology builder
@@ -225,12 +250,12 @@ private enum DTTBuilder {
             // the leaves — pre-probe the switch tree without building
             // the device router yet.
             let downstreamSwitchTitle = previewDeviceRouterTitle(in: hostSwitch)
-            let usbLeaves = collectUSBLeavesForSocket(socketID,
-                                                     snapshot: snapshot,
-                                                     deviceTitle: downstreamSwitchTitle)
+            let usbTree = collectUSBTreeForSocket(socketID,
+                                                  snapshot: snapshot,
+                                                  deviceTitle: downstreamSwitchTitle)
             let downstream = findFirstDeviceRouter(in: hostSwitch,
                                                    snapshot: snapshot,
-                                                   usbLeaves: usbLeaves)
+                                                   usbTree: usbTree)
             hosts.append(HostRouter(
                 id: hostSwitch.id,
                 controller: controller,
@@ -274,12 +299,12 @@ private enum DTTBuilder {
     /// look at direct children.
     private static func findFirstDeviceRouter(in parent: TBNode,
                                               snapshot: SystemSnapshot,
-                                              usbLeaves: [TunnelLeaf]) -> DeviceRouter? {
+                                              usbTree: [USBNode]) -> DeviceRouter? {
         if let s = findSwitch(in: parent,
                               minDepth: (parent.properties["Depth"]?.asUInt ?? 0) + 1) {
             return makeDeviceRouter(switchNode: s,
                                     snapshot: snapshot,
-                                    usbLeaves: usbLeaves)
+                                    usbTree: usbTree)
         }
         return nil
     }
@@ -302,11 +327,9 @@ private enum DTTBuilder {
 
     private static func makeDeviceRouter(switchNode: TBNode,
                                          snapshot: SystemSnapshot,
-                                         usbLeaves: [TunnelLeaf]) -> DeviceRouter {
+                                         usbTree: [USBNode]) -> DeviceRouter {
         let adapters = adapterList(of: switchNode)
-        let tunnels = tunnelList(adapters: adapters,
-                                 snapshot: snapshot,
-                                 usbLeaves: usbLeaves)
+        let tunnels = tunnelList(adapters: adapters)
         var daisy: [DeviceRouter] = []
         let myDepth = switchNode.properties["Depth"]?.asUInt ?? 0
         // Daisy-chained docks sit inside one of *this* router's lane
@@ -320,16 +343,27 @@ private enum DTTBuilder {
             if let s = findSwitch(in: c, minDepth: myDepth + 1) {
                 // Daisy-chained docks share the same host-side
                 // chassis port, so they pull USB leaves from the
-                // same pool the parent router was given. In a more
-                // accurate world we'd partition the leaves across
-                // depths by `Depth Class` in the hop table — the
-                // kernel does publish that — but for an MVP each
-                // chained dock just sees the full set.
+                // same pool the parent router was given.
                 daisy.append(makeDeviceRouter(switchNode: s,
                                               snapshot: snapshot,
-                                              usbLeaves: usbLeaves))
+                                              usbTree: usbTree))
             }
         }
+        // The first-hop router on the cable gets the USB tree we
+        // pre-built from the host's matching usb-drd controller.
+        // Daisy-chained children pass it through (see comment above);
+        // a more accurate split would partition by hop-table Depth
+        // Class but for an MVP each chained dock sees the full set.
+        // Only attribute the tree to depth-1 routers so we don't
+        // double-render the same devices on a chain.
+        let attributedUSB = myDepth == 1 ? usbTree : []
+        let attributedDisplays = myDepth == 1
+            ? collectDisplayBlocks(snapshot: snapshot,
+                                   adapters: adapters)
+            : []
+        let attributedPCIe = myDepth == 1
+            ? collectPCIeBlocks(snapshot: snapshot)
+            : []
         let vendor = switchNode.properties["Device Vendor Name"]?.asString
         let model = switchNode.properties["Device Model Name"]?.asString
         let title: String
@@ -354,7 +388,10 @@ private enum DTTBuilder {
             ),
             adapters: adapters,
             tunnels: tunnels,
-            daisyChained: daisy
+            daisyChained: daisy,
+            displays: attributedDisplays,
+            usbTree: attributedUSB,
+            pcieLeaves: attributedPCIe
         )
     }
 
@@ -440,26 +477,11 @@ private enum DTTBuilder {
         return d["Dst Port"]?.asUInt
     }
 
-    /// One `Tunnel` per active function adapter on the router.
-    /// `usbLeaves` is the pre-filtered list of USB endpoints behind
-    /// this device router's chassis socket; `snapshot.displays`
-    /// supplies the DP attribution pool.
-    private static func tunnelList(adapters: [Adapter],
-                                   snapshot: SystemSnapshot,
-                                   usbLeaves: [TunnelLeaf]) -> [Tunnel] {
-        // Pre-compute leaf pools once per router so building each
-        // tunnel's leaves is a cheap lookup. USB tunnels split their
-        // pool across the (usually single) USB adapter, displays are
-        // distributed across the active DP adapters.
-        let usbPool = usbLeaves
-        let dpPool = collectDisplayLeaves(snapshot: snapshot)
-        let activeDPCount = adapters.filter {
-            $0.kind == .dp && $0.isTunnelActive
-        }.count
-        // Track which DP slot we're filling so multi-display docks
-        // map displays 1:1 to adapter tunnels in sort order.
-        var dpIndex = 0
-
+    /// One `Tunnel` per active function adapter on the router. No
+    /// attached leaves — those live on the device router as
+    /// separately laid-out blocks (`displays`, `usbTree`,
+    /// `pcieLeaves`).
+    private static func tunnelList(adapters: [Adapter]) -> [Tunnel] {
         var out: [Tunnel] = []
         for a in adapters where a.isTunnelActive {
             switch a.kind {
@@ -469,48 +491,18 @@ private enum DTTBuilder {
                 break
             }
             let hops = hopTableEntries(a.node)
-            // Build a human-friendly path: "P13 → P1 → P7" rather than
-            // Microsoft's "13:1:7". Same information, but arrows make
-            // direction unambiguous and we don't have to explain a
-            // colon convention.
             let pathID = ([a.portNumber] + hops.map { $0.dstPort })
                 .map { "P\($0)" }
                 .joined(separator: " → ")
-            let leaves: [TunnelLeaf] = {
-                switch a.kind {
-                case .usb: return usbPool
-                case .dp:
-                    // 1:1 attribution when display count matches DP-
-                    // adapter count, otherwise just hand the first
-                    // available display to each adapter in order.
-                    if activeDPCount == dpPool.count, dpIndex < dpPool.count {
-                        let leaf = dpPool[dpIndex]
-                        dpIndex += 1
-                        return [leaf]
-                    }
-                    if dpIndex < dpPool.count {
-                        let leaf = dpPool[dpIndex]
-                        dpIndex += 1
-                        return [leaf]
-                    }
-                    return []
-                case .pcie:
-                    return []   // dock PCIe endpoints are rare on AS docks
-                default:
-                    return []
-                }
-            }()
             out.append(Tunnel(
                 id: a.id,
                 kind: a.kind,
                 pathID: pathID,
                 reservedBW: a.requiredBandwidth,
                 maxBW: a.maxBandwidth,
-                hopCount: hops.count,
-                leaves: leaves
+                hopCount: hops.count
             ))
         }
-        // Render display tunnels first, then USB, then PCIe.
         return out.sorted { lhs, rhs in
             let order: (AdapterKind) -> Int = { k in
                 switch k {
@@ -553,29 +545,106 @@ private enum DTTBuilder {
     /// Returns an empty list when the socket ID isn't parseable or
     /// when no controllers match — e.g. on hosts where the user has
     /// nothing plugged into the corresponding receptacle.
-    private static func collectUSBLeavesForSocket(_ socketID: String?,
-                                                  snapshot: SystemSnapshot,
-                                                  deviceTitle: String?)
-        -> [TunnelLeaf]
+    /// Build the USB subtree behind the host's chassis socket as a
+    /// recursive `USBNode` structure. Unlike the legacy flat-list
+    /// version (which served the now-removed `TunnelLeaf` model),
+    /// this keeps hubs as nodes with children so the topology
+    /// view can render the full hub-of-hubs chain. The global
+    /// "Show Intermediate Hubs" toggle has no effect here — the
+    /// detailed topology always wants the complete tree.
+    private static func collectUSBTreeForSocket(_ socketID: String?,
+                                                snapshot: SystemSnapshot,
+                                                deviceTitle: String?)
+        -> [USBNode]
     {
         guard let socketStr = socketID, let socket = UInt64(socketStr) else {
             return []
         }
-        var out: [TunnelLeaf] = []
+        var out: [USBNode] = []
         for controller in snapshot.usb.controllers {
-            // Only the per-port USB-C controllers map to a chassis
-            // socket — `usb-auss` is internal.
             let nameMatch = controller.properties["IONameMatched"]?.asString
                 ?? controller.properties["IONameMatch"]?.asString ?? ""
             guard nameMatch.hasPrefix("usb-drd") else { continue }
             guard let loc = controller.properties["locationID"]?.asUInt else { continue }
             let topByte = (loc >> 24) & 0xFF
             guard topByte + 1 == socket else { continue }
-            collectUSBEndpointLeaves(under: controller,
-                                     deviceTitle: deviceTitle,
-                                     into: &out)
+            out.append(contentsOf: buildUSBSubtree(under: controller,
+                                                   deviceTitle: deviceTitle))
         }
-        return out.sorted { $0.title < $1.title }
+        return out
+    }
+
+    /// Walk a USB subtree and produce typed `USBNode`s. Hubs become
+    /// nodes with children populated by recursing. Billboard
+    /// descriptors and dock self-references are skipped but their
+    /// children (rare) are spliced into the parent's child list so
+    /// nothing real is lost.
+    private static func buildUSBSubtree(under node: TBNode,
+                                        deviceTitle: String?) -> [USBNode] {
+        var out: [USBNode] = []
+        for child in node.children {
+            switch child.kind {
+            case .usbHub:
+                let kids = buildUSBSubtree(under: child,
+                                           deviceTitle: deviceTitle)
+                out.append(USBNode(
+                    id: child.id,
+                    title: hubTitle(child),
+                    subtitle: usbSubtitle(child),
+                    symbol: "rectangle.3.group",
+                    isHub: true,
+                    children: kids
+                ))
+            case .usbDevice:
+                let t = child.title.lowercased()
+                if t.contains("billboard") {
+                    // Billboard descriptors carry alt-mode metadata,
+                    // not a real peripheral. Skip but splice their
+                    // children up just in case.
+                    out.append(contentsOf:
+                        buildUSBSubtree(under: child,
+                                        deviceTitle: deviceTitle))
+                } else if isDockSelfReference(child, deviceTitle: deviceTitle) {
+                    out.append(contentsOf:
+                        buildUSBSubtree(under: child,
+                                        deviceTitle: deviceTitle))
+                } else {
+                    let kids = buildUSBSubtree(under: child,
+                                               deviceTitle: deviceTitle)
+                    out.append(USBNode(
+                        id: child.id,
+                        title: child.title,
+                        subtitle: usbSubtitle(child),
+                        symbol: usbSymbol(for: child),
+                        isHub: false,
+                        children: kids
+                    ))
+                }
+            case .usbController, .usbInterface, .other:
+                // Wrapper kexts (XHCI port wrappers, interface stubs,
+                // Apple's `.other` USB port classes) get spliced
+                // through so their devices show under the actual
+                // hub above them, not under a meaningless wrapper.
+                out.append(contentsOf:
+                    buildUSBSubtree(under: child, deviceTitle: deviceTitle))
+            default:
+                continue
+            }
+        }
+        return out
+    }
+
+    /// Friendly title for a hub — "USB 3.0 Hub" / "USB 2.0 Hub" /
+    /// "Anker Prime Docking Station Hub" / etc.
+    private static func hubTitle(_ node: TBNode) -> String {
+        // Prefer the product string the device publishes. Fall back
+        // to a class-derived label.
+        if let product = node.properties["kUSBProductString"]?.asString
+            ?? node.properties["USB Product Name"]?.asString,
+           !product.isEmpty {
+            return product
+        }
+        return node.title.isEmpty ? "USB Hub" : node.title
     }
 
     /// Pre-probe a host switch's subtree to extract the downstream
@@ -593,58 +662,6 @@ private enum DTTBuilder {
         return [vendor, model].compactMap { $0 }.joined(separator: " ")
     }
 
-    /// Recursively walk a USB subtree and append meaningful leaf
-    /// devices. Hubs / interface stubs / billboard descriptors are
-    /// passed through so their children are still considered.
-    /// `deviceTitle` (if supplied) lets the walker skip USB devices
-    /// whose product string is a substring of the dock's name — those
-    /// are the dock's own self-advertising entries (the Anker hub
-    /// chip publishes "Anker Prime Docking Station" as a USB device
-    /// inside the dock itself, which would otherwise render as a leaf
-    /// of its own router card).
-    private static func collectUSBEndpointLeaves(under node: TBNode,
-                                                 deviceTitle: String?,
-                                                 into out: inout [TunnelLeaf]) {
-        for child in node.children {
-            switch child.kind {
-            case .usbDevice:
-                let t = child.title.lowercased()
-                if t.contains("billboard") || t.hasSuffix(" hub")
-                    || t == "usb hub" {
-                    collectUSBEndpointLeaves(under: child,
-                                             deviceTitle: deviceTitle,
-                                             into: &out)
-                } else if isDockSelfReference(child, deviceTitle: deviceTitle) {
-                    // The dock router publishes itself as a USB
-                    // device too (its own hub chip's identity), and
-                    // some docks publish a second alias for the
-                    // chain-pass-through. Skip both — they're the
-                    // same hardware we're already drawing as the
-                    // router card.
-                    collectUSBEndpointLeaves(under: child,
-                                             deviceTitle: deviceTitle,
-                                             into: &out)
-                } else {
-                    out.append(TunnelLeaf(
-                        id: child.id,
-                        title: child.title,
-                        subtitle: usbSubtitle(child),
-                        symbol: usbSymbol(for: child)
-                    ))
-                }
-            case .usbHub:
-                collectUSBEndpointLeaves(under: child,
-                                         deviceTitle: deviceTitle,
-                                         into: &out)
-            case .usbController, .other, .usbInterface:
-                collectUSBEndpointLeaves(under: child,
-                                         deviceTitle: deviceTitle,
-                                         into: &out)
-            default:
-                continue
-            }
-        }
-    }
 
     /// Decide whether a USB device entry is the dock's own
     /// self-advertising hub. Three signals — any one is enough:
@@ -771,14 +788,18 @@ private enum DTTBuilder {
         return false
     }
 
-    /// Every external, currently-lit display. Doesn't attempt to
-    /// attribute across multiple device routers — that's done by the
-    /// caller assigning displays 1:1 to active DP adapters in sort
-    /// order. Good enough for a single-dock setup; on multi-dock
-    /// configs the first-fit fallback keeps every display visible at
-    /// least once.
-    private static func collectDisplayLeaves(snapshot: SystemSnapshot) -> [TunnelLeaf] {
-        snapshot.displays.displays
+    /// External displays attached to this device router's active
+    /// DP/HDMI adapters. Currently uses a simple global pull — every
+    /// connected external display is attributed to depth-1 routers.
+    /// Good enough for single-dock setups; a multi-dock case would
+    /// need per-adapter attribution.
+    private static func collectDisplayBlocks(snapshot: SystemSnapshot,
+                                             adapters: [Adapter]) -> [DisplayLeaf] {
+        let activeDPCount = adapters.filter {
+            $0.kind == .dp && $0.isTunnelActive
+        }.count
+        guard activeDPCount > 0 else { return [] }
+        return snapshot.displays.displays
             .filter { !$0.isBuiltIn && $0.isConnected }
             .sorted { $0.deviceTreeName < $1.deviceTreeName }
             .map { d in
@@ -789,13 +810,27 @@ private enum DTTBuilder {
                 if let hz = d.currentRefreshHz ?? d.maxRefreshHz {
                     sub.append("\(Int(hz.rounded())) Hz")
                 }
-                return TunnelLeaf(
+                return DisplayLeaf(
                     id: d.backingID,
                     title: d.title,
-                    subtitle: sub.isEmpty ? nil : sub.joined(separator: " · "),
-                    symbol: AdapterKind.dp.icon
+                    subtitle: sub.isEmpty ? nil : sub.joined(separator: " · ")
                 )
             }
+    }
+
+    /// PCIe endpoints tunneled through this device router. On Apple
+    /// Silicon most docks tunnel their storage over USB rather than
+    /// PCIe (the dock's NVMe lives behind a USB-mass-storage bridge),
+    /// so this typically returns empty. We still walk
+    /// `snapshot.tb.pcieDevicesOverTB` for completeness.
+    private static func collectPCIeBlocks(snapshot: SystemSnapshot) -> [PCIeLeaf] {
+        return snapshot.tb.pcieDevicesOverTB.map { node in
+            PCIeLeaf(
+                id: node.id,
+                title: node.title,
+                subtitle: node.subtitle
+            )
+        }
     }
 
     /// Decode `Hop Table` rows into `(dstPort, dstHopID)` tuples. The
@@ -875,7 +910,7 @@ struct DetailedThunderboltTopologyView: View {
         HStack(spacing: 14) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.title2).foregroundStyle(.tint)
-            Text("Detailed Thunderbolt Topology").font(.title2.bold())
+            Text("Thunderbolt Topology").font(.title2.bold())
             Text("·").foregroundStyle(.tertiary)
             statChip(systemImage: "cpu",
                      count: model.routerCount,
@@ -1123,8 +1158,13 @@ struct DetailedThunderboltTopologyView: View {
                             linkBandwidth: device.adapters.first(where: { $0.kind == .lane })?.linkBandwidth ?? 0,
                             tunnels: device.tunnels
                         )
-                        DeviceRouterTree(router: device, selection: $selection)
-                            .frame(width: Self.deviceRouterWidth)
+                        // The card itself is constrained to a fixed
+                        // width so its layout stays predictable; the
+                        // downstream tree under it (USB hubs + leaves
+                        // + displays) is free to grow with the device
+                        // count.
+                        DeviceRouterTree(router: device,
+                                         selection: $selection)
                     } else {
                         VStack(spacing: 6) {
                             trunkLine(height: 12)
@@ -1544,6 +1584,23 @@ private struct DeviceRouterTree: View {
     var body: some View {
         VStack(spacing: 14) {
             DeviceRouterCard(router: router, selection: $selection)
+                .frame(width: 520)
+
+            // Downstream blocks (displays / USB tree / PCIe) live
+            // below the router card, joined by a short trunk line.
+            let tree = DownstreamTree(
+                displays: router.displays,
+                usbTree: router.usbTree,
+                pcieLeaves: router.pcieLeaves
+            )
+            if tree.hasContent {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.35))
+                    .frame(width: 2, height: 16)
+                tree
+            }
+
+            // Daisy-chained downstream routers follow.
             ForEach(router.daisyChained) { child in
                 VStack(spacing: 8) {
                     Rectangle()
@@ -1605,25 +1662,13 @@ private struct DeviceRouterCard: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     ForEach(router.tunnels) { t in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Button {
-                                selection = .tunnel(t.id)
-                            } label: {
-                                TunnelChip(tunnel: t,
-                                           isSelected: isTunnelSelected(t))
-                            }
-                            .buttonStyle(.plain)
-                            // Indented leaves below the tunnel — the
-                            // actual displays / USB peripherals the
-                            // tunnel is carrying. Lets the user see
-                            // "this DP tunnel drives Display 0" at a
-                            // glance instead of having to cross-check
-                            // the Displays sidebar section.
-                            if !t.leaves.isEmpty {
-                                LeafList(leaves: t.leaves,
-                                         accent: t.kind.color)
-                            }
+                        Button {
+                            selection = .tunnel(t.id)
+                        } label: {
+                            TunnelChip(tunnel: t,
+                                       isSelected: isTunnelSelected(t))
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -1761,15 +1806,8 @@ private struct TunnelChip: View {
                 .foregroundStyle(tunnel.kind.color)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(tunnel.kind.label)
-                        .font(.caption.weight(.semibold))
-                    if !tunnel.leaves.isEmpty {
-                        Text("· \(tunnel.leaves.count)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(tunnel.kind.color.opacity(0.8))
-                    }
-                }
+                Text(tunnel.kind.label)
+                    .font(.caption.weight(.semibold))
                 Text(tunnel.pathID)
                     .font(.system(size: 10).monospaced())
                     .foregroundStyle(.secondary)
@@ -1837,43 +1875,200 @@ private struct SidebarRow: View {
     }
 }
 
-// MARK: - Tunnel leaves
+// MARK: - Downstream tree (displays / USB / PCIe blocks)
 
-/// Compact, indented list of the endpoints a tunnel is carrying.
-/// Renders directly below the tunnel chip in the device router card.
-/// The accent color matches the tunnel kind so DP leaves read blue,
-/// USB leaves teal, etc.
-private struct LeafList: View {
-    let leaves: [TunnelLeaf]
-    let accent: Color
+/// Lays out the connected endpoints below a device router card as
+/// individual blocks. Three vertical columns: displays on the left
+/// (one block each), USB hub/device tree in the middle (real tree
+/// with parent-child trunks), PCIe endpoints on the right (rare).
+/// Each column is gated on having data — empty columns disappear.
+private struct DownstreamTree: View {
+    let displays: [DisplayLeaf]
+    let usbTree: [USBNode]
+    let pcieLeaves: [PCIeLeaf]
+
+    /// True only when there's something to render. Lets the caller
+    /// skip the trunk line that connects router → tree.
+    var hasContent: Bool {
+        !displays.isEmpty || !usbTree.isEmpty || !pcieLeaves.isEmpty
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(leaves) { leaf in
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("↳")
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(accent.opacity(0.7))
-                    Image(systemName: leaf.symbol)
-                        .font(.caption2)
-                        .foregroundStyle(accent.opacity(0.85))
-                        .frame(width: 12)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(leaf.title)
-                            .font(.caption2.weight(.medium))
-                            .lineLimit(1)
-                        if let sub = leaf.subtitle {
-                            Text(sub)
-                                .font(.system(size: 9))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                    Spacer(minLength: 0)
+        HStack(alignment: .top, spacing: 24) {
+            if !displays.isEmpty {
+                DownstreamColumn(label: "Displays",
+                                 accent: AdapterKind.dp.color) {
+                    ForEach(displays) { DisplayBlock(display: $0) }
                 }
-                .padding(.leading, 18)
+            }
+            if !usbTree.isEmpty {
+                DownstreamColumn(label: "USB",
+                                 accent: AdapterKind.usb.color) {
+                    USBTreeView(nodes: usbTree)
+                }
+            }
+            if !pcieLeaves.isEmpty {
+                DownstreamColumn(label: "PCIe",
+                                 accent: AdapterKind.pcie.color) {
+                    ForEach(pcieLeaves) { PCIeBlock(leaf: $0) }
+                }
             }
         }
+    }
+}
+
+/// One vertical column under a router with a small heading tag.
+/// `content` typically holds a stack of block views.
+private struct DownstreamColumn<Content: View>: View {
+    let label: String
+    let accent: Color
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .bold).monospaced())
+                .foregroundStyle(accent.opacity(0.7))
+            content()
+        }
+    }
+}
+
+/// Recursive renderer for the USB tree. Each node is a block; hubs
+/// fan out into their children below with a short trunk + a
+/// horizontal bus connecting the children.
+private struct USBTreeView: View {
+    let nodes: [USBNode]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            ForEach(nodes) { node in
+                VStack(spacing: 4) {
+                    USBNodeBlock(node: node)
+                    if !node.children.isEmpty {
+                        Rectangle()
+                            .fill(AdapterKind.usb.color.opacity(0.45))
+                            .frame(width: 1, height: 10)
+                        USBTreeView(nodes: node.children)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One USB device or hub rendered as a compact block.
+private struct USBNodeBlock: View {
+    let node: USBNode
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            Image(systemName: node.symbol)
+                .font(.caption)
+                .foregroundStyle(node.isHub
+                                 ? AdapterKind.usb.color.opacity(0.7)
+                                 : AdapterKind.usb.color)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(node.title)
+                    .font(.caption.weight(node.isHub ? .regular : .medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                if let sub = node.subtitle {
+                    Text(sub)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(maxWidth: 180, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(AdapterKind.usb.color
+                    .opacity(node.isHub ? 0.05 : 0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(AdapterKind.usb.color
+                    .opacity(node.isHub ? 0.25 : 0.40),
+                        style: StrokeStyle(lineWidth: 1,
+                                           dash: node.isHub ? [3, 3] : []))
+        )
+    }
+}
+
+/// One external-display block.
+private struct DisplayBlock: View {
+    let display: DisplayLeaf
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            Image(systemName: AdapterKind.dp.icon)
+                .font(.caption)
+                .foregroundStyle(AdapterKind.dp.color)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(display.title)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                if let sub = display.subtitle {
+                    Text(sub)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(maxWidth: 200, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(AdapterKind.dp.color.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(AdapterKind.dp.color.opacity(0.40), lineWidth: 1)
+        )
+    }
+}
+
+/// One PCIe endpoint block.
+private struct PCIeBlock: View {
+    let leaf: PCIeLeaf
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            Image(systemName: AdapterKind.pcie.icon)
+                .font(.caption)
+                .foregroundStyle(AdapterKind.pcie.color)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(leaf.title)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                if let sub = leaf.subtitle {
+                    Text(sub)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(maxWidth: 200, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(AdapterKind.pcie.color.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(AdapterKind.pcie.color.opacity(0.40), lineWidth: 1)
+        )
     }
 }
 
