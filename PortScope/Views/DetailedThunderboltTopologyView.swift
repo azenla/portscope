@@ -886,9 +886,15 @@ struct DetailedThunderboltTopologyView: View {
     /// Lets the user smoothly zoom on a trackpad without each pinch
     /// snapping to a discrete zoom step.
     @GestureState private var pinchScale: Double = 1.0
+    /// Cached topology model. Built once per snapshot rather than on
+    /// every body re-evaluation — pinch / pan gestures retrigger the
+    /// body 60×/sec and the rebuild walks thousands of IOReg nodes
+    /// which was visibly hanging the canvas. Rebuilt via .task(id:)
+    /// when the snapshot identity changes.
+    @State private var cachedModel: DTTModel = DTTModel(hostRouters: [])
 
     var body: some View {
-        let model = DTTBuilder.build(from: snapshot)
+        let model = cachedModel
         VStack(spacing: 0) {
             header(model: model)
             Divider()
@@ -902,6 +908,13 @@ struct DetailedThunderboltTopologyView: View {
             }
         }
         .frame(minWidth: 1180, minHeight: 760)
+        // Build the topology model once when the view appears and
+        // again whenever the snapshot is replaced. Anchoring the
+        // identity on `capturedAt` is cheap (a `Date`) and changes
+        // exactly when the ViewModel publishes a fresh scan.
+        .task(id: snapshot.capturedAt) {
+            cachedModel = DTTBuilder.build(from: snapshot)
+        }
     }
 
     // MARK: Header
@@ -1905,6 +1918,12 @@ private struct DownstreamTree: View {
                 DownstreamColumn(label: "USB",
                                  accent: AdapterKind.usb.color) {
                     USBTreeView(nodes: usbTree)
+                        // Bound the FlowLayout's width so a busy
+                        // dock wraps to a grid instead of stretching
+                        // into a thousands-pt-wide single row that
+                        // hangs the layout system. ~3 blocks per
+                        // row at 180 wide.
+                        .frame(maxWidth: 600, alignment: .leading)
                 }
             }
             if !pcieLeaves.isEmpty {
@@ -1934,26 +1953,127 @@ private struct DownstreamColumn<Content: View>: View {
     }
 }
 
-/// Recursive renderer for the USB tree. Each node is a block; hubs
-/// fan out into their children below with a short trunk + a
-/// horizontal bus connecting the children.
+/// USB tree renderer. Recursive but uses FlowLayout (wrapping
+/// horizontal stack) instead of a plain HStack so a dock with 10+
+/// devices doesn't stretch into a 3000-pt-wide strip. Hubs render
+/// as a small labeled section with their child devices indented
+/// below, which also avoids the deep nested-HStack layout cycle
+/// that was triggering the StackLayout.resize hangs.
+///
+/// Caps recursion at `maxDepth` so a pathological hub-of-hub chain
+/// can't blow up the layout. Beyond the cap, descendant counts are
+/// summarised as a small "(+N more)" chip.
 private struct USBTreeView: View {
     let nodes: [USBNode]
+    var depth: Int = 0
+    /// Max levels of nesting we render before collapsing. Three is
+    /// enough to see the dock's hub → sub-hub → device chain, which
+    /// is the longest real-world layout.
+    private let maxDepth = 3
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            ForEach(nodes) { node in
-                VStack(spacing: 4) {
-                    USBNodeBlock(node: node)
-                    if !node.children.isEmpty {
-                        Rectangle()
-                            .fill(AdapterKind.usb.color.opacity(0.45))
-                            .frame(width: 1, height: 10)
-                        USBTreeView(nodes: node.children)
-                    }
+        let leaves = nodes.filter { !$0.isHub }
+        let hubs = nodes.filter { $0.isHub }
+        VStack(alignment: .leading, spacing: 6) {
+            if !leaves.isEmpty {
+                FlowChips {
+                    ForEach(leaves) { USBNodeBlock(node: $0) }
                 }
             }
+            ForEach(hubs) { hub in
+                hubSection(hub)
+            }
         }
+    }
+
+    @ViewBuilder
+    private func hubSection(_ hub: USBNode) -> some View {
+        let hubLeafCount = countLeaves(under: hub)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: hub.symbol)
+                    .font(.system(size: 10))
+                    .foregroundStyle(AdapterKind.usb.color.opacity(0.7))
+                Text(hub.title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if hubLeafCount > 0 {
+                    Text("· \(hubLeafCount)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(AdapterKind.usb.color.opacity(0.6))
+                }
+            }
+            if depth + 1 < maxDepth {
+                USBTreeView(nodes: hub.children, depth: depth + 1)
+                    .padding(.leading, 14)
+            } else if hubLeafCount > 0 {
+                Text("(+\(hubLeafCount) more, expand depth in sidebar)")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 14)
+            }
+        }
+    }
+
+    /// Count of non-hub descendants under this hub at any depth.
+    /// Used as the hub's chip label so the user can see at a glance
+    /// how many devices live behind a collapsed hub.
+    private func countLeaves(under hub: USBNode) -> Int {
+        var n = 0
+        for c in hub.children {
+            if c.isHub {
+                n += countLeaves(under: c)
+            } else {
+                n += 1
+            }
+        }
+        return n
+    }
+}
+
+/// Common block geometry. Fixed width avoids the
+/// maxWidth+Spacer expand-then-cap dance that triggers
+/// `StackLayout.UnmanagedImplementation.resize` hangs when the tree
+/// is deep — the recursive USB layout used to re-propose sizes
+/// dozens of times per frame.
+private enum BlockMetrics {
+    static let width: CGFloat = 180
+    static let cornerRadius: CGFloat = 6
+}
+
+/// Shared compact block layout. Used by USB / Display / PCIe leaves
+/// so they share the same proposal geometry — keeps SwiftUI's layout
+/// system happy when the tree is wide.
+private struct LeafBlock<Title: View, Sub: View>: View {
+    let symbol: String
+    let accent: Color
+    let hub: Bool
+    @ViewBuilder var title: () -> Title
+    @ViewBuilder var subtitle: () -> Sub
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            Image(systemName: symbol)
+                .font(.caption)
+                .foregroundStyle(hub ? accent.opacity(0.7) : accent)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                title()
+                subtitle()
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(width: BlockMetrics.width, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
+                .fill(accent.opacity(hub ? 0.05 : 0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
+                .stroke(accent.opacity(hub ? 0.25 : 0.40),
+                        style: StrokeStyle(lineWidth: 1,
+                                           dash: hub ? [3, 3] : []))
+        )
     }
 }
 
@@ -1962,41 +2082,22 @@ private struct USBNodeBlock: View {
     let node: USBNode
 
     var body: some View {
-        HStack(alignment: .center, spacing: 6) {
-            Image(systemName: node.symbol)
-                .font(.caption)
-                .foregroundStyle(node.isHub
-                                 ? AdapterKind.usb.color.opacity(0.7)
-                                 : AdapterKind.usb.color)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(node.title)
-                    .font(.caption.weight(node.isHub ? .regular : .medium))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                if let sub = node.subtitle {
-                    Text(sub)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+        LeafBlock(symbol: node.symbol,
+                  accent: AdapterKind.usb.color,
+                  hub: node.isHub) {
+            Text(node.title)
+                .font(.caption.weight(node.isHub ? .regular : .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        } subtitle: {
+            if let sub = node.subtitle {
+                Text(sub)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .frame(maxWidth: 180, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(AdapterKind.usb.color
-                    .opacity(node.isHub ? 0.05 : 0.12))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(AdapterKind.usb.color
-                    .opacity(node.isHub ? 0.25 : 0.40),
-                        style: StrokeStyle(lineWidth: 1,
-                                           dash: node.isHub ? [3, 3] : []))
-        )
     }
 }
 
@@ -2004,35 +2105,21 @@ private struct USBNodeBlock: View {
 private struct DisplayBlock: View {
     let display: DisplayLeaf
     var body: some View {
-        HStack(alignment: .center, spacing: 6) {
-            Image(systemName: AdapterKind.dp.icon)
-                .font(.caption)
-                .foregroundStyle(AdapterKind.dp.color)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(display.title)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                if let sub = display.subtitle {
-                    Text(sub)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+        LeafBlock(symbol: AdapterKind.dp.icon,
+                  accent: AdapterKind.dp.color,
+                  hub: false) {
+            Text(display.title)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        } subtitle: {
+            if let sub = display.subtitle {
+                Text(sub)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .frame(maxWidth: 200, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(AdapterKind.dp.color.opacity(0.12))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(AdapterKind.dp.color.opacity(0.40), lineWidth: 1)
-        )
     }
 }
 
@@ -2040,35 +2127,21 @@ private struct DisplayBlock: View {
 private struct PCIeBlock: View {
     let leaf: PCIeLeaf
     var body: some View {
-        HStack(alignment: .center, spacing: 6) {
-            Image(systemName: AdapterKind.pcie.icon)
-                .font(.caption)
-                .foregroundStyle(AdapterKind.pcie.color)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(leaf.title)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                if let sub = leaf.subtitle {
-                    Text(sub)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+        LeafBlock(symbol: AdapterKind.pcie.icon,
+                  accent: AdapterKind.pcie.color,
+                  hub: false) {
+            Text(leaf.title)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        } subtitle: {
+            if let sub = leaf.subtitle {
+                Text(sub)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .frame(maxWidth: 200, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(AdapterKind.pcie.color.opacity(0.12))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(AdapterKind.pcie.color.opacity(0.40), lineWidth: 1)
-        )
     }
 }
 
