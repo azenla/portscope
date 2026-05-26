@@ -418,6 +418,19 @@ struct USB4TopologyView: View {
     let snapshot: SystemSnapshot
     @Environment(\.dismiss) private var dismiss
     @State private var selection: USB4Selection? = nil
+    /// User-controlled zoom factor (1.0 = 100%). Persists across
+    /// resizes; the "Fit" button recomputes it from current sizes.
+    @State private var zoom: Double = 1.0
+    /// Natural size of the topology content (before scaling). Tracked
+    /// via a PreferenceKey so the canvas can compute a fit-to-window
+    /// scale without having to estimate row heights.
+    @State private var contentSize: CGSize = .zero
+    /// Live canvas size (the area available for drawing, between the
+    /// header and the sidebar). Used as the denominator when fitting.
+    @State private var canvasSize: CGSize = .zero
+    /// Set the first time we auto-fit on appear so the user's zoom
+    /// choice isn't clobbered every time the snapshot updates.
+    @State private var didAutoFit: Bool = false
 
     var body: some View {
         let model = USB4TopologyBuilder.build(from: snapshot)
@@ -433,7 +446,7 @@ struct USB4TopologyView: View {
                     .background(.background)
             }
         }
-        .frame(minWidth: 1280, minHeight: 760)
+        .frame(minWidth: 1180, minHeight: 760)
     }
 
     // MARK: Header
@@ -453,12 +466,81 @@ struct USB4TopologyView: View {
                      singular: "tunnel",
                      plural: "tunnels")
             Spacer()
+            zoomControls
+            Divider().frame(height: 18).padding(.horizontal, 4)
             legendDot(color: .green, label: "Host")
             legendDot(color: .blue, label: "Device")
             Button("Done") { dismiss() }
                 .keyboardShortcut(.cancelAction)
         }
         .padding()
+    }
+
+    /// Compact zoom toolbar — minus / percentage / plus / fit. Keeps
+    /// the zoom in a sensible range so the user can't get lost.
+    private var zoomControls: some View {
+        HStack(spacing: 4) {
+            Button {
+                setZoom(zoom - 0.1)
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .help("Zoom out")
+            .keyboardShortcut("-", modifiers: .command)
+
+            Text("\(Int((zoom * 100).rounded()))%")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 46)
+
+            Button {
+                setZoom(zoom + 0.1)
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .help("Zoom in")
+            .keyboardShortcut("=", modifiers: .command)
+
+            Button {
+                zoom = fitScale()
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .help("Fit to window")
+            .keyboardShortcut("0", modifiers: .command)
+
+            Button {
+                setZoom(1.0)
+            } label: {
+                Text("1:1").font(.caption.monospacedDigit())
+            }
+            .buttonStyle(.borderless)
+            .help("Reset to 100%")
+        }
+    }
+
+    /// Compute the scale that would make the natural content fit
+    /// entirely inside the canvas. Always returns a value in [0.2, 1.0]
+    /// so the topology stays readable even on tiny windows; the user
+    /// can still pan with the ScrollView when zoomed in.
+    private func fitScale() -> Double {
+        guard contentSize.width > 0, contentSize.height > 0,
+              canvasSize.width > 0, canvasSize.height > 0 else { return 1.0 }
+        // Leave a 40 px padding ring around the content so the rounded
+        // corners aren't kissing the divider when fitted.
+        let availW = canvasSize.width - 32
+        let availH = canvasSize.height - 32
+        let sx = availW / contentSize.width
+        let sy = availH / contentSize.height
+        return max(0.2, min(1.0, min(sx, sy)))
+    }
+
+    /// Clamp + apply a zoom value.
+    private func setZoom(_ value: Double) {
+        zoom = max(0.2, min(2.0, value))
     }
 
     private func statChip(systemImage: String, count: Int,
@@ -482,19 +564,68 @@ struct USB4TopologyView: View {
 
     // MARK: Canvas
 
+    /// The canvas hosts the topology inside a scroll view with both
+    /// axes enabled. The content is rendered at its natural size and
+    /// scaled via `.scaleEffect`; the surrounding frame is sized to
+    /// `natural * zoom` so the ScrollView understands how much to
+    /// scroll and the content stays anchored top-left even when it's
+    /// smaller than the canvas. A PreferenceKey reports the natural
+    /// content size so the Fit button can compute a scale; a
+    /// GeometryReader at the canvas level captures the available
+    /// drawing area.
     private func canvas(model: USB4TopologyModel) -> some View {
-        ScrollView([.vertical, .horizontal]) {
-            VStack(alignment: .center, spacing: 28) {
-                MacChassisBlock()
-                trunkLine(height: 18)
-                hostRoutersBar(routers: model.hostRouters)
+        GeometryReader { canvasGeo in
+            ScrollView([.vertical, .horizontal]) {
+                topologyContent(model: model)
+                    .background(
+                        GeometryReader { contentGeo in
+                            Color.clear.preference(
+                                key: TopologyContentSizeKey.self,
+                                value: contentGeo.size
+                            )
+                        }
+                    )
+                    .scaleEffect(zoom, anchor: .topLeading)
+                    .frame(
+                        width: max(canvasGeo.size.width,
+                                   contentSize.width * zoom),
+                        height: max(canvasGeo.size.height,
+                                    contentSize.height * zoom),
+                        alignment: .topLeading
+                    )
             }
-            .padding(40)
-            .frame(minWidth: 1180, alignment: .center)
+            .background(LinearGradient(
+                colors: [Color.secondary.opacity(0.05),
+                         Color.secondary.opacity(0.10)],
+                startPoint: .top, endPoint: .bottom))
+            .onAppear { canvasSize = canvasGeo.size }
+            .onChange(of: canvasGeo.size) { _, new in
+                canvasSize = new
+            }
+            .onPreferenceChange(TopologyContentSizeKey.self) { new in
+                contentSize = new
+                // First measurement after mount: auto-fit so the user
+                // never lands on an overflowing topology. After this,
+                // resizes the window or rescans don't clobber the
+                // user's zoom — they can hit Fit themselves.
+                if !didAutoFit, new.width > 0, canvasSize.width > 0 {
+                    zoom = fitScale()
+                    didAutoFit = true
+                }
+            }
         }
-        .background(LinearGradient(
-            colors: [Color.secondary.opacity(0.05), Color.secondary.opacity(0.10)],
-            startPoint: .top, endPoint: .bottom))
+    }
+
+    /// The actual topology drawing. Rendered at natural size; the
+    /// canvas applies the zoom transform.
+    private func topologyContent(model: USB4TopologyModel) -> some View {
+        VStack(alignment: .center, spacing: 28) {
+            MacChassisBlock()
+            trunkLine(height: 18)
+            hostRoutersBar(routers: model.hostRouters)
+        }
+        .padding(40)
+        .fixedSize()
     }
 
     private func trunkLine(height: CGFloat) -> some View {
@@ -1152,5 +1283,18 @@ private struct SidebarRow: View {
                 .multilineTextAlignment(.leading)
             Spacer(minLength: 0)
         }
+    }
+}
+
+// MARK: - Preference keys
+
+/// Reports the natural (unscaled) size of the topology content so the
+/// canvas can drive its Fit-to-window calculation. Coalesces multiple
+/// reports by taking the last non-zero value.
+private struct TopologyContentSizeKey: PreferenceKey {
+    static let defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next.width > 0 || next.height > 0 { value = next }
     }
 }
