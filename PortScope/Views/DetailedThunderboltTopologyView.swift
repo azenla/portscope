@@ -219,8 +219,15 @@ private enum DTTBuilder {
             // on a TB-tunneled dock are NOT children of the dock's TB
             // switch"). Match by chassis socket: usb-drd<N>'s
             // locationID top byte equals the lane adapter's Socket ID.
+            //
+            // We need the downstream device router's title up front so
+            // we can filter its self-advertising USB hub entry out of
+            // the leaves — pre-probe the switch tree without building
+            // the device router yet.
+            let downstreamSwitchTitle = previewDeviceRouterTitle(in: hostSwitch)
             let usbLeaves = collectUSBLeavesForSocket(socketID,
-                                                     snapshot: snapshot)
+                                                     snapshot: snapshot,
+                                                     deviceTitle: downstreamSwitchTitle)
             let downstream = findFirstDeviceRouter(in: hostSwitch,
                                                    snapshot: snapshot,
                                                    usbLeaves: usbLeaves)
@@ -532,6 +539,12 @@ private enum DTTBuilder {
     /// The off-by-one used to defeat the match — the matcher now
     /// expects `topByte + 1 == socket`.
     ///
+    /// `deviceTitle` lets the matcher filter out the dock's own
+    /// self-advertising USB hub entries (the dock typically enumerates
+    /// itself as a USB device named "Anker Prime Docking Station"
+    /// under its own USB tree, which would otherwise appear as a
+    /// leaf under its own card).
+    ///
     /// Filtered to `usb-drd*` controllers only (skips the internal
     /// `usb-auss` controller that drives the FaceTime camera /
     /// internal USB — its locationID doesn't follow the per-port
@@ -541,7 +554,8 @@ private enum DTTBuilder {
     /// when no controllers match — e.g. on hosts where the user has
     /// nothing plugged into the corresponding receptacle.
     private static func collectUSBLeavesForSocket(_ socketID: String?,
-                                                  snapshot: SystemSnapshot)
+                                                  snapshot: SystemSnapshot,
+                                                  deviceTitle: String?)
         -> [TunnelLeaf]
     {
         guard let socketStr = socketID, let socket = UInt64(socketStr) else {
@@ -557,15 +571,39 @@ private enum DTTBuilder {
             guard let loc = controller.properties["locationID"]?.asUInt else { continue }
             let topByte = (loc >> 24) & 0xFF
             guard topByte + 1 == socket else { continue }
-            collectUSBEndpointLeaves(under: controller, into: &out)
+            collectUSBEndpointLeaves(under: controller,
+                                     deviceTitle: deviceTitle,
+                                     into: &out)
         }
         return out.sorted { $0.title < $1.title }
+    }
+
+    /// Pre-probe a host switch's subtree to extract the downstream
+    /// device router's title without doing the full DeviceRouter
+    /// build. Used so USB leaf collection can filter out the dock's
+    /// own self-advertising USB hub entries before the device router
+    /// model is constructed. Returns nil when no device is attached.
+    private static func previewDeviceRouterTitle(in hostSwitch: TBNode) -> String? {
+        let minDepth = (hostSwitch.properties["Depth"]?.asUInt ?? 0) + 1
+        guard let s = findSwitch(in: hostSwitch, minDepth: minDepth) else {
+            return nil
+        }
+        let vendor = s.properties["Device Vendor Name"]?.asString
+        let model = s.properties["Device Model Name"]?.asString
+        return [vendor, model].compactMap { $0 }.joined(separator: " ")
     }
 
     /// Recursively walk a USB subtree and append meaningful leaf
     /// devices. Hubs / interface stubs / billboard descriptors are
     /// passed through so their children are still considered.
+    /// `deviceTitle` (if supplied) lets the walker skip USB devices
+    /// whose product string is a substring of the dock's name — those
+    /// are the dock's own self-advertising entries (the Anker hub
+    /// chip publishes "Anker Prime Docking Station" as a USB device
+    /// inside the dock itself, which would otherwise render as a leaf
+    /// of its own router card).
     private static func collectUSBEndpointLeaves(under node: TBNode,
+                                                 deviceTitle: String?,
                                                  into out: inout [TunnelLeaf]) {
         for child in node.children {
             switch child.kind {
@@ -573,7 +611,19 @@ private enum DTTBuilder {
                 let t = child.title.lowercased()
                 if t.contains("billboard") || t.hasSuffix(" hub")
                     || t == "usb hub" {
-                    collectUSBEndpointLeaves(under: child, into: &out)
+                    collectUSBEndpointLeaves(under: child,
+                                             deviceTitle: deviceTitle,
+                                             into: &out)
+                } else if isDockSelfReference(child, deviceTitle: deviceTitle) {
+                    // The dock router publishes itself as a USB
+                    // device too (its own hub chip's identity), and
+                    // some docks publish a second alias for the
+                    // chain-pass-through. Skip both — they're the
+                    // same hardware we're already drawing as the
+                    // router card.
+                    collectUSBEndpointLeaves(under: child,
+                                             deviceTitle: deviceTitle,
+                                             into: &out)
                 } else {
                     out.append(TunnelLeaf(
                         id: child.id,
@@ -583,13 +633,54 @@ private enum DTTBuilder {
                     ))
                 }
             case .usbHub:
-                collectUSBEndpointLeaves(under: child, into: &out)
+                collectUSBEndpointLeaves(under: child,
+                                         deviceTitle: deviceTitle,
+                                         into: &out)
             case .usbController, .other, .usbInterface:
-                collectUSBEndpointLeaves(under: child, into: &out)
+                collectUSBEndpointLeaves(under: child,
+                                         deviceTitle: deviceTitle,
+                                         into: &out)
             default:
                 continue
             }
         }
+    }
+
+    /// Decide whether a USB device entry is the dock's own
+    /// self-advertising hub. Three signals — any one is enough:
+    ///
+    /// * Its title (product string) contains "Docking Station" AND
+    ///   shares a substantial token with the dock router's name
+    ///   ("Anker", "CalDigit", "Kensington", etc).
+    /// * Its title contains the literal dock router title (e.g.
+    ///   "Anker Thunderbolt 5 Docking Station" pass-through).
+    /// * Its vendor string indicates a hub chip vendor ("VIA Labs",
+    ///   "Genesys Logic") AND the title contains "Docking" — those
+    ///   are dock-internal hub chips advertising as devices.
+    private static func isDockSelfReference(_ node: TBNode,
+                                            deviceTitle: String?) -> Bool {
+        guard let deviceTitle, !deviceTitle.isEmpty else { return false }
+        let title = node.title
+        let lowerTitle = title.lowercased()
+        let dockTitle = deviceTitle.lowercased()
+        let hubChipVendors = ["via labs", "genesys logic", "genesyslogic", "asmedia"]
+        let vendor = (node.properties["kUSBVendorString"]?.asString
+            ?? node.properties["USB Vendor Name"]?.asString
+            ?? "").lowercased()
+        let isHubChip = hubChipVendors.contains { vendor.contains($0) }
+        let mentionsDocking = lowerTitle.contains("docking")
+            || lowerTitle.contains(" dock")
+        if isHubChip && mentionsDocking { return true }
+        // Token-based match: the dock's title typically reads
+        // "Vendor Model (qualifier)". Take the first vendor token
+        // and check if both the leaf's title and the dock's title
+        // share it (e.g. "Anker").
+        let dockFirstToken = dockTitle.split(separator: " ").first.map(String.init) ?? ""
+        if !dockFirstToken.isEmpty, dockFirstToken.count >= 3,
+           lowerTitle.contains(dockFirstToken), mentionsDocking {
+            return true
+        }
+        return false
     }
 
     /// Pick a friendlier SF Symbol per USB device class. The kernel
@@ -642,15 +733,42 @@ private enum DTTBuilder {
         var parts: [String] = []
         if let vendor = node.properties["kUSBVendorString"]?.asString
             ?? node.properties["USB Vendor Name"]?.asString,
-           !vendor.isEmpty, vendor != node.title {
+           !vendor.isEmpty, vendor != node.title,
+           !isPlaceholderVendor(vendor) {
             parts.append(vendor)
         }
-        if let speed = node.properties["Device Speed"]?.asUInt
+        // Use the device's declared protocol version (bcdUSB) rather
+        // than the kernel's negotiated `Device Speed`. The negotiated
+        // value reports "Full Speed → USB 1.1" for HID devices (mice
+        // / keyboards), which is technically correct but reads as
+        // "ancient hardware" to users. The declared bcdUSB ("USB
+        // 2.0", "USB 3.2") is the device's nominal protocol class,
+        // which is what users mean when they ask "what kind of USB
+        // device is this".
+        if let bcd = node.properties["bcdUSB"]?.asUInt,
+           let cap = usbCapabilityFromBCD(bcd) {
+            parts.append(cap.shortLabel)
+        } else if let speed = node.properties["Device Speed"]?.asUInt
             ?? node.properties["kUSBCurrentSpeed"]?.asUInt,
-           speed > 0 {
+                  speed > 0 {
             parts.append(usbSpeedShortLabel(speed))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Some USB devices publish placeholder / redacted vendor
+    /// strings (Apple's Type-C Digital AV Adapter literally
+    /// publishes "xxxxxxxx"). Suppress those so they don't show
+    /// up as a confusing subtitle.
+    private static func isPlaceholderVendor(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return true }
+        // String of x's — Apple's redaction placeholder.
+        if trimmed.allSatisfy({ $0 == "x" || $0 == "X" }) { return true }
+        // Anything purely "?" / "-" / dashes is also non-information.
+        let placeholderChars: Set<Character> = ["?", "-", "_", "•"]
+        if trimmed.allSatisfy({ placeholderChars.contains($0) }) { return true }
+        return false
     }
 
     /// Every external, currently-lit display. Doesn't attempt to
