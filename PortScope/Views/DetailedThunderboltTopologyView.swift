@@ -1,11 +1,14 @@
 //
-//  USB4TopologyView.swift
+//  DetailedThunderboltTopologyView.swift
 //  PortScope
 //
-//  Microsoft Device Portal-style USB4 topology viewer. Renders host
-//  routers (one per Apple TB controller), device routers daisy-chained
-//  under them, the adapters inside each router, and the active tunnels
-//  carrying traffic between them.
+//  Microsoft Device Portal-style Thunderbolt / USB4 topology viewer.
+//  Renders host routers (one per Apple TB controller), device routers
+//  daisy-chained under them, the adapters inside each router, and the
+//  active tunnels carrying traffic between them. The "detailed" half
+//  of the topology pair — the simplified view (DiagramView) shows the
+//  chassis-port-and-cable layout for users who don't care about the
+//  inner router structure.
 //
 //  Reference: Microsoft's Windows Device Portal USB4 view
 //  (https://learn.microsoft.com/en-us/windows-hardware/design/component-
@@ -13,7 +16,7 @@
 //  host routers in green, device routers in blue, draws adapters as
 //  in-router pills, and gives each tunnel a path identifier built from
 //  the adapter port numbers it traverses ("8:1:1:9"). We mirror the
-//  same conventions.
+//  same conventions but render the path with arrows ("P8 → P1 → P9").
 //
 //  Built on top of the existing `SystemSnapshot.tb` data — no new
 //  scanning, just a different presentation of the IOThunderboltSwitch /
@@ -28,7 +31,7 @@ import SwiftUI
 /// off this enum to decide what to render. Identifier is a TBNodeID so
 /// the selection survives a snapshot refresh as long as the underlying
 /// IORegistry entry is still around.
-enum USB4Selection: Hashable {
+enum DTTSelection: Hashable {
     case hostRouter(TBNodeID)
     case deviceRouter(TBNodeID)
     case adapter(TBNodeID)
@@ -40,7 +43,7 @@ enum USB4Selection: Hashable {
 /// Snapshot of the USB4 fabric in a shape that's easy to render. Built
 /// from `SystemSnapshot.tb` once when the view body evaluates; not held
 /// as state.
-private struct USB4TopologyModel {
+private struct DTTModel {
     let hostRouters: [HostRouter]
 
     /// Total active tunnels across all routers (host-side + device-side
@@ -178,17 +181,32 @@ private struct Tunnel: Identifiable, Hashable {
     let reservedBW: UInt64      // 100 Mb/s units
     let maxBW: UInt64
     let hopCount: Int           // length of the Hop Table
+    /// User-visible endpoints attributed to this tunnel — the
+    /// displays / USB peripherals / PCIe devices it's actually
+    /// carrying. Lets the topology read as "this DP tunnel drives
+    /// Display 0" rather than just "100 Mb/s reserved on the wire".
+    let leaves: [TunnelLeaf]
+}
+
+/// One endpoint hanging off a tunnel — a display attached to a DP
+/// tunnel, a USB peripheral attached to a USB tunnel, etc.
+private struct TunnelLeaf: Identifiable, Hashable {
+    let id: TBNodeID            // backing IORegistry id
+    let title: String           // user-facing label (vendor + product)
+    let subtitle: String?       // resolution / speed / class
+    let symbol: String          // SF Symbol to color-code the leaf
 }
 
 // MARK: - Topology builder
 
-private enum USB4TopologyBuilder {
-    static func build(from snapshot: SystemSnapshot) -> USB4TopologyModel {
+private enum DTTBuilder {
+    static func build(from snapshot: SystemSnapshot) -> DTTModel {
         var hosts: [HostRouter] = []
         for (idx, controller) in snapshot.tb.controllers.enumerated() {
             guard let hostSwitch = findHostSwitch(in: controller) else { continue }
             let adapters = adapterList(of: hostSwitch)
-            let downstream = findFirstDeviceRouter(in: hostSwitch)
+            let downstream = findFirstDeviceRouter(in: hostSwitch,
+                                                   snapshot: snapshot)
             // Each host router is anchored on its corresponding TB
             // controller. The "Socket ID" on a depth-0 lane adapter is
             // the physical port number (1, 2, 3 on a MacBook Pro), so
@@ -207,7 +225,7 @@ private enum USB4TopologyBuilder {
                 downstream: downstream
             ))
         }
-        return USB4TopologyModel(hostRouters: hosts)
+        return DTTModel(hostRouters: hosts)
     }
 
     /// Find the depth-0 `IOThunderboltSwitch` somewhere under the
@@ -238,10 +256,11 @@ private enum USB4TopologyBuilder {
     /// two ends as a host-side port wrapping a device-side port
     /// wrapping the device's switch), so we recurse rather than just
     /// look at direct children.
-    private static func findFirstDeviceRouter(in parent: TBNode) -> DeviceRouter? {
+    private static func findFirstDeviceRouter(in parent: TBNode,
+                                              snapshot: SystemSnapshot) -> DeviceRouter? {
         if let s = findSwitch(in: parent,
                               minDepth: (parent.properties["Depth"]?.asUInt ?? 0) + 1) {
-            return makeDeviceRouter(switchNode: s)
+            return makeDeviceRouter(switchNode: s, snapshot: snapshot)
         }
         return nil
     }
@@ -262,9 +281,12 @@ private enum USB4TopologyBuilder {
         return nil
     }
 
-    private static func makeDeviceRouter(switchNode: TBNode) -> DeviceRouter {
+    private static func makeDeviceRouter(switchNode: TBNode,
+                                         snapshot: SystemSnapshot) -> DeviceRouter {
         let adapters = adapterList(of: switchNode)
-        let tunnels = tunnelList(adapters: adapters)
+        let tunnels = tunnelList(adapters: adapters,
+                                 switchID: switchNode.id,
+                                 snapshot: snapshot)
         var daisy: [DeviceRouter] = []
         let myDepth = switchNode.properties["Depth"]?.asUInt ?? 0
         // Daisy-chained docks sit inside one of *this* router's lane
@@ -276,7 +298,7 @@ private enum USB4TopologyBuilder {
         for c in switchNode.children {
             if c.kind == .switch { continue }   // already this router
             if let s = findSwitch(in: c, minDepth: myDepth + 1) {
-                daisy.append(makeDeviceRouter(switchNode: s))
+                daisy.append(makeDeviceRouter(switchNode: s, snapshot: snapshot))
             }
         }
         let vendor = switchNode.properties["Device Vendor Name"]?.asString
@@ -389,8 +411,26 @@ private enum USB4TopologyBuilder {
         return d["Dst Port"]?.asUInt
     }
 
-    /// One `Tunnel` per active function adapter on the router.
-    private static func tunnelList(adapters: [Adapter]) -> [Tunnel] {
+    /// One `Tunnel` per active function adapter on the router. The
+    /// switchID lets us match attributed leaves (USB devices via the
+    /// usb tbContext cross-link, displays via the DP heuristic) to
+    /// the tunnels exiting this router.
+    private static func tunnelList(adapters: [Adapter],
+                                   switchID: TBNodeID,
+                                   snapshot: SystemSnapshot) -> [Tunnel] {
+        // Pre-compute leaf pools once per router so building each
+        // tunnel's leaves is a cheap lookup. USB tunnels split their
+        // pool across the (usually single) USB adapter, displays are
+        // distributed across the active DP adapters.
+        let usbPool = collectUSBLeaves(forSwitchID: switchID, snapshot: snapshot)
+        let dpPool = collectDisplayLeaves(snapshot: snapshot)
+        let activeDPCount = adapters.filter {
+            $0.kind == .dp && $0.isTunnelActive
+        }.count
+        // Track which DP slot we're filling so multi-display docks
+        // map displays 1:1 to adapter tunnels in sort order.
+        var dpIndex = 0
+
         var out: [Tunnel] = []
         for a in adapters where a.isTunnelActive {
             switch a.kind {
@@ -407,13 +447,38 @@ private enum USB4TopologyBuilder {
             let pathID = ([a.portNumber] + hops.map { $0.dstPort })
                 .map { "P\($0)" }
                 .joined(separator: " → ")
+            let leaves: [TunnelLeaf] = {
+                switch a.kind {
+                case .usb: return usbPool
+                case .dp:
+                    // 1:1 attribution when display count matches DP-
+                    // adapter count, otherwise just hand the first
+                    // available display to each adapter in order.
+                    if activeDPCount == dpPool.count, dpIndex < dpPool.count {
+                        let leaf = dpPool[dpIndex]
+                        dpIndex += 1
+                        return [leaf]
+                    }
+                    if dpIndex < dpPool.count {
+                        let leaf = dpPool[dpIndex]
+                        dpIndex += 1
+                        return [leaf]
+                    }
+                    return []
+                case .pcie:
+                    return []   // dock PCIe endpoints are rare on AS docks
+                default:
+                    return []
+                }
+            }()
             out.append(Tunnel(
                 id: a.id,
                 kind: a.kind,
                 pathID: pathID,
                 reservedBW: a.requiredBandwidth,
                 maxBW: a.maxBandwidth,
-                hopCount: hops.count
+                hopCount: hops.count,
+                leaves: leaves
             ))
         }
         // Render display tunnels first, then USB, then PCIe.
@@ -431,6 +496,97 @@ private enum USB4TopologyBuilder {
             }
             return lhs.pathID < rhs.pathID
         }
+    }
+
+    /// Walk `snapshot.usb.controllers` for any controller whose
+    /// `tbContext` resolves to `switchID` — those are USB controllers
+    /// tunneled through this device router. Promote the controllers'
+    /// meaningful USB endpoints (skip hubs, billboards, etc.) into
+    /// leaves so the tunnel chip can list "G502 HERO Mouse",
+    /// "Gaming Keyboard G910", etc.
+    private static func collectUSBLeaves(forSwitchID switchID: TBNodeID,
+                                         snapshot: SystemSnapshot) -> [TunnelLeaf] {
+        var out: [TunnelLeaf] = []
+        for controller in snapshot.usb.controllers {
+            guard snapshot.usb.tbContext[controller.id] == switchID else { continue }
+            collectUSBEndpointLeaves(under: controller, into: &out)
+        }
+        // Order the same way the device sidebar does — by title — so
+        // the leaf list reads alphabetically and stays stable across
+        // rescans even if the IORegistry shuffles enumeration order.
+        return out.sorted { $0.title < $1.title }
+    }
+
+    /// Recursively walk a USB subtree and append meaningful leaf
+    /// devices. Hubs / interface stubs / billboard descriptors are
+    /// passed through so their children are still considered.
+    private static func collectUSBEndpointLeaves(under node: TBNode,
+                                                 into out: inout [TunnelLeaf]) {
+        for child in node.children {
+            switch child.kind {
+            case .usbDevice:
+                let t = child.title.lowercased()
+                if t.contains("billboard") || t.hasSuffix(" hub")
+                    || t == "usb hub" {
+                    collectUSBEndpointLeaves(under: child, into: &out)
+                } else {
+                    out.append(TunnelLeaf(
+                        id: child.id,
+                        title: child.title,
+                        subtitle: usbSubtitle(child),
+                        symbol: AdapterKind.usb.icon
+                    ))
+                }
+            case .usbHub:
+                collectUSBEndpointLeaves(under: child, into: &out)
+            case .usbController, .other, .usbInterface:
+                collectUSBEndpointLeaves(under: child, into: &out)
+            default:
+                continue
+            }
+        }
+    }
+
+    private static func usbSubtitle(_ node: TBNode) -> String? {
+        var parts: [String] = []
+        if let vendor = node.properties["kUSBVendorString"]?.asString
+            ?? node.properties["USB Vendor Name"]?.asString,
+           !vendor.isEmpty, vendor != node.title {
+            parts.append(vendor)
+        }
+        if let speed = node.properties["Device Speed"]?.asUInt
+            ?? node.properties["kUSBCurrentSpeed"]?.asUInt,
+           speed > 0 {
+            parts.append(usbSpeedShortLabel(speed))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Every external, currently-lit display. Doesn't attempt to
+    /// attribute across multiple device routers — that's done by the
+    /// caller assigning displays 1:1 to active DP adapters in sort
+    /// order. Good enough for a single-dock setup; on multi-dock
+    /// configs the first-fit fallback keeps every display visible at
+    /// least once.
+    private static func collectDisplayLeaves(snapshot: SystemSnapshot) -> [TunnelLeaf] {
+        snapshot.displays.displays
+            .filter { !$0.isBuiltIn && $0.isConnected }
+            .sorted { $0.deviceTreeName < $1.deviceTreeName }
+            .map { d in
+                var sub: [String] = []
+                if let w = d.widthPixels, let h = d.heightPixels, w > 0, h > 0 {
+                    sub.append("\(w) × \(h)")
+                }
+                if let hz = d.currentRefreshHz ?? d.maxRefreshHz {
+                    sub.append("\(Int(hz.rounded())) Hz")
+                }
+                return TunnelLeaf(
+                    id: d.backingID,
+                    title: d.title,
+                    subtitle: sub.isEmpty ? nil : sub.joined(separator: " · "),
+                    symbol: AdapterKind.dp.icon
+                )
+            }
     }
 
     /// Decode `Hop Table` rows into `(dstPort, dstHopID)` tuples. The
@@ -464,10 +620,10 @@ private enum USB4TopologyBuilder {
 
 // MARK: - Main view
 
-struct USB4TopologyView: View {
+struct DetailedThunderboltTopologyView: View {
     let snapshot: SystemSnapshot
     @Environment(\.dismiss) private var dismiss
-    @State private var selection: USB4Selection? = nil
+    @State private var selection: DTTSelection? = nil
     /// User-controlled zoom factor (1.0 = 100%). Persists across
     /// resizes; the "Fit" button recomputes it from current sizes.
     @State private var zoom: Double = 1.0
@@ -483,7 +639,7 @@ struct USB4TopologyView: View {
     @State private var didAutoFit: Bool = false
 
     var body: some View {
-        let model = USB4TopologyBuilder.build(from: snapshot)
+        let model = DTTBuilder.build(from: snapshot)
         VStack(spacing: 0) {
             header(model: model)
             Divider()
@@ -501,11 +657,11 @@ struct USB4TopologyView: View {
 
     // MARK: Header
 
-    private func header(model: USB4TopologyModel) -> some View {
+    private func header(model: DTTModel) -> some View {
         HStack(spacing: 14) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.title2).foregroundStyle(.tint)
-            Text("USB4 Topology").font(.title2.bold())
+            Text("Detailed Thunderbolt Topology").font(.title2.bold())
             Text("·").foregroundStyle(.tertiary)
             statChip(systemImage: "cpu",
                      count: model.routerCount,
@@ -641,26 +797,41 @@ struct USB4TopologyView: View {
     /// content size so the Fit button can compute a scale; a
     /// GeometryReader at the canvas level captures the available
     /// drawing area.
-    private func canvas(model: USB4TopologyModel) -> some View {
+    private func canvas(model: DTTModel) -> some View {
         GeometryReader { canvasGeo in
+            // Compute the scaled bounds and the surrounding canvas
+            // bounds up front so the layout reads top-down.
+            let scaledW = max(contentSize.width * zoom, 1)
+            let scaledH = max(contentSize.height * zoom, 1)
+            let frameW = max(canvasGeo.size.width, scaledW)
+            let frameH = max(canvasGeo.size.height, scaledH)
             ScrollView([.vertical, .horizontal]) {
-                topologyContent(model: model)
-                    .background(
-                        GeometryReader { contentGeo in
-                            Color.clear.preference(
-                                key: TopologyContentSizeKey.self,
-                                value: contentGeo.size
-                            )
-                        }
-                    )
-                    .scaleEffect(zoom, anchor: .topLeading)
-                    .frame(
-                        width: max(canvasGeo.size.width,
-                                   contentSize.width * zoom),
-                        height: max(canvasGeo.size.height,
-                                    contentSize.height * zoom),
-                        alignment: .topLeading
-                    )
+                ZStack {
+                    // Anchor the scaled content in the centre of a
+                    // frame that's at least as big as the canvas. When
+                    // the content is smaller than the canvas (fit at
+                    // <100%) the ZStack centres it. When larger, the
+                    // ZStack expands to the content's scaled bounds
+                    // and the ScrollView gains pan room in both axes.
+                    topologyContent(model: model)
+                        .background(
+                            GeometryReader { contentGeo in
+                                Color.clear.preference(
+                                    key: TopologyContentSizeKey.self,
+                                    value: contentGeo.size
+                                )
+                            }
+                        )
+                        // Anchor to top-leading + matching frame
+                        // alignment so the scaled rendering occupies
+                        // exactly `scaledW × scaledH` starting from
+                        // (0, 0) in its own layout box. The outer ZStack
+                        // then centers that box inside the canvas.
+                        .scaleEffect(zoom, anchor: .topLeading)
+                        .frame(width: scaledW, height: scaledH,
+                               alignment: .topLeading)
+                }
+                .frame(width: frameW, height: frameH)
             }
             .background(LinearGradient(
                 colors: [Color.secondary.opacity(0.05),
@@ -683,7 +854,7 @@ struct USB4TopologyView: View {
 
     /// The actual topology drawing. Rendered at natural size; the
     /// canvas applies the zoom transform.
-    private func topologyContent(model: USB4TopologyModel) -> some View {
+    private func topologyContent(model: DTTModel) -> some View {
         VStack(alignment: .center, spacing: 28) {
             MacChassisBlock()
             trunkLine(height: 18)
@@ -736,7 +907,7 @@ struct USB4TopologyView: View {
     // MARK: Sidebar
 
     @ViewBuilder
-    private func sidebar(model: USB4TopologyModel) -> some View {
+    private func sidebar(model: DTTModel) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 if let sel = selection {
@@ -764,8 +935,8 @@ struct USB4TopologyView: View {
     }
 
     @ViewBuilder
-    private func sidebarHeader(for sel: USB4Selection,
-                               model: USB4TopologyModel) -> some View {
+    private func sidebarHeader(for sel: DTTSelection,
+                               model: DTTModel) -> some View {
         switch sel {
         case .hostRouter(let id):
             if let h = findHost(id: id, in: model) {
@@ -818,8 +989,8 @@ struct USB4TopologyView: View {
     }
 
     @ViewBuilder
-    private func sidebarBody(for sel: USB4Selection,
-                             model: USB4TopologyModel) -> some View {
+    private func sidebarBody(for sel: DTTSelection,
+                             model: DTTModel) -> some View {
         switch sel {
         case .hostRouter(let id):
             if let h = findHost(id: id, in: model) {
@@ -944,10 +1115,10 @@ struct USB4TopologyView: View {
 
     // MARK: Helpers — find by id
 
-    private func findHost(id: TBNodeID, in model: USB4TopologyModel) -> HostRouter? {
+    private func findHost(id: TBNodeID, in model: DTTModel) -> HostRouter? {
         model.hostRouters.first { $0.id == id }
     }
-    private func findDevice(id: TBNodeID, in model: USB4TopologyModel) -> DeviceRouter? {
+    private func findDevice(id: TBNodeID, in model: DTTModel) -> DeviceRouter? {
         for h in model.hostRouters {
             if let d = h.downstream, let found = findDevice(id: id, in: d) {
                 return found
@@ -962,7 +1133,7 @@ struct USB4TopologyView: View {
         }
         return nil
     }
-    private func findAdapter(id: TBNodeID, in model: USB4TopologyModel) -> Adapter? {
+    private func findAdapter(id: TBNodeID, in model: DTTModel) -> Adapter? {
         for h in model.hostRouters {
             if let a = h.adapters.first(where: { $0.id == id }) { return a }
             if let d = h.downstream, let a = findAdapter(id: id, in: d) { return a }
@@ -976,7 +1147,7 @@ struct USB4TopologyView: View {
         }
         return nil
     }
-    private func findTunnel(id: TBNodeID, in model: USB4TopologyModel) -> Tunnel? {
+    private func findTunnel(id: TBNodeID, in model: DTTModel) -> Tunnel? {
         for h in model.hostRouters {
             if let d = h.downstream, let t = findTunnel(id: id, in: d) { return t }
         }
@@ -1022,7 +1193,7 @@ private struct MacChassisBlock: View {
 
 private struct HostRouterCard: View {
     let host: HostRouter
-    @Binding var selection: USB4Selection?
+    @Binding var selection: DTTSelection?
 
     private var isSelected: Bool {
         if case .hostRouter(let id) = selection { return id == host.id }
@@ -1110,7 +1281,7 @@ private struct CableConnector: View {
 
 private struct DeviceRouterTree: View {
     let router: DeviceRouter
-    @Binding var selection: USB4Selection?
+    @Binding var selection: DTTSelection?
 
     var body: some View {
         VStack(spacing: 14) {
@@ -1131,7 +1302,7 @@ private struct DeviceRouterTree: View {
 
 private struct DeviceRouterCard: View {
     let router: DeviceRouter
-    @Binding var selection: USB4Selection?
+    @Binding var selection: DTTSelection?
 
     private var isSelected: Bool {
         if case .deviceRouter(let id) = selection { return id == router.id }
@@ -1176,12 +1347,25 @@ private struct DeviceRouterCard: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     ForEach(router.tunnels) { t in
-                        Button {
-                            selection = .tunnel(t.id)
-                        } label: {
-                            TunnelChip(tunnel: t, isSelected: isTunnelSelected(t))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Button {
+                                selection = .tunnel(t.id)
+                            } label: {
+                                TunnelChip(tunnel: t,
+                                           isSelected: isTunnelSelected(t))
+                            }
+                            .buttonStyle(.plain)
+                            // Indented leaves below the tunnel — the
+                            // actual displays / USB peripherals the
+                            // tunnel is carrying. Lets the user see
+                            // "this DP tunnel drives Display 0" at a
+                            // glance instead of having to cross-check
+                            // the Displays sidebar section.
+                            if !t.leaves.isEmpty {
+                                LeafList(leaves: t.leaves,
+                                         accent: t.kind.color)
+                            }
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -1212,7 +1396,7 @@ private struct DeviceRouterCard: View {
 
 private struct AdapterGrid: View {
     let adapters: [Adapter]
-    @Binding var selection: USB4Selection?
+    @Binding var selection: DTTSelection?
 
     // Wider than the previous 90 px so the trailing connectivity
     // caption ("Socket 3" / "→ P1" / "↑ cable") doesn't crash into the
@@ -1382,6 +1566,46 @@ private struct SidebarRow: View {
                 .textSelection(.enabled)
                 .multilineTextAlignment(.leading)
             Spacer(minLength: 0)
+        }
+    }
+}
+
+// MARK: - Tunnel leaves
+
+/// Compact, indented list of the endpoints a tunnel is carrying.
+/// Renders directly below the tunnel chip in the device router card.
+/// The accent color matches the tunnel kind so DP leaves read blue,
+/// USB leaves teal, etc.
+private struct LeafList: View {
+    let leaves: [TunnelLeaf]
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(leaves) { leaf in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("↳")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(accent.opacity(0.7))
+                    Image(systemName: leaf.symbol)
+                        .font(.caption2)
+                        .foregroundStyle(accent.opacity(0.85))
+                        .frame(width: 12)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(leaf.title)
+                            .font(.caption2.weight(.medium))
+                            .lineLimit(1)
+                        if let sub = leaf.subtitle {
+                            Text(sub)
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 18)
+            }
         }
     }
 }

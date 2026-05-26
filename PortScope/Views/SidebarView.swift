@@ -22,9 +22,10 @@ struct SidebarView: View {
     /// Tracking this separately means a user collapse sticks — we never
     /// re-add an ID after it's been seen once.
     @State private var seeded: Set<TBNodeID> = []
-    @State private var showDiagram: Bool = false
-    @State private var showUSB4Topology: Bool = false
-    @State private var showSensors: Bool = false
+    /// Opens secondary windows (topology / sensors) — replaces the
+    /// previous sheet bindings so each opens as a real macOS window
+    /// the user can move / resize / minimize independently.
+    @Environment(\.openWindow) private var openWindow
     /// Top-level sidebar sections that the user has collapsed. Each entry
     /// keys a section by its stable name; missing = expanded (the default).
     @State private var collapsedSections: Set<String> = []
@@ -262,13 +263,13 @@ struct SidebarView: View {
                 Menu {
                     Menu {
                         Button {
-                            showDiagram = true
+                            openWindow(id: PortScopeWindowID.simplifiedTopology)
                         } label: {
                             Label("Simplified",
                                   systemImage: "point.3.connected.trianglepath.dotted")
                         }
                         Button {
-                            showUSB4Topology = true
+                            openWindow(id: PortScopeWindowID.detailedTopology)
                         } label: {
                             Label("Detailed",
                                   systemImage: "circle.hexagongrid.circle")
@@ -278,7 +279,7 @@ struct SidebarView: View {
                               systemImage: "point.3.connected.trianglepath.dotted")
                     }
                     Button {
-                        showSensors = true
+                        openWindow(id: PortScopeWindowID.hardwareSensors)
                     } label: {
                         Label("Hardware Sensors",
                               systemImage: "thermometer.medium")
@@ -288,15 +289,6 @@ struct SidebarView: View {
                 }
                 .menuStyle(.borderlessButton)
             }
-        }
-        .sheet(isPresented: $showDiagram) {
-            DiagramView(snapshot: vm.snapshot)
-        }
-        .sheet(isPresented: $showUSB4Topology) {
-            USB4TopologyView(snapshot: vm.snapshot)
-        }
-        .sheet(isPresented: $showSensors) {
-            HardwareSensorsView()
         }
         .onChange(of: showAllDevices) { _, isOn in
             // The Wi-Fi / Cameras / Audio sections + the heavy half of

@@ -6,7 +6,10 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var vm = PortScopeViewModel()
+    /// The view model is owned by `PortScopeApp` so multiple windows
+    /// (main window + topology / sensors windows) share one snapshot
+    /// + selection state. Injected via `.environmentObject(...)`.
+    @EnvironmentObject private var vm: PortScopeViewModel
 
     var body: some View {
         NavigationSplitView {
@@ -191,4 +194,5 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
+        .environmentObject(PortScopeViewModel())
 }

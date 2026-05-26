@@ -163,12 +163,28 @@ private struct CLIRequest {
     }
 }
 
+/// Stable window identifiers used by `openWindow(id:)` from the More
+/// menu. Centralised so the menu and the scene definitions agree.
+enum PortScopeWindowID {
+    static let simplifiedTopology = "io.zenla.portscope.simplifiedTopology"
+    static let detailedTopology   = "io.zenla.portscope.detailedTopology"
+    static let hardwareSensors    = "io.zenla.portscope.hardwareSensors"
+}
+
 /// The original SwiftUI App, now reached via `PortScopeApp.main()` from
 /// the `PortScopeMain` entry point above when no CLI dump flag is passed.
 struct PortScopeApp: App {
+    /// One shared view model across every window — the main inspector,
+    /// the topology windows, and the sensors window all read the same
+    /// snapshot + selection state. Lifted from ContentView so it
+    /// outlives the main window's lifecycle and so secondary windows
+    /// can pull it from the environment without re-scanning.
+    @StateObject private var vm = PortScopeViewModel()
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(vm)
         }
         .windowToolbarStyle(.unified(showsTitle: true))
         .windowResizability(.contentSize)
@@ -181,9 +197,56 @@ struct PortScopeApp: App {
             }
         }
 
+        // Secondary windows — opened via the More menu in SidebarView.
+        // Each is a single Window (not a WindowGroup), so re-opening
+        // brings the existing one to the front instead of spawning a
+        // duplicate. They share the main window's view model via the
+        // environment so they always see the latest snapshot.
+
+        Window("Simplified Thunderbolt Topology",
+               id: PortScopeWindowID.simplifiedTopology) {
+            SimplifiedTopologyWindowHost()
+                .environmentObject(vm)
+        }
+        .windowResizability(.contentSize)
+
+        Window("Detailed Thunderbolt Topology",
+               id: PortScopeWindowID.detailedTopology) {
+            DetailedTopologyWindowHost()
+                .environmentObject(vm)
+        }
+        .windowResizability(.contentSize)
+
+        Window("Hardware Sensors",
+               id: PortScopeWindowID.hardwareSensors) {
+            HardwareSensorsView()
+                .environmentObject(vm)
+        }
+        .windowResizability(.contentSize)
+
         Settings {
             SettingsView()
         }
+    }
+}
+
+// MARK: - Window hosts
+
+/// Adapter that reads the shared view model from the environment so the
+/// simplified Thunderbolt topology window always renders against the
+/// latest snapshot.
+private struct SimplifiedTopologyWindowHost: View {
+    @EnvironmentObject private var vm: PortScopeViewModel
+    var body: some View {
+        DiagramView(snapshot: vm.snapshot)
+    }
+}
+
+/// Same wrapper for the detailed topology window.
+private struct DetailedTopologyWindowHost: View {
+    @EnvironmentObject private var vm: PortScopeViewModel
+    var body: some View {
+        DetailedThunderboltTopologyView(snapshot: vm.snapshot)
     }
 }
 
