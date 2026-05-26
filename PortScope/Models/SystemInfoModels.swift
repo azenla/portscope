@@ -68,6 +68,12 @@ nonisolated struct SystemInfoSnapshot: Hashable {
     /// Cached Touch ID state — same caching rationale as `hidDevices`.
     /// Nil when no AppleMesaShim service is present.
     let touchID: TouchIDInfo
+    /// Apple-signed accessories authenticated through the SEP-backed
+    /// `AppleTrustedAccessoryManager` (sep-endpoint,stac). Each entry
+    /// is one matched `AppleTrustedAccessory` — typically a Magic
+    /// Keyboard / Trackpad / Pencil. Empty when nothing has been
+    /// authenticated this boot. Per `design/IOService-Updates.md` H3.
+    let trustedAccessories: [TrustedAccessoryInfo]
     /// Cached trackpad + keyboard info. Static across a rescan.
     let inputDevices: InputDevicesInfo
     /// macOS marketing version — `kern.osproductversion` (e.g. "26.5").
@@ -92,6 +98,28 @@ nonisolated struct SystemInfoSnapshot: Hashable {
     /// Security presence, and the M5+ exclave + hardware-entropy
     /// extensions. Populated cheaply on every full scan.
     let security: SecurityPosture
+    /// SoC capability fingerprint (codename, GPU architecture,
+    /// processor-trace support). Pulled from class-name probes per
+    /// `design/IOService-Updates.md` H7. Always populated, though some
+    /// fields may be nil on unrecognised hosts.
+    let socFeatures: SoCFeatures
+    /// Precision time-sync + Audio-Video Bridging plumbing. Mostly
+    /// of interest to users wiring AVB-class audio gear or running
+    /// gPTP-disciplined networks; surfaced as a compact card under
+    /// System Info. Per `design/IOService-Updates.md` M1.
+    let timeSync: TimeSyncInfo
+    /// AOP / Always-On Processor voice trigger ("Hey Siri" pipeline).
+    /// Always present on Apple Silicon hosts; the enabled flag flips
+    /// when the user disables Voice Control / Siri detection. Per
+    /// `design/IOService-Updates.md` M2.
+    let voiceTrigger: VoiceTriggerInfo?
+    /// Signed system cryptexes grafted on top of the boot volume —
+    /// includes the per-arch system cryptex, the toolchain cryptex,
+    /// the Apple Intelligence on-device language model cryptex (when
+    /// installed), and on M5+ the `UniversalMacExclaveOS` cryptex
+    /// that backs the secure-world exclaves. Per
+    /// `design/IOService-Updates.md` M7.
+    let cryptexes: [CryptexInfo]
 
     static let empty = SystemInfoSnapshot(
         chipName: nil, cpuCoreCount: nil, cpuPCoreCount: nil,
@@ -99,11 +127,17 @@ nonisolated struct SystemInfoSnapshot: Hashable {
         memoryBytes: nil, memoryType: nil, memoryManufacturer: nil,
         internalStorage: nil, wifi: nil, memoryDIMMs: [],
         cameras: [], cameraISP: nil, audioDevices: [], nvram: .empty,
-        hidDevices: .empty, touchID: .empty, inputDevices: .empty,
+        hidDevices: .empty, touchID: .empty,
+        trustedAccessories: [],
+        inputDevices: .empty,
         macOSVersion: nil, macOSBuild: nil,
         kernelVersion: nil, systemFirmware: nil, hwModel: nil,
         marketingName: nil, systemSerial: nil, hardwareUUID: nil,
-        security: .empty
+        security: .empty,
+        socFeatures: .empty,
+        timeSync: .empty,
+        voiceTrigger: nil,
+        cryptexes: []
     )
 
     var hasAnyData: Bool {
@@ -142,6 +176,11 @@ nonisolated struct WiFiInfo: Hashable {
     let currentChannel: String?
     /// True when the radio advertises 6 GHz channels (Wi-Fi 6E / 7).
     let supports6GHz: Bool
+    /// True when the kernel publishes a `TSNWiFiInterface` for this
+    /// adapter — Apple's Time-Sensitive Networking pipeline for AVB /
+    /// gPTP-class precision-time use. M5 / first-party Apple Wi-Fi
+    /// silicon only; absent on Broadcom-era hosts.
+    let supportsTSN: Bool
     /// Security mode in use ("WPA2 Personal" / "WPA3 Enterprise" / …).
     let security: String?
     /// Network type ("Infrastructure" / "Ad Hoc" / "AWDL"). Always
@@ -379,4 +418,114 @@ nonisolated struct SecurityPosture: Hashable {
     var isEmpty: Bool {
         return enforcedCount == 0
     }
+}
+
+/// Precision time-sync / AVB plumbing. The kernel publishes
+/// `IOTimeSyncgPTPManager` when generalised Precision Time Protocol
+/// support is wired up (used by audio-over-IP / AVB / industrial
+/// network gear); `IOAVBNub` exposes a 64-bit `EntityID` identifying
+/// this Mac on the AVB fabric. Most desktops never light up — the
+/// presence of these signals is itself the actionable bit. Documented
+/// in `design/IOService-Updates.md` M1.
+nonisolated struct TimeSyncInfo: Hashable {
+    /// `IOTimeSyncgPTPManager` registered. When false, the host can't
+    /// participate in IEEE 1588 / gPTP time distribution.
+    let gPTPAvailable: Bool
+    /// `IOAVBNub.EntityID` — the 64-bit identifier the AVB stack uses
+    /// for this Mac. Nil when no AVB nub is registered.
+    let avbEntityID: UInt64?
+
+    static let empty = TimeSyncInfo(gPTPAvailable: false, avbEntityID: nil)
+
+    var isEmpty: Bool { !gPTPAvailable && avbEntityID == nil }
+
+    /// Human-formatted EntityID — Apple renders these as 8-byte hex
+    /// groups separated by colons in `avbutil`, matching IEEE 1722.
+    var entityIDLabel: String? {
+        guard let id = avbEntityID else { return nil }
+        return String(format: "%016llX", id)
+    }
+}
+
+/// One Apple-signed peripheral authenticated through SEP's
+/// `AppleTrustedAccessoryManager`. The kernel publishes matching
+/// services with a vendor / product-ID list, the readiness flag, and a
+/// `DeviceUsagePairs` array that tags accessory category. Used to
+/// surface Magic Keyboards / Magic Trackpads / Apple Pencils that
+/// have completed their SEP authentication handshake.
+nonisolated struct TrustedAccessoryInfo: Hashable, Identifiable {
+    /// IORegistry entry ID — stable across rescans on a given boot.
+    let id: UInt64
+    /// USB vendor ID (1452 = Apple). Surfaced for parity even though
+    /// every observed trusted accessory has been Apple-vendor.
+    let vendorID: UInt64?
+    /// List of product IDs this service matches against. The kernel
+    /// publishes an array because some accessories advertise multiple
+    /// PIDs (e.g. Magic Keyboard families covering all the
+    /// chassis-variant PIDs in one driver match).
+    let productIDs: [UInt64]
+    /// `AccessoryReady` flag — true once the SEP handshake completes.
+    let isReady: Bool
+    /// Best-guess human label for this accessory based on the
+    /// vendor + product IDs (Magic Keyboard, Touch ID Magic Keyboard,
+    /// Magic Trackpad, etc.). Falls back to "Trusted Accessory" when
+    /// the PID isn't catalogued.
+    let displayName: String
+    /// Whether the accessory has a chained `AppleMesaAccessory`
+    /// child — i.e. it's a Touch ID-capable Magic Keyboard.
+    let hasFingerprintCapability: Bool
+}
+
+/// One signed system cryptex grafted on top of the boot volume.
+/// Cryptexes are how Apple ships hot-swappable signed components
+/// outside the system snapshot — the per-arch system cryptex, the
+/// Metal toolchain cryptex, the Apple Intelligence on-device language
+/// model, and on M5+ the universal exclave OS image. Each entry comes
+/// from one matched `AppleAPFSGraft` service. Documented in
+/// `design/IOService-Updates.md` M7.
+nonisolated struct CryptexInfo: Hashable, Identifiable {
+    /// `FullName` from the graft — e.g.
+    /// `"CheerF25F71.arm64eSystemCryptex"` or
+    /// `"CheerF25F71.UniversalMacExclaveOS"`. Used as the row's
+    /// stable identifier.
+    var id: String { fullName }
+    /// Apple's grafted-cryptex identifier including the build prefix
+    /// (`CheerF25F71`, `RevivalB13M203538`, etc.). The prefix is the
+    /// signing manifest's project name; the suffix names the
+    /// component.
+    let fullName: String
+    /// Best-guess human label for the cryptex ("System (arm64e)",
+    /// "Apple Intelligence Language Model", "Exclave OS"). Falls back
+    /// to the trailing token of `fullName` when uncatalogued.
+    let displayName: String
+    /// `Sealed` flag from the graft — true on every signed cryptex
+    /// the kernel will let mount. A false here is a strong
+    /// "something is wrong with secure boot" signal.
+    let isSealed: Bool
+    /// `System content` flag — true for cryptexes that belong to the
+    /// signed-system surface, false for optional / experimental
+    /// content like the Apple Intelligence LLM cryptex.
+    let isSystemContent: Bool
+}
+
+/// AOP voice trigger state, pulled from
+/// `IOPAudioIsolatedVoiceTriggerDevice`. The kernel publishes the
+/// always-on "Hey Siri" detection pipeline as an exclave-isolated
+/// service on M5+ (and an in-kernel one on earlier silicon) with a
+/// useful trigger counter + enabled flag. Documented in
+/// `design/IOService-Updates.md` M2.
+nonisolated struct VoiceTriggerInfo: Hashable {
+    /// `VTEnabled` — true when the detection pipeline is actively
+    /// listening. Flips to false when Siri / Voice Control is turned
+    /// off in System Settings.
+    let enabled: Bool
+    /// `VTTriggerCount` — running count of detected wake events
+    /// (Hey Siri, "Hey Mac" / Voice Control commands) since the AOP
+    /// last reset. Resets at sleep / wake.
+    let triggerCount: UInt64?
+    /// `VTActiveChannelMask` — bitmask of mic channels currently
+    /// feeding the detector. `0x1` means the primary low-power mic.
+    let activeChannelMask: UInt64?
+    /// True when the device reports `IOExclaveProxy = Yes` (M5+).
+    let isExclaveIsolated: Bool
 }

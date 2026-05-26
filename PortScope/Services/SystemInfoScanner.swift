@@ -98,6 +98,7 @@ nonisolated enum SystemInfoScanner {
             nvram: heavy.nvram,
             hidDevices: heavy.hidDevices,
             touchID: heavy.touchID,
+            trustedAccessories: heavy.trustedAccessories,
             inputDevices: heavy.inputDevices,
             macOSVersion: macOSVersion,
             macOSBuild: macOSBuild,
@@ -107,8 +108,55 @@ nonisolated enum SystemInfoScanner {
             marketingName: marketingName,
             systemSerial: serial,
             hardwareUUID: uuid,
-            security: scanSecurityPosture()
+            security: scanSecurityPosture(),
+            socFeatures: SoCCatalog.scan(family: chipName),
+            timeSync: scanTimeSync(),
+            voiceTrigger: scanVoiceTrigger(),
+            cryptexes: heavy.cryptexes
         )
+    }
+
+    /// Read the AOP voice trigger device. Properties:
+    ///   - `VTEnabled` (Bool)  — pipeline currently listening
+    ///   - `VTTriggerCount` (UInt64) — running detection count
+    ///   - `VTActiveChannelMask` (UInt64) — which mics feed the
+    ///      detector
+    ///   - `IOExclaveProxy` (Bool) — runs in exclave (M5+)
+    ///
+    /// Returns nil when the service isn't registered — this
+    /// shouldn't happen on any modern Apple Silicon Mac but the
+    /// fallback keeps the system info card honest.
+    private static func scanVoiceTrigger() -> VoiceTriggerInfo? {
+        let svc = IOServiceGetMatchingService(
+            kIOMainPortDefault,
+            IOServiceMatching("IOPAudioIsolatedVoiceTriggerDevice")
+        )
+        guard svc != 0 else { return nil }
+        defer { IOObjectRelease(svc) }
+        let props = IORegBridge.properties(of: svc)
+        return VoiceTriggerInfo(
+            enabled: props["VTEnabled"]?.asBool ?? false,
+            triggerCount: props["VTTriggerCount"]?.asUInt,
+            activeChannelMask: props["VTActiveChannelMask"]?.asUInt,
+            isExclaveIsolated: props["IOExclaveProxy"]?.asBool ?? false
+        )
+    }
+
+    /// Probe the gPTP manager + AVB nub. Cheap (two `IOServiceMatching`
+    /// calls + one property read). Returns `.empty` on hosts without
+    /// AVB / gPTP plumbing.
+    private static func scanTimeSync() -> TimeSyncInfo {
+        let gPTP = hasService("IOTimeSyncgPTPManager")
+        var entityID: UInt64? = nil
+        let avb = IOServiceGetMatchingService(
+            kIOMainPortDefault, IOServiceMatching("IOAVBNub")
+        )
+        if avb != 0 {
+            defer { IOObjectRelease(avb) }
+            let props = IORegBridge.properties(of: avb)
+            entityID = props["EntityID"]?.asUInt
+        }
+        return TimeSyncInfo(gPTPAvailable: gPTP, avbEntityID: entityID)
     }
 
     // MARK: - Security posture
@@ -166,7 +214,9 @@ nonisolated enum SystemInfoScanner {
         var nvram: NVRAMSnapshot = .empty
         var hidDevices: HIDDevicesSnapshot = .empty
         var touchID: TouchIDInfo = .empty
+        var trustedAccessories: [TrustedAccessoryInfo] = []
         var inputDevices: InputDevicesInfo = .empty
+        var cryptexes: [CryptexInfo] = []
     }
 
     /// Run the six `system_profiler` data-type fetches in parallel via a
@@ -220,6 +270,12 @@ nonisolated enum SystemInfoScanner {
         }
         queue.async(group: group) {
             out.touchID = TouchIDInfo.read()
+        }
+        queue.async(group: group) {
+            out.trustedAccessories = TrustedAccessoryScanner.scan()
+        }
+        queue.async(group: group) {
+            out.cryptexes = CryptexScanner.scan()
         }
         queue.async(group: group) {
             out.inputDevices = InputDevicesInfo.read()
@@ -666,6 +722,7 @@ nonisolated enum SystemInfoScanner {
             currentPHY: currentPHY,
             currentChannel: currentChannel,
             supports6GHz: supportedChannels?.contains("6GHz") == true,
+            supportsTSN: hasService("TSNWiFiInterface"),
             security: security,
             networkType: networkType,
             rssiDBm: rssiDBm,

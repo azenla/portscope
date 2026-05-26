@@ -156,11 +156,30 @@ private struct DeviceListRow: View {
     }
 
     private var subtitleParts: [String] {
+        // Bluetooth addresses are PII (they're effectively a stable
+        // device identifier). Mask them in the row subtitle the same
+        // way the detail-page Stat does (isSecret). The address still
+        // surfaces in the detail view with reveal-on-hover.
         var bits: [String] = []
         if let m = device.minorType, !m.isEmpty { bits.append(m) }
-        if let addr = device.address { bits.append(addr) }
+        if let addr = device.address { bits.append(maskedAddress(addr)) }
         if let rssi = device.rssi { bits.append("\(rssi) dBm") }
         return bits
+    }
+
+    /// Render a Bluetooth address as `xx:xx:xx:xx:xx:NN` — keep the
+    /// last byte so the user can tell two devices apart in the list
+    /// while still not exposing the rest. Matches how IT vendors and
+    /// macOS Settings hide MACs in similar listings.
+    private func maskedAddress(_ addr: String) -> String {
+        // Split on either `:` or `-` (both are observed depending on
+        // the source kext); rebuild masking all but the trailing pair.
+        let separator: Character = addr.contains(":") ? ":" : "-"
+        let parts = addr.split(separator: separator)
+        guard parts.count > 1 else { return addr }
+        let head = Array(repeating: "xx", count: parts.count - 1)
+        let tail = String(parts.last!)
+        return (head + [tail]).joined(separator: String(separator))
     }
 }
 

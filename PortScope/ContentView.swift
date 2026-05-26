@@ -57,7 +57,10 @@ struct ContentView: View {
                     .id(sel)
             } else if StorageSelector.isStorageID(sel),
                       let storage = vm.snapshot.internalHardware.systemInfo.internalStorage {
-                StorageDetailView(storage: storage).id(sel)
+                StorageDetailView(
+                    storage: storage,
+                    cryptexes: vm.snapshot.internalHardware.systemInfo.cryptexes
+                ).id(sel)
             } else if MemorySelector.isMemoryID(sel) {
                 MemoryDetailView(
                     dimms: vm.snapshot.internalHardware.systemInfo.memoryDIMMs,
@@ -66,7 +69,10 @@ struct ContentView: View {
             } else if GPUSelector.isGPUID(sel) {
                 GPUDetailView(info: vm.snapshot.internalHardware.systemInfo).id(sel)
             } else if TouchIDSelector.isTouchIDID(sel) {
-                TouchIDDetailView(info: vm.snapshot.internalHardware.systemInfo.touchID).id(sel)
+                TouchIDDetailView(
+                    info: vm.snapshot.internalHardware.systemInfo.touchID,
+                    trustedAccessories: vm.snapshot.internalHardware.systemInfo.trustedAccessories
+                ).id(sel)
             } else if InputDevicesSelector.isInputID(sel) {
                 InputDevicesDetailView(info: vm.snapshot.internalHardware.systemInfo.inputDevices).id(sel)
             } else if NVRAMSelector.isNVRAMID(sel) {
@@ -121,7 +127,8 @@ struct ContentView: View {
                 .id(sel)
             } else if let display = vm.snapshot.displays.displays.first(where: { $0.id == sel }) {
                 DisplayDetailView(display: display,
-                                  hdcpChannels: vm.snapshot.displays.hdcpChannels).id(sel)
+                                  hdcpChannels: vm.snapshot.displays.hdcpChannels,
+                                  panelTCON: vm.snapshot.displays.panelTCON).id(sel)
             } else if let pciNode = findPCINode(id: sel, in: vm.snapshot.pcie.roots) {
                 PCIDeviceView(node: pciNode,
                               ancestors: vm.ancestors(of: sel),

@@ -25,11 +25,34 @@ nonisolated struct DisplaySnapshot {
     /// stable, so we surface the channel list aggregate rather than per-
     /// display — keeps the data honest. Empty on Intel hosts.
     let hdcpChannels: [HDCPChannelState]
+    /// Internal-panel timing-controller chip identification (Parade
+    /// DP855 on M3 16" / M5 16", DP825 on M3 14"). Nil when no TCON
+    /// driver is loaded — desktops and external-display-only chassis.
+    /// Per `design/IOService-Updates.md` M4.
+    let panelTCON: PanelTCONInfo?
 
-    static let empty = DisplaySnapshot(displays: [], hdcpChannels: [])
+    static let empty = DisplaySnapshot(displays: [], hdcpChannels: [], panelTCON: nil)
 
     var connectedCount: Int { displays.filter { $0.isConnected }.count }
     var totalCount: Int { displays.count }
+}
+
+/// Parses to the internal-panel TCON chip identification. The kernel's
+/// class name itself encodes the chip (`AppleParadeDP855TCON` /
+/// `AppleParadeDP825TCON`), and `IONameMatch` carries a more
+/// human-friendly token (`parade,DP855`). Both surface in the
+/// Developer Details disclosure on the built-in display row.
+nonisolated struct PanelTCONInfo: Hashable {
+    /// IOKit class name of the matched driver, e.g. `"AppleParadeDP855TCON"`.
+    let kextClass: String
+    /// Human-readable chip name extracted from the class, e.g. `"Parade DP855"`.
+    let chipName: String
+    /// `IONameMatched` token from the registry, e.g. `"parade,DP855"`.
+    /// Surfaced for parity with grep-friendly device-tree dumps.
+    let nameMatch: String?
+    /// Hex model code parsed out of the kext's `model` property.
+    /// Optional — only present on chips that publish one.
+    let modelCode: String?
 }
 
 /// One `AppleHDCPInterface` channel decoded into typed fields. Documented

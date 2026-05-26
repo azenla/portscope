@@ -30,8 +30,69 @@ nonisolated enum DisplayScanner {
         }
         return DisplaySnapshot(
             displays: out,
-            hdcpChannels: scanHDCPChannels()
+            hdcpChannels: scanHDCPChannels(),
+            panelTCON: scanPanelTCON()
         )
+    }
+
+    /// Walk the known `Apple*TCON` classes (Parade DP855 / DP825 on
+    /// MacBook Pros, Apple's own controllers on iMac / MacBook Air).
+    /// First match wins; returns nil on desktops without a built-in
+    /// panel. Newest classes first so future silicon doesn't fall
+    /// through to a legacy match.
+    private static func scanPanelTCON() -> PanelTCONInfo? {
+        let candidates = [
+            "AppleParadeDP855TCON",   // MacBook Pro 16" (M1 Pro/Max → M5 Max)
+            "AppleParadeDP825TCON",   // MacBook Pro 14"
+            "AppleNovatekDP1820TCON"  // speculative — future variant
+        ]
+        for cls in candidates {
+            let svc = IOServiceGetMatchingService(
+                kIOMainPortDefault, IOServiceMatching(cls)
+            )
+            guard svc != 0 else { continue }
+            defer { IOObjectRelease(svc) }
+            let props = IORegBridge.properties(of: svc)
+            return PanelTCONInfo(
+                kextClass: cls,
+                chipName: tconChipName(for: cls),
+                nameMatch: props["IONameMatched"]?.asString
+                    ?? props["IONameMatch"]?.asString,
+                modelCode: modelCode(from: props["model"])
+            )
+        }
+        return nil
+    }
+
+    /// Translate `AppleParadeDP855TCON` → "Parade DP855" and similar.
+    /// Falls back to the class name when the pattern doesn't match.
+    private static func tconChipName(for cls: String) -> String {
+        if cls.hasPrefix("AppleParade") {
+            let suffix = cls
+                .replacingOccurrences(of: "AppleParade", with: "")
+                .replacingOccurrences(of: "TCON", with: "")
+            return "Parade \(suffix)"
+        }
+        if cls.hasPrefix("AppleNovatek") {
+            let suffix = cls
+                .replacingOccurrences(of: "AppleNovatek", with: "")
+                .replacingOccurrences(of: "TCON", with: "")
+            return "Novatek \(suffix)"
+        }
+        return cls
+    }
+
+    /// The kernel publishes the TCON's `model` property as a 4-byte
+    /// little-endian blob (`<57030000>` = 0x357 = 855 decimal — the
+    /// chip's own revision counter). Show it as hex.
+    private static func modelCode(from value: IORegValue?) -> String? {
+        if case let .data(d) = value, !d.isEmpty {
+            return d.map { String(format: "%02X", $0) }.joined()
+        }
+        if case let .unsigned(n) = value {
+            return String(format: "%04X", n)
+        }
+        return nil
     }
 
     /// Walk every `AppleHDCPInterface` and decode it into a typed

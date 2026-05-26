@@ -87,6 +87,14 @@ struct BatteryView: View {
                 }
             }
 
+            // Wall input telemetry from `AppleSmartBattery.PowerTelemetryData`.
+            // Mirrors the desktop AC PSU detail view (ACPowerDetailView)
+            // for parity — laptops have the same kernel-side telemetry,
+            // it just lives behind the battery node instead of a
+            // synthesised accessory. See `design/IOService-Updates.md`
+            // "Wall Power Input on Internal Battery page".
+            wallPowerInputCard(props: node.properties)
+
             // Charger state from AppleSmartBattery.ChargerData. The kernel
             // publishes a nested dict on every Apple Silicon Mac (laptops + the
             // desktop telemetry endpoint). Surfacing this gives the user a
@@ -165,6 +173,98 @@ struct BatteryView: View {
         guard let designLife, designLife > 0 else { return "\(cycleCount)" }
         let pct = Int((Double(cycleCount) / Double(designLife) * 100).rounded())
         return "\(cycleCount) · \(pct)% of \(designLife)"
+    }
+
+    /// Render the wall-input telemetry pulled from
+    /// `AppleSmartBattery.PowerTelemetryData`. Same dict that the
+    /// desktop AC PSU detail view (`ACPowerDetailView`) consumes; on
+    /// laptops it carries live AC power / voltage / current and the
+    /// since-boot wall energy estimate. Only renders when the kernel
+    /// publishes the dict and at least one wall-input field is present
+    /// — keeps the card from showing on hosts running purely on
+    /// battery with no charger attached.
+    ///
+    /// CLAUDE.md guidance: `AccumulatedWallEnergyEstimate` is in
+    /// milliwatt-seconds (mJ). `SystemPowerIn` is the instantaneous
+    /// wall draw in mW. Don't try to render
+    /// `AccumulatedSystemEnergyConsumed` as energy — its unit isn't
+    /// documented and the values are ~5 orders of magnitude larger
+    /// than `AccumulatedWallEnergyEstimate` (treating it as mJ would
+    /// render absurd GWh figures).
+    @ViewBuilder
+    private func wallPowerInputCard(props: [String: IORegValue]) -> some View {
+        if case let .dictionary(kv) = props["PowerTelemetryData"] {
+            let d = Dictionary(kv, uniquingKeysWith: { a, _ in a })
+            let powerMW = d["SystemPowerIn"]?.asUInt ?? 0
+            let voltageMV = d["SystemVoltageIn"]?.asUInt ?? 0
+            let currentMA = d["SystemCurrentIn"]?.asUInt ?? 0
+            let energyMJ = d["AccumulatedWallEnergyEstimate"]?.asUInt ?? 0
+            // The kernel zeroes these out when no charger is attached.
+            // Suppress the card entirely in that case rather than
+            // rendering "0 W · 0 V · 0 A", which would be misleading.
+            if powerMW > 0 || voltageMV > 0 || currentMA > 0 || energyMJ > 0 {
+                SectionCard(title: "Wall Power Input",
+                            symbol: "powerplug.fill") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if powerMW > 0 {
+                            HStack {
+                                Text("Drawing now").foregroundStyle(.secondary)
+                                Spacer()
+                                Text(wattLabel(milliwatts: powerMW))
+                                    .font(.callout.bold().monospaced())
+                                    .foregroundStyle(.green)
+                            }
+                        }
+                        if voltageMV > 0 || currentMA > 0 {
+                            HStack {
+                                Text("Source").foregroundStyle(.secondary)
+                                Spacer()
+                                Text(sourceLabel(voltageMV: voltageMV,
+                                                 currentMA: currentMA))
+                                    .monospaced()
+                            }
+                            .font(.callout)
+                        }
+                        if energyMJ > 0 {
+                            HStack {
+                                Text("Energy since boot").foregroundStyle(.secondary)
+                                Spacer()
+                                Text(energyLabel(milliJoules: energyMJ))
+                                    .monospaced()
+                            }
+                            .font(.callout)
+                            Text("AppleSmartBattery.PowerTelemetryData.AccumulatedWallEnergyEstimate, converted from mJ to Wh.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func wattLabel(milliwatts: UInt64) -> String {
+        let w = Double(milliwatts) / 1000.0
+        return w >= 10 ? String(format: "%.0f W", w) : String(format: "%.1f W", w)
+    }
+
+    private func sourceLabel(voltageMV: UInt64, currentMA: UInt64) -> String {
+        let v = Double(voltageMV) / 1000.0
+        let a = Double(currentMA) / 1000.0
+        return String(format: "%.2f V · %.2f A", v, a)
+    }
+
+    private func energyLabel(milliJoules: UInt64) -> String {
+        // mJ → Wh: divide by 3.6 million. CLAUDE.md notes this is the
+        // only Accumulated* counter we can safely render as energy.
+        let wh = Double(milliJoules) / 3_600_000.0
+        if wh >= 1000 {
+            return String(format: "%.1f kWh", wh / 1000.0)
+        }
+        if wh >= 1 {
+            return String(format: "%.1f Wh", wh)
+        }
+        return String(format: "%.0f mWh", wh * 1000.0)
     }
 
     /// Render `AppleSmartBattery.ChargerData` when present. The nested dict

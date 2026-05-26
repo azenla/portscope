@@ -16,6 +16,10 @@ struct DisplayDetailView: View {
     /// transport and shows the host's content-protection posture; per-
     /// display channel attribution isn't stable enough to claim.
     var hdcpChannels: [HDCPChannelState] = []
+    /// Internal-panel TCON chip identification. Only rendered on the
+    /// built-in display row (external panels are driven over DP/HDMI
+    /// and don't expose their TCON to IOKit).
+    var panelTCON: PanelTCONInfo? = nil
 
     var body: some View {
         ScrollView {
@@ -40,6 +44,13 @@ struct DisplayDetailView: View {
                     SectionCard(title: "Content Protection (HDCP)",
                                 symbol: "lock.shield") {
                         HDCPCard(channels: hdcpChannels)
+                    }
+                }
+
+                if display.isBuiltIn, let tcon = panelTCON {
+                    SectionCard(title: "Panel Timing Controller",
+                                symbol: "rectangle.connected.to.line.below") {
+                        StatGrid(stats: tconStats(tcon))
                     }
                 }
 
@@ -159,6 +170,28 @@ struct DisplayDetailView: View {
         let rounded = hz.rounded()
         if abs(hz - rounded) > 0.05 { return String(format: "%.2f Hz", hz) }
         return "\(Int(rounded)) Hz"
+    }
+
+    /// Build the panel-TCON stats — chip name (Parade DP855), kernel
+    /// match token, and the chip's published model code. Shown only on
+    /// the built-in panel row since external displays don't expose
+    /// their TCON to IOKit.
+    private func tconStats(_ tcon: PanelTCONInfo) -> [Stat] {
+        var out: [Stat] = []
+        out.append(Stat(label: "Chip",
+                        value: tcon.chipName,
+                        symbol: "rectangle.connected.to.line.below"))
+        if let match = tcon.nameMatch {
+            out.append(Stat(label: "Match Token",
+                            value: match,
+                            symbol: "tag"))
+        }
+        if let model = tcon.modelCode {
+            out.append(Stat(label: "Model Code",
+                            value: "0x\(model)",
+                            symbol: "number"))
+        }
+        return out
     }
 
     /// Pull a compact list of unique resolution / refresh entries out of

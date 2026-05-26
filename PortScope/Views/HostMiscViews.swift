@@ -43,7 +43,15 @@ struct NVRAMDetailView: View {
                 }
             }
             .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Cap the content width so the variables section doesn't
+            // smear edge-to-edge on wide external displays — long hex
+            // blobs like `BluetoothUHEDevices` would otherwise stretch
+            // an entire 5K wide and end up unreadable. 1100 keeps the
+            // page comfortable on a 27" panel and matches the
+            // DiagramView interior budget. Center the capped column in
+            // the ScrollView so it doesn't slam to the left edge.
+            .frame(maxWidth: 1100, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
         .frame(minWidth: 620)
         .background(.background)
@@ -293,11 +301,31 @@ nonisolated struct TouchIDInfo: Hashable {
 
 struct TouchIDDetailView: View {
     let info: TouchIDInfo
+    /// Trusted Apple accessories authenticated via SEP. Rendered as a
+    /// section under the Touch ID page because they share the SEP
+    /// trust path (Magic Keyboard with Touch ID enrolls fingerprints
+    /// here too). Empty list hides the section entirely.
+    var trustedAccessories: [TrustedAccessoryInfo] = []
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 hero
                 StatGrid(stats: stats)
+                if !trustedAccessories.isEmpty {
+                    SectionCard(
+                        title: "Trusted Accessories (\(trustedAccessories.count))",
+                        symbol: "checkmark.seal.fill"
+                    ) {
+                        VStack(spacing: 0) {
+                            ForEach(trustedAccessories) { acc in
+                                TrustedAccessoryRow(accessory: acc)
+                                if acc.id != trustedAccessories.last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                }
                 SectionCard(title: "How it works", symbol: "info.circle") {
                     Text("Touch ID is brokered by AppleMesaShim — a HID service that mediates between the Secure Enclave (which holds the enrolled fingerprint templates) and the Always-On Processor (which drives the sensor pad). The fingerprint data never leaves the SEP; macOS only ever sees a yes/no match signal.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -351,6 +379,167 @@ struct TouchIDDetailView: View {
                             symbol: "memorychip"))
         }
         return out
+    }
+}
+
+/// One row in the Trusted Accessories list. Shows the friendly name,
+/// VID/PID, and a Touch ID badge when the accessory has a chained
+/// `AppleMesaAccessory` child (i.e. it's a fingerprint-capable Magic
+/// Keyboard).
+private struct TrustedAccessoryRow: View {
+    let accessory: TrustedAccessoryInfo
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: iconName)
+                .foregroundStyle(.pink)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(accessory.displayName)
+                        .font(.callout.weight(.medium))
+                    if accessory.hasFingerprintCapability {
+                        Image(systemName: "touchid")
+                            .font(.caption2)
+                            .foregroundStyle(.pink)
+                            .help("Includes Touch ID")
+                    }
+                }
+                Text(idLabel)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(accessory.isReady ? "Authenticated" : "Pending")
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(
+                        accessory.isReady
+                            ? Color.green.opacity(0.15)
+                            : Color.orange.opacity(0.15)
+                    )
+                )
+                .foregroundStyle(accessory.isReady ? Color.green : Color.orange)
+        }
+        .padding(.vertical, 8).padding(.horizontal, 4)
+    }
+
+    private var iconName: String {
+        if accessory.hasFingerprintCapability { return "keyboard.badge.eye" }
+        if accessory.displayName.lowercased().contains("trackpad") {
+            return "rectangle.and.hand.point.up.left"
+        }
+        if accessory.displayName.lowercased().contains("pencil") {
+            return "applepencil"
+        }
+        return "keyboard"
+    }
+
+    private var idLabel: String {
+        let vid = accessory.vendorID.map { String(format: "VID 0x%04X", $0) } ?? "VID —"
+        let pids = accessory.productIDs.prefix(4)
+            .map { String(format: "0x%04X", $0) }
+            .joined(separator: ", ")
+        if accessory.productIDs.count > 4 {
+            return "\(vid) · PIDs \(pids) · +\(accessory.productIDs.count - 4) more"
+        }
+        return "\(vid) · PIDs \(pids)"
+    }
+}
+
+/// Walk all `AppleTrustedAccessory` services and build typed records.
+/// The match runs against IOHIDInterface children so an accessory only
+/// shows up here once it has fully attached over USB / Bluetooth. The
+/// `AppleMesaAccessory` chained-child check distinguishes Touch ID
+/// keyboards from regular Magic Keyboards.
+nonisolated enum TrustedAccessoryScanner {
+    static func scan() -> [TrustedAccessoryInfo] {
+        var out: [TrustedAccessoryInfo] = []
+        for svc in IORegBridge.services(matchingClass: "AppleTrustedAccessory") {
+            defer { IOObjectRelease(svc) }
+            guard let id = IORegBridge.entryID(of: svc) else { continue }
+            let props = IORegBridge.properties(of: svc)
+            let vid = props["VendorID"]?.asUInt
+            let pids = readUIntArray(props["ProductIDArray"])
+            let ready = props["AccessoryReady"]?.asBool ?? false
+            let hasMesa = childMatches(svc: svc, className: "AppleMesaAccessory")
+            let name = displayName(vendorID: vid, productIDs: pids,
+                                   hasFingerprint: hasMesa)
+            out.append(TrustedAccessoryInfo(
+                id: id, vendorID: vid, productIDs: pids,
+                isReady: ready, displayName: name,
+                hasFingerprintCapability: hasMesa
+            ))
+        }
+        // Stable order: ready accessories first, then by display name.
+        return out.sorted {
+            if $0.isReady != $1.isReady { return $0.isReady && !$1.isReady }
+            return $0.displayName < $1.displayName
+        }
+    }
+
+    /// `ProductIDArray` arrives as a CFArray of UInt64s; pull them out
+    /// in order.
+    private static func readUIntArray(_ value: IORegValue?) -> [UInt64] {
+        guard case let .array(arr) = value else { return [] }
+        return arr.compactMap { $0.asUInt }
+    }
+
+    /// Walk the service's direct children and return true if any of
+    /// them match `className`. Used to detect the chained
+    /// `AppleMesaAccessory` that signals a Touch ID-capable keyboard.
+    private static func childMatches(svc: io_registry_entry_t,
+                                     className: String) -> Bool {
+        let kids = IORegBridge.children(of: svc)
+        defer { kids.forEach { IOObjectRelease($0) } }
+        for c in kids {
+            if let cls = IORegBridge.className(of: c), cls == className {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Heuristic friendly name. Apple's USB Magic Keyboard family
+    /// shares VendorID 0x05AC (1452); the product-ID values cluster
+    /// around 0x0250…0x0322 for keyboards, 0x0265…0x0269 for
+    /// trackpads, 0x0220 for the Apple Pencil. Catalogue maintenance
+    /// is light — when a PID isn't recognised the row still renders
+    /// with "Trusted Accessory" + the raw IDs so the data isn't lost.
+    private static func displayName(vendorID: UInt64?,
+                                    productIDs: [UInt64],
+                                    hasFingerprint: Bool) -> String {
+        guard vendorID == 0x05AC || vendorID == 1452 else {
+            return "Trusted Accessory"
+        }
+        // Specific known PIDs first — these are public via lsusb dumps
+        // and the IORegistry traces from Apple's HID kexts.
+        let knownPID: [UInt64: String] = [
+            0x029A: "Magic Keyboard",
+            0x029F: "Magic Keyboard with Touch ID",
+            0x0321: "Magic Keyboard (USB-C)",
+            0x0322: "Magic Keyboard with Touch ID (USB-C)",
+            0x029C: "Magic Keyboard with Numeric Keypad",
+            0x029E: "Magic Trackpad",
+            0x0265: "Magic Trackpad 2",
+            0x0269: "Magic Trackpad (USB-C)",
+            0x025C: "Magic Mouse",
+            0x0220: "Apple Pencil"
+        ]
+        for pid in productIDs {
+            if let known = knownPID[pid] { return known }
+        }
+        // Fallback by ranges + fingerprint hint.
+        if hasFingerprint { return "Magic Keyboard with Touch ID" }
+        if productIDs.contains(where: { (0x029A...0x0322).contains($0) }) {
+            return "Apple Magic Keyboard"
+        }
+        if productIDs.contains(where: { (0x0265...0x0269).contains($0) }) {
+            return "Apple Magic Trackpad"
+        }
+        return "Apple Accessory"
     }
 }
 

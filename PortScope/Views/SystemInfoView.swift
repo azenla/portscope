@@ -33,6 +33,23 @@ struct SystemInfoView: View {
                         SecurityChipRow(posture: info.security)
                     }
                 }
+                if !info.timeSync.isEmpty {
+                    SectionCard(title: "Time Sync · AVB",
+                                symbol: "clock.badge.checkmark") {
+                        StatGrid(stats: timeSyncStats)
+                    }
+                }
+                if let vt = info.voiceTrigger {
+                    SectionCard(title: "Always-On Voice Trigger",
+                                symbol: "waveform.and.mic") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if vt.isExclaveIsolated {
+                                ExclaveBadge()
+                            }
+                            StatGrid(stats: voiceTriggerStats(vt))
+                        }
+                    }
+                }
                 SectionCard(title: "Identifiers", symbol: "barcode") {
                     StatGrid(stats: identifierStats)
                 }
@@ -96,12 +113,13 @@ struct SystemInfoView: View {
     private var hardwareStats: [Stat] {
         var out: [Stat] = []
         out.append(Stat(label: "Chip",
-                        value: info.chipName ?? "—",
+                        value: chipLabel,
                         symbol: "cpu"))
         out.append(Stat(label: "CPU Cores",
                         value: cpuCoresLabel,
                         symbol: "cpu"))
-        if info.gpuCoreCount != nil || info.metalVersion != nil {
+        if info.gpuCoreCount != nil || info.metalVersion != nil
+            || info.socFeatures.gpuArchitecture != nil {
             out.append(Stat(label: "GPU",
                             value: gpuLabel,
                             symbol: "display"))
@@ -114,7 +132,28 @@ struct SystemInfoView: View {
                             value: model,
                             symbol: "tag"))
         }
+        if info.socFeatures.supportsProcessorTrace {
+            // M5 / T6050+ — surface the kernel's
+            // `AppleProcessorTrace*` capability as an actionable bit
+            // for developers debugging instruction-trace tooling.
+            out.append(Stat(label: "Hardware Instruction Trace",
+                            value: "Supported",
+                            symbol: "waveform.path.ecg"))
+        }
         return out
+    }
+
+    /// Chip label combines the marketing brand string with the
+    /// silicon codename when we recognise it ("Apple M5 Max · T6050").
+    /// Keeps the marketing-first ordering since that's what users
+    /// read in About this Mac.
+    private var chipLabel: String {
+        let brand = info.chipName ?? "—"
+        if let codename = info.socFeatures.codename,
+           !brand.contains(codename) {
+            return "\(brand) · \(codename)"
+        }
+        return brand
     }
 
     private var cpuCoresLabel: String {
@@ -126,6 +165,9 @@ struct SystemInfoView: View {
     private var gpuLabel: String {
         var parts: [String] = []
         if let cores = info.gpuCoreCount { parts.append("\(cores)-core") }
+        if let arch = info.socFeatures.gpuArchitecture {
+            parts.append("Apple \(arch)")
+        }
         if let metal = info.metalVersion { parts.append(metal) }
         return parts.isEmpty ? "—" : parts.joined(separator: " · ")
     }
@@ -194,6 +236,53 @@ struct SystemInfoView: View {
             out.append(Stat(label: "System Firmware",
                             value: fw,
                             symbol: "memorychip"))
+        }
+        return out
+    }
+
+    /// Time-sync / AVB stats: gPTP availability + AVB entity identifier
+    /// formatted the way `avbutil` renders it (8-byte hex). Surfaced
+    /// only when at least one of the two signals is present so the
+    /// card stays hidden on hosts that don't run AVB.
+    private var timeSyncStats: [Stat] {
+        var out: [Stat] = []
+        out.append(Stat(label: "Precision Time (gPTP)",
+                        value: info.timeSync.gPTPAvailable
+                            ? "Supported" : "Not supported",
+                        symbol: "timer"))
+        if let entity = info.timeSync.entityIDLabel {
+            out.append(Stat(label: "AVB Entity ID",
+                            value: entity,
+                            symbol: "number"))
+        }
+        return out
+    }
+
+    /// Voice trigger stats — enabled flag, lifetime trigger counter,
+    /// and which mic channels feed the detector. The trigger count
+    /// resets at sleep/wake so it reads as a "since last wake"
+    /// counter in practice.
+    private func voiceTriggerStats(_ vt: VoiceTriggerInfo) -> [Stat] {
+        var out: [Stat] = []
+        out.append(Stat(label: "Status",
+                        value: vt.enabled ? "Listening" : "Disabled",
+                        symbol: vt.enabled
+                            ? "ear.and.waveform" : "ear.fill"))
+        if let count = vt.triggerCount {
+            out.append(Stat(label: "Trigger Count",
+                            value: "\(count)",
+                            symbol: "number"))
+        }
+        if let mask = vt.activeChannelMask {
+            // Render the bitmask as a list of channel indices —
+            // `0x1` → "ch 0", `0x3` → "ch 0, 1", etc.
+            let channels = (0..<64).filter { mask & (1 << $0) != 0 }
+            if !channels.isEmpty {
+                let label = channels.map { "ch \($0)" }.joined(separator: ", ")
+                out.append(Stat(label: "Active Mics",
+                                value: label,
+                                symbol: "mic"))
+            }
         }
         return out
     }

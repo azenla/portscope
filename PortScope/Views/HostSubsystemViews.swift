@@ -201,6 +201,15 @@ struct WiFiDetailView: View {
         out.append(Stat(label: "6 GHz Band",
                         value: info.supports6GHz ? "Supported" : "Not Supported",
                         symbol: "wave.3.right"))
+        if info.supportsTSN {
+            // Time-Sensitive Networking lights up on Apple's first-
+            // party Wi-Fi silicon (M5+); Broadcom-era radios don't
+            // publish the `TSNWiFiInterface` service so the row stays
+            // hidden there.
+            out.append(Stat(label: "Time-Sensitive Networking",
+                            value: "Supported",
+                            symbol: "clock.badge.checkmark"))
+        }
         if let region = info.regulatoryRegion {
             out.append(Stat(label: "Regulatory", value: region, symbol: "globe"))
         }
@@ -516,8 +525,12 @@ struct WiFiSidebarRow: View {
     }
 
     private var subtitle: String? {
+        // SSID leaks in the sidebar would let a side-eye reader fingerprint
+        // the user's home / office network. The detail view's Network row
+        // is already marked isSecret (reveal-on-hover); mirror that here
+        // by reporting "on Wi-Fi" rather than the literal name.
         var parts: [String] = []
-        if let ssid = info.currentSSID { parts.append("on \(ssid)") }
+        if info.currentSSID != nil { parts.append("Connected") }
         else if let status = info.status { parts.append(status) }
         if let phy = info.currentPHY { parts.append(phy) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
@@ -583,6 +596,10 @@ struct AudioSidebarRow: View {
 
 struct StorageDetailView: View {
     let storage: InternalStorageInfo
+    /// Signed system cryptexes grafted on top of the boot volume.
+    /// Rendered as a section under the volumes list. Empty when no
+    /// AppleAPFSGraft services are matchable (Intel hosts).
+    var cryptexes: [CryptexInfo] = []
 
     var body: some View {
         ScrollView {
@@ -596,6 +613,19 @@ struct StorageDetailView: View {
                             ForEach(storage.volumes) { v in
                                 VolumeRow(volume: v)
                                 if v.id != storage.volumes.last?.id { Divider() }
+                            }
+                        }
+                    }
+                }
+                if !cryptexes.isEmpty {
+                    SectionCard(
+                        title: "Signed System Cryptexes (\(cryptexes.count))",
+                        symbol: "shippingbox"
+                    ) {
+                        VStack(spacing: 0) {
+                            ForEach(cryptexes) { c in
+                                CryptexRow(cryptex: c)
+                                if c.id != cryptexes.last?.id { Divider() }
                             }
                         }
                     }
@@ -685,6 +715,48 @@ struct StorageDetailView: View {
         fmt.allowedUnits = [.useGB, .useTB]
         fmt.countStyle = .decimal
         return fmt.string(fromByteCount: Int64(bytes))
+    }
+}
+
+/// Row for one signed cryptex. Shows the friendly name plus the raw
+/// `FullName` token (for grepping logs / asr output) and the
+/// system/sealed flags as badges.
+private struct CryptexRow: View {
+    let cryptex: CryptexInfo
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "shippingbox")
+                .foregroundStyle(.green)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(cryptex.displayName)
+                    .font(.callout.weight(.medium))
+                Text(cryptex.fullName)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 8)
+            HStack(spacing: 6) {
+                if cryptex.isSealed {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .help("Cryptex is sealed (signature validated)")
+                } else {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .help("Cryptex reports unsealed — secure boot may be misconfigured")
+                }
+                if cryptex.isSystemContent {
+                    Text("System")
+                        .font(.caption2)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(Color.green.opacity(0.12)))
+                        .foregroundStyle(.green)
+                }
+            }
+        }
+        .padding(.vertical, 6)
     }
 }
 
