@@ -523,12 +523,19 @@ private enum DTTBuilder {
     /// Find the dock's USB peripherals via the host-side chassis
     /// socket they share. On Apple Silicon the dock's USB devices
     /// enumerate under the host's `usb-drd<N>` controller — same
-    /// kernel object the user's USB-C receptacle uses for a directly
-    /// attached device. The locationID top byte equals the chassis
-    /// port number (drd0 → port 1, drd1 → port 2, drd2 → port 3),
-    /// matching the lane adapter's `Socket ID`. The internal AUSS
-    /// controller (FaceTime camera / SoC USB) doesn't match because
-    /// its locationID doesn't follow the per-port encoding.
+    /// kernel object a directly attached USB device would land in.
+    ///
+    /// Mapping: per CLAUDE.md "TopologyMapper.usbDevicesByPort maps
+    /// each usb-drd<N> to a physical port via locationID >> 24 (drd0
+    /// → Port 1, etc.)". So drd0 has locationID top byte = 0 but
+    /// serves chassis Socket 1; drd1 → Socket 2; drd2 → Socket 3.
+    /// The off-by-one used to defeat the match — the matcher now
+    /// expects `topByte + 1 == socket`.
+    ///
+    /// Filtered to `usb-drd*` controllers only (skips the internal
+    /// `usb-auss` controller that drives the FaceTime camera /
+    /// internal USB — its locationID doesn't follow the per-port
+    /// encoding).
     ///
     /// Returns an empty list when the socket ID isn't parseable or
     /// when no controllers match — e.g. on hosts where the user has
@@ -542,15 +549,14 @@ private enum DTTBuilder {
         }
         var out: [TunnelLeaf] = []
         for controller in snapshot.usb.controllers {
+            // Only the per-port USB-C controllers map to a chassis
+            // socket — `usb-auss` is internal.
+            let nameMatch = controller.properties["IONameMatched"]?.asString
+                ?? controller.properties["IONameMatch"]?.asString ?? ""
+            guard nameMatch.hasPrefix("usb-drd") else { continue }
             guard let loc = controller.properties["locationID"]?.asUInt else { continue }
-            // The top byte of locationID is the chassis port; e.g.
-            // `0x01100000` → 0x01 = port 1. Some controllers report
-            // it in the next-most-significant nibble depending on the
-            // SoC family — check both layouts and keep whichever
-            // matches a known socket.
             let topByte = (loc >> 24) & 0xFF
-            let topNibble = (loc >> 28) & 0xF
-            guard topByte == socket || topNibble == socket else { continue }
+            guard topByte + 1 == socket else { continue }
             collectUSBEndpointLeaves(under: controller, into: &out)
         }
         return out.sorted { $0.title < $1.title }
