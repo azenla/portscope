@@ -54,26 +54,6 @@ struct DisplayDetailView: View {
                     }
                 }
 
-                if display.isBuiltIn {
-                    SectionCard(title: "About this Engine", symbol: "info.circle") {
-                        Text("`disp0` drives the laptop's built-in Liquid Retina XDR panel via the SoC's Display Coprocessor (DCP). Refresh rate is variable on this generation — anywhere from idle (~10 Hz) up to 120 Hz ProMotion.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                } else if display.isConnected {
-                    SectionCard(title: "About this Engine", symbol: "info.circle") {
-                        Text("`\(display.deviceTreeName)` is an external display engine driving a panel attached via DisplayPort alt-mode or HDMI through one of the USB-C / Thunderbolt receptacles. Refresh range and mode list come from the panel's EDID.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    SectionCard(title: "About this Engine", symbol: "info.circle") {
-                        Text("`\(display.deviceTreeName)` is reserved for an external display but currently has nothing attached. Plug in a USB-C / Thunderbolt display to activate it.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
                 DeveloperDisclosureCard(node: display.node)
             }
             .padding(24)
@@ -364,13 +344,6 @@ private struct HDCPCard: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Text("Channel-to-display mapping isn't published in IOKit; "
-                 + "the table below is the host's full HDCP fabric. "
-                 + "Channels with role **Transmitter** are the ones "
-                 + "actively negotiating with a sink.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
             VStack(spacing: 0) {
                 HDCPRowHeader()
                 ForEach(channels) { c in

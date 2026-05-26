@@ -34,7 +34,6 @@ struct HardwareSensorsView: View {
                         sensorGroupCard(category: group.category,
                                         sensors: group.sensors)
                     }
-                    legend
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -65,11 +64,7 @@ struct HardwareSensorsView: View {
         HStack(spacing: 12) {
             Image(systemName: "thermometer.medium")
                 .font(.title2).foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Hardware Sensors").font(.title2.bold())
-                Text("Live readings from every sensor PortScope can reach through the HID Event System.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            Text("Hardware Sensors").font(.title2.bold())
             Spacer()
             Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
         }
@@ -109,17 +104,6 @@ struct HardwareSensorsView: View {
                 }
             }
         }
-    }
-
-    private var legend: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "info.circle").foregroundStyle(.secondary)
-            Text("Values stream from the HID Event System for thermal / power / ambient-light sensors; battery and AC-PSU readings come straight from `AppleSmartBattery` IORegistry properties. Names are synthesised from the kernel `Product` string + the decoded 4-character SMC key — e.g. `Tp01` → \"Performance Core p01\".")
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
-        }
-        .padding(.top, 8)
     }
 
     private var footer: some View {

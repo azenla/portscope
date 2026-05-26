@@ -1072,10 +1072,6 @@ private struct FunctionAdapterPortView: View {
                         }
                     }
                 }
-            } else {
-                Text("This adapter has no active tunnels — nothing is currently routed through it.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -1150,8 +1146,7 @@ private struct LocalNodeView: View {
 private struct GenericDeviceView: View {
     let node: TBNode
     var body: some View {
-        Text("Connected device. Open Developer details below for the raw IORegistry entry.")
-            .foregroundStyle(.secondary)
+        EmptyView()
     }
 }
 
@@ -1165,9 +1160,6 @@ private struct SoCCoprocessorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(description)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             if let mmio = mmio {
                 LabeledContent("MMIO base", value: mmio)
             }
@@ -1179,41 +1171,6 @@ private struct SoCCoprocessorView: View {
             }
         }
         .font(.callout)
-    }
-
-    private var description: String {
-        // Keep the prose short. The aim is to remind a curious user what
-        // each block actually does on Apple Silicon, not to fully document
-        // them — anyone who wants deep info can read Asahi Linux's notes.
-        let name = stringValue(node.properties["name"]) ?? node.title
-        switch name {
-        case "sep":        return "Secure Enclave processor — handles biometrics, key wrapping, sealed storage."
-        case "aop":        return "Always-On Processor — runs sensor fusion and audio while the main cores sleep."
-        case "pmp":        return "Power Management Processor — runs the SoC's PMU firmware."
-        case "smc":        return "System Management Controller — battery, charging, thermals, fans, hardware buttons."
-        case "ans":        return "NAND storage controller for the internal SSD."
-        case "wlan":       return "Wi-Fi subsystem (Broadcom/Apple-designed radio)."
-        case "bluetooth":  return "Bluetooth subsystem."
-        case "ane0":       return "Apple Neural Engine — runs Core ML / vision workloads."
-        case "isp0":       return "Image Signal Processor — drives the FaceTime camera pipeline."
-        case "dcp":        return "Display Coprocessor — built-in display pipeline (Apple-designed firmware)."
-        case "gfx-asc":    return "GPU coprocessor that fronts the Apple GPU command stream."
-        case "mcc":        return "Memory cache controller for the unified-memory fabric."
-        case "avd0":       return "Hardware video decoder (H.264 / H.265 / ProRes)."
-        case "pmgr":       return "SoC clock + power-gate manager."
-        case "aic":        return "Apple Interrupt Controller — fans out hardware IRQs to the CPU complex."
-        default:
-            if name.hasPrefix("dcpext") {
-                return "External-display coprocessor pipeline (one per external display engine)."
-            }
-            if name.hasPrefix("ave") { return "Hardware video encoder." }
-            if name.hasPrefix("jpeg") { return "Hardware JPEG encoder/decoder." }
-            if name.hasPrefix("scaler") { return "Image scaler / colour-space converter." }
-            if name.hasPrefix("disp") || name.hasPrefix("dispext") {
-                return "Display engine — pixel pump feeding the DCP / external display."
-            }
-            return "SoC coprocessor block. Open Developer details below for the raw IORegistry entry."
-        }
     }
 
     private var mmio: String? {
@@ -1242,17 +1199,6 @@ private struct SoCCoprocessorView: View {
         }
         return nil
     }
-
-    private func stringValue(_ value: IORegValue?) -> String? {
-        guard let value else { return nil }
-        if case let .string(s) = value { return s }
-        if case let .data(d) = value {
-            if let s = String(data: d, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters), !s.isEmpty {
-                return s
-            }
-        }
-        return nil
-    }
 }
 
 // MARK: - Bandwidth bar (shared)
@@ -1274,7 +1220,6 @@ struct BandwidthBar: View {
         // capacity. We surface the ceiling as a marker, not as a parallel
         // fill, and we don't paint it as an error condition.
         let maxFrac = total > 0 ? min(maxD / total, 1.0) : 0
-        let peakOverflows = maximum > linkBandwidth
         let showPeakMarker = maximum > required && maximum > 0
 
         VStack(alignment: .leading, spacing: 10) {
@@ -1328,12 +1273,6 @@ struct BandwidthBar: View {
                     .foregroundStyle(.tertiary)
             }
             .font(.caption)
-
-            if peakOverflows {
-                Text("Peak planned (\(tbBandwidthLabel(maximum))) sums per-adapter ceilings, so it can exceed link capacity — the TB scheduler arbitrates so tunnels never all peak together.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
         }
     }
 }

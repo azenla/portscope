@@ -326,11 +326,6 @@ struct TouchIDDetailView: View {
                         }
                     }
                 }
-                SectionCard(title: "How it works", symbol: "info.circle") {
-                    Text("Touch ID is brokered by AppleMesaShim — a HID service that mediates between the Secure Enclave (which holds the enrolled fingerprint templates) and the Always-On Processor (which drives the sensor pad). The fingerprint data never leaves the SEP; macOS only ever sees a yes/no match signal.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -636,11 +631,6 @@ struct InputDevicesDetailView: View {
                     SectionCard(title: "Built-in Keyboard", symbol: "keyboard") {
                         StatGrid(stats: keyboardStats(keyboard))
                     }
-                }
-                SectionCard(title: "About these devices", symbol: "info.circle") {
-                    Text("Apple silicon laptops route the built-in trackpad through `AppleMultitouchDevice` — a Force Touch capacitive sensor whose pressure / position events are interpreted by the multitouch HID driver. The keyboard is wired through `AppleHIDKeyboardEventDriverV2` and shares its backlight controller with the chassis ambient-light sensor.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(24)

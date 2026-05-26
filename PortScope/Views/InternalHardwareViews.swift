@@ -81,9 +81,10 @@ struct BatteryView: View {
             ])
 
             if !installed {
-                SectionCard(title: "Battery not installed", symbol: "exclamationmark.triangle") {
-                    Text("AppleSmartBatteryManager reports BatteryInstalled = No. The kernel can see the manager IC but no pack is present.")
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Battery not installed").font(.callout.weight(.medium))
                 }
             }
 
@@ -106,22 +107,15 @@ struct BatteryView: View {
             // MIT, Copyright (c) 2026 Darryl Morley).
             chargerDataCard(props: node.properties)
 
-            // Health = MaxCapacity (%) reported by the gauge IC. Show a brief
-            // explanation so users understand it's a percentage of design.
             SectionCard(title: "Health", symbol: "heart.text.square") {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Battery Health Maximum")
-                        Spacer()
-                        Text("\(maxCap)%")
-                            .monospaced()
-                            .foregroundStyle(maxCap >= 80 ? .green : (maxCap >= 60 ? .orange : .red))
-                    }
-                    .font(.callout)
-                    Text("MaxCapacity is the gauge IC's current best-available charge as a percentage of design (\(designCapacity) mAh). Apple's UI typically calls this \"Maximum Capacity\".")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack {
+                    Text("Battery Health Maximum")
+                    Spacer()
+                    Text("\(maxCap)%")
+                        .monospaced()
+                        .foregroundStyle(maxCap >= 80 ? .green : (maxCap >= 60 ? .orange : .red))
                 }
+                .font(.callout)
             }
         }
     }
@@ -233,9 +227,6 @@ struct BatteryView: View {
                                     .monospaced()
                             }
                             .font(.callout)
-                            Text("AppleSmartBattery.PowerTelemetryData.AccumulatedWallEnergyEstimate, converted from mJ to Wh.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -307,9 +298,6 @@ struct BatteryView: View {
                                     .foregroundStyle(.orange)
                             }
                             .font(.callout)
-                            Text("The gauge IC has at least one bit set in NotChargingReason. macOS uses this to suppress charging (battery full, fault, accessory-managed, etc.).")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
                         if slowCharging != 0 {
                             HStack(alignment: .firstTextBaseline) {
@@ -320,9 +308,6 @@ struct BatteryView: View {
                                     .foregroundStyle(.orange)
                             }
                             .font(.callout)
-                            Text("The kernel is rate-limiting charge for at least one reason in SlowChargingReason (thermal, source-limit, optimisation, etc.).")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
                         if thermallyLimited > 0 {
                             HStack {
@@ -436,12 +421,8 @@ struct BusView: View {
                      symbol: "memorychip")
             ])
 
-            SectionCard(title: "Attached Devices", symbol: "rectangle.grid.2x2") {
-                if slaves.isEmpty {
-                    Text("No slaves matched. The bus is wired but no driver currently attaches.")
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
-                } else {
+            if !slaves.isEmpty {
+                SectionCard(title: "Attached Devices", symbol: "rectangle.grid.2x2") {
                     VStack(spacing: 0) {
                         ForEach(slaves, id: \.id) { slave in
                             Button { onNavigate(slave.id) } label: {
@@ -563,12 +544,6 @@ struct MagSafeView: View {
             if let pd = accessory.usbPD, accessory.connectionActive {
                 SectionCard(title: "Power Input", symbol: "bolt.batteryblock") {
                     USBPDCard(profile: pd)
-                }
-            } else {
-                SectionCard(title: "Power Input", symbol: "bolt.batteryblock") {
-                    Text("Plug in a MagSafe charger to see negotiated wattage and the full PDO list. PortScope reads this live from the USB-PD subsystem.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
                 }
             }
 

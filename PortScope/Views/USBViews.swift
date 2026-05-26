@@ -382,9 +382,6 @@ struct USBSinkPowerCard: View {
                     }
                 }
                 .font(.callout)
-                Text("Power figures assume the USB-C default 5 V. Apple Silicon doesn't publish source-side PD profiles in IORegistry, so a device that negotiates a higher PD voltage may pull more than shown here.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -415,9 +412,6 @@ struct USBLinkRateCard: View {
                 headline
                 rateBar
                 legend
-                if isDowngraded {
-                    downgradeNote
-                }
             }
             .padding(.vertical, 4)
         }
@@ -494,37 +488,6 @@ struct USBLinkRateCard: View {
         if let n = negotiated, rate == n.rateMbps { return n.accentColor }
         if let c = capability, rate == c.rateMbps { return c.accentColor.opacity(0.55) }
         return Color.secondary.opacity(0.3)
-    }
-
-    /// Shown only when the device negotiated below its declared protocol's
-    /// ceiling. The note explains *why* this might be — cable, hub, port —
-    /// without panicking the user, and gives low-bandwidth HID a pass since
-    /// mice/keyboards run at Full Speed by design even on USB 2.0.
-    private var downgradeNote: some View {
-        let isHIDLike: Bool = {
-            guard let cls = deviceClass else { return false }
-            return cls == USBDeviceClass.hid.rawValue
-        }()
-        let isFullSpeed = negotiated?.rateMbps == USBSpeed.full.rateMbps
-        let lowBandwidthByDesign = isHIDLike && isFullSpeed
-
-        return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: lowBandwidthByDesign
-                  ? "info.circle"
-                  : "exclamationmark.triangle.fill")
-                .foregroundStyle(lowBandwidthByDesign ? Color.secondary : Color.orange)
-                .font(.caption)
-                .frame(width: 14)
-            Text(lowBandwidthByDesign
-                 ? "HID peripherals (mice, keyboards) typically negotiate Full Speed even when their controller declares USB 2.0 — the device has no high-speed endpoints, so this isn't a downgrade in practice."
-                 : "This device negotiated below its declared capability. Common causes: a USB 2.0 cable, an intermediate USB 2.0 hub between the device and the host, or a host port limited to the lower rate.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(8)
-        .background((lowBandwidthByDesign ? Color.secondary : Color.orange).opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// Logarithmic fraction so 1.5 Mb/s isn't invisible against 20 Gb/s.

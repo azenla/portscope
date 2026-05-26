@@ -65,12 +65,7 @@ struct DiagramView: View {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.title2)
                 .foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Thunderbolt Topology").font(.title2.bold())
-                Text("Each TB-capable port, the negotiated link to its attached device, and the bandwidth reserved by active tunnels.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Thunderbolt Topology").font(.title2.bold())
             Spacer()
             Button("Done") { dismiss() }
                 .keyboardShortcut(.cancelAction)
@@ -90,11 +85,6 @@ struct DiagramView: View {
                         label: "Free",
                         hint: "Headroom on the negotiated link")
             Spacer()
-            Text("Reservation sums come from the controller's host-side function adapters — the dock-side endpoints publish placeholder values on TB5.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .frame(maxWidth: 360, alignment: .trailing)
         }
         .padding(14)
     }

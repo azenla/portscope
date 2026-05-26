@@ -421,9 +421,6 @@ struct PhysicalPortDetailView: View {
                         }
                     }
                 }
-                Text("Decoded from IOPortTransportComponentCCUSBPDSOP\(e.endpoint == .sopDoublePrime ? "pp" : "p") Metadata.VDOs. The cable silicon answers Discover Identity; software cannot verify what's physically inside the jacket.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -515,9 +512,6 @@ struct PhysicalPortDetailView: View {
                         .font(.caption)
                     }
                 }
-                Text("Read from AppleT*TypeCPhy. Per-lane Transport tells you whether the lane is carrying CIO (Thunderbolt / USB4), DisplayPort, or USB 3 — the HPM controller only publishes the protocol set, not the per-lane split.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -552,12 +546,7 @@ struct PhysicalPortDetailView: View {
         }
         return SectionCard(title: "Cable Assessment (Thunderbolt controller)",
                             symbol: "bolt.horizontal.circle") {
-            VStack(alignment: .leading, spacing: 8) {
-                InfoRowsView(rows: rows)
-                Text("Read from IOPortTransportStateCIO. The TB controller measures the cable independently of its USB-PD e-marker — useful when an active cable mis-reports as passive in its e-marker.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+            InfoRowsView(rows: rows)
         }
     }
 
@@ -572,12 +561,7 @@ struct PhysicalPortDetailView: View {
                     symbol: "arrow.left.arrow.right.circle")
         ]
         return SectionCard(title: "USB 3 Link", symbol: "cable.connector.horizontal") {
-            VStack(alignment: .leading, spacing: 8) {
-                InfoRowsView(rows: rows)
-                Text("Read from IOPortTransportStateUSB3. This is the port-side reading of negotiated SuperSpeed generation, separate from each device's bcdUSB / kUSBCurrentSpeed.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+            InfoRowsView(rows: rows)
         }
     }
 
@@ -711,10 +695,6 @@ struct PhysicalPortDetailView: View {
                         Spacer()
                     }
                 }
-
-                Text("Estimated wattage assumes the USB-C default 5 V. Apple Silicon doesn't expose source-side USB-PD profiles, so PD-fast-charge devices may pull more than this number.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -755,11 +735,7 @@ struct PhysicalPortDetailView: View {
         let dpTunnel = port.tunnels.first { $0.kind == .displayPort }
         return SectionCard(title: displaysCardTitle, symbol: "display") {
             VStack(alignment: .leading, spacing: 14) {
-                if displays.isEmpty {
-                    Text("This port has a DisplayPort path active but no lit display surface was found. The framebuffer engine may still be coming up, or the panel may be in standby.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else {
+                if !displays.isEmpty {
                     ForEach(displays) { d in
                         DisplayRowCompact(display: d, onNavigate: onNavigate)
                         if d.id != displays.last?.id { Divider() }
