@@ -23,6 +23,7 @@ struct SidebarView: View {
     /// re-add an ID after it's been seen once.
     @State private var seeded: Set<TBNodeID> = []
     @State private var showDiagram: Bool = false
+    @State private var showUSB4Topology: Bool = false
     @State private var showSensors: Bool = false
     /// Top-level sidebar sections that the user has collapsed. Each entry
     /// keys a section by its stable name; missing = expanded (the default).
@@ -266,6 +267,12 @@ struct SidebarView: View {
                               systemImage: "point.3.connected.trianglepath.dotted")
                     }
                     Button {
+                        showUSB4Topology = true
+                    } label: {
+                        Label("USB4 Topology",
+                              systemImage: "circle.hexagongrid.circle")
+                    }
+                    Button {
                         showSensors = true
                     } label: {
                         Label("Hardware Sensors",
@@ -279,6 +286,9 @@ struct SidebarView: View {
         }
         .sheet(isPresented: $showDiagram) {
             DiagramView(snapshot: vm.snapshot)
+        }
+        .sheet(isPresented: $showUSB4Topology) {
+            USB4TopologyView(snapshot: vm.snapshot)
         }
         .sheet(isPresented: $showSensors) {
             HardwareSensorsView()
