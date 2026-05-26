@@ -196,25 +196,24 @@ private enum USB4TopologyBuilder {
         return USB4TopologyModel(hostRouters: hosts)
     }
 
-    /// Find the depth-0 `IOThunderboltSwitch` directly under the
-    /// controller. This is the "Mac Host Router" — the kernel publishes
-    /// exactly one per controller.
+    /// Find the depth-0 `IOThunderboltSwitch` somewhere under the
+    /// controller — the "Mac Host Router". The kernel doesn't publish
+    /// it as a direct child of the controller; it's nested several
+    /// levels down through wrapper kexts (HAL / IPService /
+    /// LocalNode-adjacent objects), and the exact path depends on the
+    /// controller generation. Recurse the whole subtree and stop at
+    /// the first switch we find with `Depth = 0`.
     private static func findHostSwitch(in controller: TBNode) -> TBNode? {
-        for child in controller.children {
-            if child.kind == .switch,
-               (child.properties["Depth"]?.asUInt ?? 0) == 0 {
-                return child
-            }
-            // Some controller trees nest the LocalNode between the
-            // controller and the switch — descend one more level.
-            if child.kind == .localNode {
-                for grand in child.children {
-                    if grand.kind == .switch,
-                       (grand.properties["Depth"]?.asUInt ?? 0) == 0 {
-                        return grand
-                    }
-                }
-            }
+        return firstSwitch(in: controller, exactDepth: 0)
+    }
+
+    private static func firstSwitch(in node: TBNode, exactDepth: UInt64) -> TBNode? {
+        if node.kind == .switch,
+           (node.properties["Depth"]?.asUInt ?? 0) == exactDepth {
+            return node
+        }
+        for c in node.children {
+            if let s = firstSwitch(in: c, exactDepth: exactDepth) { return s }
         }
         return nil
     }
