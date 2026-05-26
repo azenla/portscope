@@ -205,8 +205,6 @@ private enum DTTBuilder {
         for (idx, controller) in snapshot.tb.controllers.enumerated() {
             guard let hostSwitch = findHostSwitch(in: controller) else { continue }
             let adapters = adapterList(of: hostSwitch)
-            let downstream = findFirstDeviceRouter(in: hostSwitch,
-                                                   snapshot: snapshot)
             // Each host router is anchored on its corresponding TB
             // controller. The "Socket ID" on a depth-0 lane adapter is
             // the physical port number (1, 2, 3 on a MacBook Pro), so
@@ -215,6 +213,17 @@ private enum DTTBuilder {
             let socketID = adapters
                 .first { $0.kind == .lane }?
                 .node.properties["Socket ID"]?.asString
+            // USB attribution: the dock's USB peripherals enumerate
+            // under the host's matching `usb-drd<N>` controller, not
+            // under the dock's TB switch (see CLAUDE.md "USB devices
+            // on a TB-tunneled dock are NOT children of the dock's TB
+            // switch"). Match by chassis socket: usb-drd<N>'s
+            // locationID top byte equals the lane adapter's Socket ID.
+            let usbLeaves = collectUSBLeavesForSocket(socketID,
+                                                     snapshot: snapshot)
+            let downstream = findFirstDeviceRouter(in: hostSwitch,
+                                                   snapshot: snapshot,
+                                                   usbLeaves: usbLeaves)
             hosts.append(HostRouter(
                 id: hostSwitch.id,
                 controller: controller,
@@ -257,10 +266,13 @@ private enum DTTBuilder {
     /// wrapping the device's switch), so we recurse rather than just
     /// look at direct children.
     private static func findFirstDeviceRouter(in parent: TBNode,
-                                              snapshot: SystemSnapshot) -> DeviceRouter? {
+                                              snapshot: SystemSnapshot,
+                                              usbLeaves: [TunnelLeaf]) -> DeviceRouter? {
         if let s = findSwitch(in: parent,
                               minDepth: (parent.properties["Depth"]?.asUInt ?? 0) + 1) {
-            return makeDeviceRouter(switchNode: s, snapshot: snapshot)
+            return makeDeviceRouter(switchNode: s,
+                                    snapshot: snapshot,
+                                    usbLeaves: usbLeaves)
         }
         return nil
     }
@@ -282,11 +294,12 @@ private enum DTTBuilder {
     }
 
     private static func makeDeviceRouter(switchNode: TBNode,
-                                         snapshot: SystemSnapshot) -> DeviceRouter {
+                                         snapshot: SystemSnapshot,
+                                         usbLeaves: [TunnelLeaf]) -> DeviceRouter {
         let adapters = adapterList(of: switchNode)
         let tunnels = tunnelList(adapters: adapters,
-                                 switchID: switchNode.id,
-                                 snapshot: snapshot)
+                                 snapshot: snapshot,
+                                 usbLeaves: usbLeaves)
         var daisy: [DeviceRouter] = []
         let myDepth = switchNode.properties["Depth"]?.asUInt ?? 0
         // Daisy-chained docks sit inside one of *this* router's lane
@@ -298,7 +311,16 @@ private enum DTTBuilder {
         for c in switchNode.children {
             if c.kind == .switch { continue }   // already this router
             if let s = findSwitch(in: c, minDepth: myDepth + 1) {
-                daisy.append(makeDeviceRouter(switchNode: s, snapshot: snapshot))
+                // Daisy-chained docks share the same host-side
+                // chassis port, so they pull USB leaves from the
+                // same pool the parent router was given. In a more
+                // accurate world we'd partition the leaves across
+                // depths by `Depth Class` in the hop table — the
+                // kernel does publish that — but for an MVP each
+                // chained dock just sees the full set.
+                daisy.append(makeDeviceRouter(switchNode: s,
+                                              snapshot: snapshot,
+                                              usbLeaves: usbLeaves))
             }
         }
         let vendor = switchNode.properties["Device Vendor Name"]?.asString
@@ -411,18 +433,18 @@ private enum DTTBuilder {
         return d["Dst Port"]?.asUInt
     }
 
-    /// One `Tunnel` per active function adapter on the router. The
-    /// switchID lets us match attributed leaves (USB devices via the
-    /// usb tbContext cross-link, displays via the DP heuristic) to
-    /// the tunnels exiting this router.
+    /// One `Tunnel` per active function adapter on the router.
+    /// `usbLeaves` is the pre-filtered list of USB endpoints behind
+    /// this device router's chassis socket; `snapshot.displays`
+    /// supplies the DP attribution pool.
     private static func tunnelList(adapters: [Adapter],
-                                   switchID: TBNodeID,
-                                   snapshot: SystemSnapshot) -> [Tunnel] {
+                                   snapshot: SystemSnapshot,
+                                   usbLeaves: [TunnelLeaf]) -> [Tunnel] {
         // Pre-compute leaf pools once per router so building each
         // tunnel's leaves is a cheap lookup. USB tunnels split their
         // pool across the (usually single) USB adapter, displays are
         // distributed across the active DP adapters.
-        let usbPool = collectUSBLeaves(forSwitchID: switchID, snapshot: snapshot)
+        let usbPool = usbLeaves
         let dpPool = collectDisplayLeaves(snapshot: snapshot)
         let activeDPCount = adapters.filter {
             $0.kind == .dp && $0.isTunnelActive
@@ -498,22 +520,39 @@ private enum DTTBuilder {
         }
     }
 
-    /// Walk `snapshot.usb.controllers` for any controller whose
-    /// `tbContext` resolves to `switchID` — those are USB controllers
-    /// tunneled through this device router. Promote the controllers'
-    /// meaningful USB endpoints (skip hubs, billboards, etc.) into
-    /// leaves so the tunnel chip can list "G502 HERO Mouse",
-    /// "Gaming Keyboard G910", etc.
-    private static func collectUSBLeaves(forSwitchID switchID: TBNodeID,
-                                         snapshot: SystemSnapshot) -> [TunnelLeaf] {
+    /// Find the dock's USB peripherals via the host-side chassis
+    /// socket they share. On Apple Silicon the dock's USB devices
+    /// enumerate under the host's `usb-drd<N>` controller — same
+    /// kernel object the user's USB-C receptacle uses for a directly
+    /// attached device. The locationID top byte equals the chassis
+    /// port number (drd0 → port 1, drd1 → port 2, drd2 → port 3),
+    /// matching the lane adapter's `Socket ID`. The internal AUSS
+    /// controller (FaceTime camera / SoC USB) doesn't match because
+    /// its locationID doesn't follow the per-port encoding.
+    ///
+    /// Returns an empty list when the socket ID isn't parseable or
+    /// when no controllers match — e.g. on hosts where the user has
+    /// nothing plugged into the corresponding receptacle.
+    private static func collectUSBLeavesForSocket(_ socketID: String?,
+                                                  snapshot: SystemSnapshot)
+        -> [TunnelLeaf]
+    {
+        guard let socketStr = socketID, let socket = UInt64(socketStr) else {
+            return []
+        }
         var out: [TunnelLeaf] = []
         for controller in snapshot.usb.controllers {
-            guard snapshot.usb.tbContext[controller.id] == switchID else { continue }
+            guard let loc = controller.properties["locationID"]?.asUInt else { continue }
+            // The top byte of locationID is the chassis port; e.g.
+            // `0x01100000` → 0x01 = port 1. Some controllers report
+            // it in the next-most-significant nibble depending on the
+            // SoC family — check both layouts and keep whichever
+            // matches a known socket.
+            let topByte = (loc >> 24) & 0xFF
+            let topNibble = (loc >> 28) & 0xF
+            guard topByte == socket || topNibble == socket else { continue }
             collectUSBEndpointLeaves(under: controller, into: &out)
         }
-        // Order the same way the device sidebar does — by title — so
-        // the leaf list reads alphabetically and stays stable across
-        // rescans even if the IORegistry shuffles enumeration order.
         return out.sorted { $0.title < $1.title }
     }
 
@@ -534,7 +573,7 @@ private enum DTTBuilder {
                         id: child.id,
                         title: child.title,
                         subtitle: usbSubtitle(child),
-                        symbol: AdapterKind.usb.icon
+                        symbol: usbSymbol(for: child)
                     ))
                 }
             case .usbHub:
@@ -545,6 +584,52 @@ private enum DTTBuilder {
                 continue
             }
         }
+    }
+
+    /// Pick a friendlier SF Symbol per USB device class. The kernel
+    /// publishes `bDeviceClass` reliably for HID + storage; for
+    /// vendor-specific (0xFF) the title's a better signal than the
+    /// class code. Falls back to the generic cable icon.
+    private static func usbSymbol(for node: TBNode) -> String {
+        let title = node.title.lowercased()
+        if title.contains("keyboard") { return "keyboard" }
+        if title.contains("mouse") || title.contains("trackpad") {
+            return "computermouse"
+        }
+        if title.contains("lan") || title.contains("ethernet")
+            || title.contains("network") {
+            return "network"
+        }
+        if title.contains("storage") || title.contains("ssd")
+            || title.contains("disk") || title.contains("drive") {
+            return "externaldrive"
+        }
+        if title.contains("audio") || title.contains("dac")
+            || title.contains("headphone") {
+            return "headphones"
+        }
+        if title.contains("camera") || title.contains("webcam") {
+            return "camera"
+        }
+        if title.contains("av adapter") || title.contains("hdmi")
+            || title.contains("displayport") {
+            return "tv"
+        }
+        if title.contains("dock") {
+            return "shippingbox"
+        }
+        // Fall back to the bDeviceClass — HID class is the most
+        // common useful one.
+        if let cls = node.properties["bDeviceClass"]?.asUInt {
+            switch cls {
+            case 0x03: return "keyboard"              // HID
+            case 0x08: return "externaldrive"         // Mass Storage
+            case 0x09: return "rectangle.3.group"     // Hub (shouldn't reach here)
+            case 0x0E: return "video"                 // Video
+            default: break
+            }
+        }
+        return "cable.connector"
     }
 
     private static func usbSubtitle(_ node: TBNode) -> String? {
@@ -637,6 +722,11 @@ struct DetailedThunderboltTopologyView: View {
     /// Set the first time we auto-fit on appear so the user's zoom
     /// choice isn't clobbered every time the snapshot updates.
     @State private var didAutoFit: Bool = false
+    /// Live pinch multiplier — applied on top of `zoom` while the
+    /// user is mid-gesture and committed back into `zoom` on release.
+    /// Lets the user smoothly zoom on a trackpad without each pinch
+    /// snapping to a discrete zoom step.
+    @GestureState private var pinchScale: Double = 1.0
 
     var body: some View {
         let model = DTTBuilder.build(from: snapshot)
@@ -728,23 +818,22 @@ struct DetailedThunderboltTopologyView: View {
         }
     }
 
-    /// Compute the scale that would make `content` fit entirely
-    /// inside `canvas`. Takes explicit arguments because the @State
-    /// `contentSize` / `canvasSize` we'd otherwise read aren't
-    /// guaranteed to be visible inside the same closure that just
-    /// wrote them — SwiftUI defers state stores until the next view
-    /// pass. Clamps to [0.2, 1.0] so a giant dock topology stays
-    /// readable on a small sheet.
+    /// Compute the scale that fits the topology horizontally. We
+    /// deliberately ignore the canvas height: a daisy-chained dock
+    /// stack is naturally tall, and forcing both dimensions to fit
+    /// makes everything postage-stamp-sized just so the bottom of
+    /// the topology lands inside the window. Width-first fit keeps
+    /// the routers readable; vertical overflow scrolls in the
+    /// surrounding ScrollView (and the user can pinch in/out).
+    /// Clamped to [0.3, 1.0] so tiny windows still show *something*
+    /// of the topology even if it horizontally overflows. Takes
+    /// explicit args because SwiftUI defers @State writes until the
+    /// next view pass.
     private func fitScaleFor(content: CGSize, canvas: CGSize) -> Double {
-        guard content.width > 0, content.height > 0,
-              canvas.width > 0, canvas.height > 0 else { return 1.0 }
-        // Leave a 16 px ring around the content so rounded corners
-        // don't touch the divider when fitted.
+        guard content.width > 0, canvas.width > 0 else { return 1.0 }
         let availW = canvas.width - 32
-        let availH = canvas.height - 32
         let sx = availW / content.width
-        let sy = availH / content.height
-        return max(0.2, min(1.0, min(sx, sy)))
+        return max(0.3, min(1.0, sx))
     }
 
     /// Convenience: fit using whatever sizes we have on file.
@@ -799,20 +888,23 @@ struct DetailedThunderboltTopologyView: View {
     /// drawing area.
     private func canvas(model: DTTModel) -> some View {
         GeometryReader { canvasGeo in
-            // Compute the scaled bounds and the surrounding canvas
-            // bounds up front so the layout reads top-down.
-            let scaledW = max(contentSize.width * zoom, 1)
-            let scaledH = max(contentSize.height * zoom, 1)
+            // Effective zoom = persistent + live pinch multiplier.
+            // Both clamps below cap the visible range so the user
+            // can't pinch into oblivion.
+            let liveZoom = max(0.2, min(3.0, zoom * pinchScale))
+            let scaledW = max(contentSize.width * liveZoom, 1)
+            let scaledH = max(contentSize.height * liveZoom, 1)
+            // Reserve no more than the scaled content needs
+            // horizontally; let the natural canvas height set the
+            // vertical viewport. Padding the reservation by one full
+            // canvas width on each side enables the user to pan
+            // beyond the strict bounds (closer to a desktop-graph
+            // experience than to a strict "no scroll past edges"
+            // ScrollView).
             let frameW = max(canvasGeo.size.width, scaledW)
             let frameH = max(canvasGeo.size.height, scaledH)
             ScrollView([.vertical, .horizontal]) {
                 ZStack {
-                    // Anchor the scaled content in the centre of a
-                    // frame that's at least as big as the canvas. When
-                    // the content is smaller than the canvas (fit at
-                    // <100%) the ZStack centres it. When larger, the
-                    // ZStack expands to the content's scaled bounds
-                    // and the ScrollView gains pan room in both axes.
                     topologyContent(model: model)
                         .background(
                             GeometryReader { contentGeo in
@@ -822,12 +914,7 @@ struct DetailedThunderboltTopologyView: View {
                                 )
                             }
                         )
-                        // Anchor to top-leading + matching frame
-                        // alignment so the scaled rendering occupies
-                        // exactly `scaledW × scaledH` starting from
-                        // (0, 0) in its own layout box. The outer ZStack
-                        // then centers that box inside the canvas.
-                        .scaleEffect(zoom, anchor: .topLeading)
+                        .scaleEffect(liveZoom, anchor: .topLeading)
                         .frame(width: scaledW, height: scaledH,
                                alignment: .topLeading)
                 }
@@ -837,6 +924,18 @@ struct DetailedThunderboltTopologyView: View {
                 colors: [Color.secondary.opacity(0.05),
                          Color.secondary.opacity(0.10)],
                 startPoint: .top, endPoint: .bottom))
+            // Trackpad pinch zoom — applies on top of the persisted
+            // zoom so two-finger gestures feel native. Drag pan is
+            // already provided by the surrounding ScrollView.
+            .gesture(
+                MagnificationGesture()
+                    .updating($pinchScale) { value, state, _ in
+                        state = value
+                    }
+                    .onEnded { value in
+                        zoom = max(0.2, min(3.0, zoom * value))
+                    }
+            )
             .onAppear {
                 canvasSize = canvasGeo.size
                 attemptAutoFit(canvas: canvasGeo.size, content: contentSize)
@@ -870,6 +969,14 @@ struct DetailedThunderboltTopologyView: View {
             .frame(width: 2, height: height)
     }
 
+    /// Per-host column width. Wide enough to fit three adapter
+    /// chips (at min 110 px) per row in the host router card.
+    private static let hostColumnWidth: CGFloat = 360
+    /// Device router cards expand wider than the host column so a
+    /// dock with 14+ adapters and 4 tunnels reads as a single dense
+    /// card instead of an absurdly tall thin strip.
+    private static let deviceRouterWidth: CGFloat = 520
+
     private func hostRoutersBar(routers: [HostRouter]) -> some View {
         HStack(alignment: .top, spacing: 28) {
             ForEach(routers) { host in
@@ -878,16 +985,22 @@ struct DetailedThunderboltTopologyView: View {
                         host: host,
                         selection: $selection
                     )
+                    .frame(width: Self.hostColumnWidth)
                     if let device = host.downstream {
                         // The cable line + downstream device router
                         // sits directly under the host card so the
-                        // visual flow reads top→bottom.
+                        // visual flow reads top→bottom. The device
+                        // card can expand wider than the host column
+                        // — it's centered under the host so the
+                        // visual lineage is still obvious.
                         CableConnector(
                             speed: host.adapters.first(where: \.isTunnelActive)?.currentLinkSpeed ?? 0,
                             width: host.adapters.first(where: \.isTunnelActive)?.currentLinkWidth ?? 0,
-                            linkBandwidth: device.adapters.first(where: { $0.kind == .lane })?.linkBandwidth ?? 0
+                            linkBandwidth: device.adapters.first(where: { $0.kind == .lane })?.linkBandwidth ?? 0,
+                            tunnels: device.tunnels
                         )
                         DeviceRouterTree(router: device, selection: $selection)
+                            .frame(width: Self.deviceRouterWidth)
                     } else {
                         VStack(spacing: 6) {
                             trunkLine(height: 12)
@@ -899,7 +1012,7 @@ struct DetailedThunderboltTopologyView: View {
                         }
                     }
                 }
-                .frame(maxWidth: 340, alignment: .top)
+                .frame(alignment: .top)
             }
         }
     }
@@ -1246,21 +1359,42 @@ private struct CableConnector: View {
     let speed: UInt64       // Current Link Speed (kernel raw)
     let width: UInt64       // Current Link Width
     let linkBandwidth: UInt64
+    let tunnels: [Tunnel]   // active tunnels carried over the link
 
     var body: some View {
         VStack(spacing: 4) {
             Rectangle()
                 .fill(Color.secondary.opacity(0.35))
                 .frame(width: 2, height: 16)
-            HStack(spacing: 6) {
-                Image(systemName: "cable.connector").font(.caption)
-                    .foregroundStyle(.primary)
-                Text(linkLabel)
-                    .font(.caption.monospacedDigit())
+            VStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "cable.connector").font(.caption)
+                        .foregroundStyle(.primary)
+                    Text(linkLabel)
+                        .font(.caption.monospacedDigit().weight(.medium))
+                }
+                if !tunnels.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(tunnels) { t in
+                            HStack(spacing: 3) {
+                                Image(systemName: t.kind.icon)
+                                    .font(.system(size: 9))
+                                Text(t.kind.label)
+                                    .font(.system(size: 9, weight: .medium))
+                            }
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(
+                                Capsule().fill(t.kind.color.opacity(0.18))
+                            )
+                            .foregroundStyle(t.kind.color)
+                        }
+                    }
+                }
             }
-            .padding(.horizontal, 10).padding(.vertical, 4)
+            .padding(.horizontal, 10).padding(.vertical, 6)
             .background(
-                Capsule().fill(Color.primary.opacity(0.06))
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.primary.opacity(0.06))
             )
             Rectangle()
                 .fill(Color.secondary.opacity(0.35))
@@ -1503,8 +1637,15 @@ private struct TunnelChip: View {
                 .foregroundStyle(tunnel.kind.color)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(tunnel.kind.label)
-                    .font(.caption.weight(.semibold))
+                HStack(spacing: 6) {
+                    Text(tunnel.kind.label)
+                        .font(.caption.weight(.semibold))
+                    if !tunnel.leaves.isEmpty {
+                        Text("· \(tunnel.leaves.count)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(tunnel.kind.color.opacity(0.8))
+                    }
+                }
                 Text(tunnel.pathID)
                     .font(.system(size: 10).monospaced())
                     .foregroundStyle(.secondary)
@@ -1530,7 +1671,9 @@ private struct TunnelChip: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7)
-                .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                .stroke(isSelected ? Color.accentColor
+                                   : tunnel.kind.color.opacity(0.25),
+                        lineWidth: isSelected ? 2 : 1)
         )
     }
 }
