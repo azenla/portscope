@@ -400,7 +400,7 @@ struct PhysicalPortDetailView: View {
                             value: String(format: "0x%04X", e.vendorID),
                             symbol: "number"))
 
-        return SectionCard(title: "Cable E-Marker (decoded)", symbol: "barcode.viewfinder") {
+        return SectionCard(title: "Cable E-Marker", symbol: "barcode.viewfinder") {
             VStack(alignment: .leading, spacing: 10) {
                 InfoRowsView(rows: rows)
                 if !vdo.decodeWarnings.isEmpty {
