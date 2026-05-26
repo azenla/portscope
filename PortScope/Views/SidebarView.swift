@@ -260,17 +260,22 @@ struct SidebarView: View {
             // main toolbar stays uncluttered.
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Button {
-                        showDiagram = true
+                    Menu {
+                        Button {
+                            showDiagram = true
+                        } label: {
+                            Label("Simplified",
+                                  systemImage: "point.3.connected.trianglepath.dotted")
+                        }
+                        Button {
+                            showUSB4Topology = true
+                        } label: {
+                            Label("Detailed",
+                                  systemImage: "circle.hexagongrid.circle")
+                        }
                     } label: {
                         Label("Thunderbolt Topology",
                               systemImage: "point.3.connected.trianglepath.dotted")
-                    }
-                    Button {
-                        showUSB4Topology = true
-                    } label: {
-                        Label("USB4 Topology",
-                              systemImage: "circle.hexagongrid.circle")
                     }
                     Button {
                         showSensors = true

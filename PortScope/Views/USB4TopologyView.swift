@@ -111,6 +111,20 @@ private struct Adapter: Identifiable, Hashable {
     let linkBandwidth: UInt64
     let requiredBandwidth: UInt64
     let maxBandwidth: UInt64
+    /// Physical chassis port number (USB-C receptacle 1, 2, 3 on this
+    /// Mac). Only meaningful for host-side lane adapters — the kernel
+    /// only publishes `Socket ID` there.
+    let socketID: String?
+    /// Lane port number that carries this adapter's tunnel out of the
+    /// router. Decoded from `Hop Table[0].Dst Port`. Nil when the
+    /// adapter isn't tunneling. Lets the chip show "→ via P1" so the
+    /// user can see which lane is doing the work.
+    let routedViaPort: UInt64?
+    /// True when this lane adapter is the upstream-facing one (i.e.
+    /// the cable terminates here). Only set on device-side routers
+    /// where the kernel publishes `Upstream Port Number` on the
+    /// switch. Used to label the cable-bearing lane with "↑ cable".
+    let isUpstreamLane: Bool
 }
 
 private enum AdapterKind: Hashable {
@@ -160,7 +174,7 @@ private enum AdapterKind: Hashable {
 private struct Tunnel: Identifiable, Hashable {
     let id: TBNodeID            // function-adapter's TBNodeID anchors the tunnel
     let kind: AdapterKind       // matches the adapter's kind
-    let pathID: String          // colon-separated port-number path ("8:1:1:9")
+    let pathID: String          // arrow-separated port-number path ("P8 → P1 → P9")
     let reservedBW: UInt64      // 100 Mb/s units
     let maxBW: UInt64
     let hopCount: Int           // length of the Hop Table
@@ -306,6 +320,10 @@ private enum USB4TopologyBuilder {
     /// ports (other switches, IPService, etc.) are skipped.
     private static func adapterList(of switchNode: TBNode) -> [Adapter] {
         var out: [Adapter] = []
+        // Upstream port number is published on the switch itself —
+        // identifies which lane port the cable enters this router
+        // through. Lets device-side lane adapters show "↑ cable".
+        let upstreamPort = switchNode.properties["Upstream Port Number"]?.asUInt
         for c in switchNode.children where c.kind == .port {
             let portN = c.properties["Port Number"]?.asUInt ?? 0
             let desc = c.properties["Description"]?.asString ?? ""
@@ -327,6 +345,21 @@ private enum USB4TopologyBuilder {
                 }
                 return false
             }()
+            // For function adapters with a live tunnel, the Hop Table's
+            // first entry's Dst Port is the lane port that carries this
+            // tunnel out of the router. For lane adapters it's nil.
+            let routedVia: UInt64? = {
+                guard isActiveTunnel else { return nil }
+                switch kind {
+                case .dp, .usb, .pcie:
+                    return firstHopDstPort(c)
+                default:
+                    return nil
+                }
+            }()
+            let isUpstreamLane = (kind == .lane)
+                && (upstreamPort != nil)
+                && (upstreamPort == portN)
             out.append(Adapter(
                 id: c.id,
                 portNumber: portN,
@@ -338,10 +371,22 @@ private enum USB4TopologyBuilder {
                 currentLinkWidth: width,
                 linkBandwidth: linkBW,
                 requiredBandwidth: reqBW,
-                maxBandwidth: maxBW
+                maxBandwidth: maxBW,
+                socketID: c.properties["Socket ID"]?.asString,
+                routedViaPort: routedVia,
+                isUpstreamLane: isUpstreamLane
             ))
         }
         return out.sorted { $0.portNumber < $1.portNumber }
+    }
+
+    /// Read `Hop Table[0].Dst Port` — the lane port that an active
+    /// function adapter routes its tunnel through.
+    private static func firstHopDstPort(_ port: TBNode) -> UInt64? {
+        guard case let .array(arr) = port.properties["Hop Table"],
+              case let .dictionary(kv) = arr.first else { return nil }
+        let d = Dictionary(kv, uniquingKeysWith: { a, _ in a })
+        return d["Dst Port"]?.asUInt
     }
 
     /// One `Tunnel` per active function adapter on the router.
@@ -355,8 +400,13 @@ private enum USB4TopologyBuilder {
                 break
             }
             let hops = hopTableEntries(a.node)
-            let pathID = ([a.portNumber] + hops.map { $0.dstPort }).map(String.init)
-                .joined(separator: ":")
+            // Build a human-friendly path: "P13 → P1 → P7" rather than
+            // Microsoft's "13:1:7". Same information, but arrows make
+            // direction unambiguous and we don't have to explain a
+            // colon convention.
+            let pathID = ([a.portNumber] + hops.map { $0.dstPort })
+                .map { "P\($0)" }
+                .joined(separator: " → ")
             out.append(Tunnel(
                 id: a.id,
                 kind: a.kind,
@@ -504,7 +554,7 @@ struct USB4TopologyView: View {
             .keyboardShortcut("=", modifiers: .command)
 
             Button {
-                zoom = fitScale()
+                zoom = fitScaleFor(content: contentSize, canvas: canvasSize)
             } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right.magnifyingglass")
             }
@@ -522,25 +572,43 @@ struct USB4TopologyView: View {
         }
     }
 
-    /// Compute the scale that would make the natural content fit
-    /// entirely inside the canvas. Always returns a value in [0.2, 1.0]
-    /// so the topology stays readable even on tiny windows; the user
-    /// can still pan with the ScrollView when zoomed in.
-    private func fitScale() -> Double {
-        guard contentSize.width > 0, contentSize.height > 0,
-              canvasSize.width > 0, canvasSize.height > 0 else { return 1.0 }
-        // Leave a 40 px padding ring around the content so the rounded
-        // corners aren't kissing the divider when fitted.
-        let availW = canvasSize.width - 32
-        let availH = canvasSize.height - 32
-        let sx = availW / contentSize.width
-        let sy = availH / contentSize.height
+    /// Compute the scale that would make `content` fit entirely
+    /// inside `canvas`. Takes explicit arguments because the @State
+    /// `contentSize` / `canvasSize` we'd otherwise read aren't
+    /// guaranteed to be visible inside the same closure that just
+    /// wrote them — SwiftUI defers state stores until the next view
+    /// pass. Clamps to [0.2, 1.0] so a giant dock topology stays
+    /// readable on a small sheet.
+    private func fitScaleFor(content: CGSize, canvas: CGSize) -> Double {
+        guard content.width > 0, content.height > 0,
+              canvas.width > 0, canvas.height > 0 else { return 1.0 }
+        // Leave a 16 px ring around the content so rounded corners
+        // don't touch the divider when fitted.
+        let availW = canvas.width - 32
+        let availH = canvas.height - 32
+        let sx = availW / content.width
+        let sy = availH / content.height
         return max(0.2, min(1.0, min(sx, sy)))
+    }
+
+    /// Convenience: fit using whatever sizes we have on file.
+    private func fitScale() -> Double {
+        fitScaleFor(content: contentSize, canvas: canvasSize)
     }
 
     /// Clamp + apply a zoom value.
     private func setZoom(_ value: Double) {
         zoom = max(0.2, min(2.0, value))
+    }
+
+    /// Try to auto-fit on first mount once both sizes are known.
+    /// Idempotent — the `didAutoFit` flag stops it firing on every
+    /// subsequent layout pass so the user's manual zoom sticks.
+    private func attemptAutoFit(canvas: CGSize, content: CGSize) {
+        guard !didAutoFit else { return }
+        guard canvas.width > 0, content.width > 0 else { return }
+        zoom = fitScaleFor(content: content, canvas: canvas)
+        didAutoFit = true
     }
 
     private func statChip(systemImage: String, count: Int,
@@ -598,20 +666,17 @@ struct USB4TopologyView: View {
                 colors: [Color.secondary.opacity(0.05),
                          Color.secondary.opacity(0.10)],
                 startPoint: .top, endPoint: .bottom))
-            .onAppear { canvasSize = canvasGeo.size }
+            .onAppear {
+                canvasSize = canvasGeo.size
+                attemptAutoFit(canvas: canvasGeo.size, content: contentSize)
+            }
             .onChange(of: canvasGeo.size) { _, new in
                 canvasSize = new
+                attemptAutoFit(canvas: new, content: contentSize)
             }
             .onPreferenceChange(TopologyContentSizeKey.self) { new in
                 contentSize = new
-                // First measurement after mount: auto-fit so the user
-                // never lands on an overflowing topology. After this,
-                // resizes the window or rescans don't clobber the
-                // user's zoom — they can hit Fit themselves.
-                if !didAutoFit, new.width > 0, canvasSize.width > 0 {
-                    zoom = fitScale()
-                    didAutoFit = true
-                }
+                attemptAutoFit(canvas: canvasSize, content: new)
             }
         }
     }
@@ -1149,7 +1214,10 @@ private struct AdapterGrid: View {
     let adapters: [Adapter]
     @Binding var selection: USB4Selection?
 
-    private let columns = [GridItem(.adaptive(minimum: 90), spacing: 6)]
+    // Wider than the previous 90 px so the trailing connectivity
+    // caption ("Socket 3" / "→ P1" / "↑ cable") doesn't crash into the
+    // adapter label.
+    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 6)]
 
     var body: some View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
@@ -1192,6 +1260,16 @@ private struct AdapterChip: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            if let caption = connectivityLabel {
+                Text(caption)
+                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+                    .foregroundStyle(adapter.kind.color.opacity(0.9))
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(adapter.kind.color.opacity(0.10))
+                    )
+            }
         }
         .padding(.horizontal, 6).padding(.vertical, 4)
         .background(
@@ -1202,8 +1280,30 @@ private struct AdapterChip: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                .stroke(isSelected ? Color.accentColor
+                                   : adapter.isTunnelActive
+                                     ? adapter.kind.color.opacity(0.35)
+                                     : Color.clear,
+                        lineWidth: isSelected ? 2 : 1)
         )
+    }
+
+    /// Routing hint shown on the right of the chip:
+    /// - host lane adapter:  "Socket 3"  (chassis port number)
+    /// - device upstream lane: "↑ cable" (the lane the cable enters)
+    /// - function adapter: "→ P1"  (which lane it tunnels through)
+    private var connectivityLabel: String? {
+        switch adapter.kind {
+        case .lane:
+            if adapter.isUpstreamLane { return "↑ cable" }
+            if let socket = adapter.socketID { return "Socket \(socket)" }
+            return nil
+        case .dp, .usb, .pcie:
+            if let v = adapter.routedViaPort { return "→ P\(v)" }
+            return nil
+        default:
+            return nil
+        }
     }
 }
 
@@ -1221,7 +1321,7 @@ private struct TunnelChip: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(tunnel.kind.label)
                     .font(.caption.weight(.semibold))
-                Text("Path \(tunnel.pathID)")
+                Text(tunnel.pathID)
                     .font(.system(size: 10).monospaced())
                     .foregroundStyle(.secondary)
             }
