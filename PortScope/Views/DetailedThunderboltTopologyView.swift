@@ -72,6 +72,12 @@ private struct HostRouter: Identifiable {
     let socketID: String?       // physical TB port number (Socket ID)
     let adapters: [Adapter]
     let downstream: DeviceRouter?   // first-hop device router, if anything is attached
+    /// Thunderbolt-networking peer attached to this controller, when no
+    /// downstream router is present. XDomain peers (Mac↔Mac, Mac↔Linux/PC
+    /// TB Bridge) don't publish an `IOThunderboltSwitch` so they're
+    /// invisible to the device-router probe; we surface them as their
+    /// own card under the host instead.
+    let peer: ThunderboltPeer?
 
     /// Active tunnels reachable from this host router (depth ≥ 1).
     var totalTunnels: Int {
@@ -256,6 +262,15 @@ private enum DTTBuilder {
             let downstream = findFirstDeviceRouter(in: hostSwitch,
                                                    snapshot: snapshot,
                                                    usbTree: usbTree)
+            // TB-networking peers (XDomain) don't publish a switch, so
+            // they slip past the device-router probe. Surface them as a
+            // sibling slot on the host router. We only look when there's
+            // no downstream router — a peer behind a dock would be a
+            // rare daisy-chain case and the current renderer wouldn't
+            // know where to put it anyway.
+            let peer: ThunderboltPeer? = downstream == nil
+                ? findThunderboltPeer(in: controller)
+                : nil
             hosts.append(HostRouter(
                 id: hostSwitch.id,
                 controller: controller,
@@ -263,7 +278,8 @@ private enum DTTBuilder {
                 title: "Host Router \(idx + 1)",
                 socketID: socketID,
                 adapters: adapters,
-                downstream: downstream
+                downstream: downstream,
+                peer: peer
             ))
         }
         return DTTModel(hostRouters: hosts)
@@ -1178,6 +1194,23 @@ struct DetailedThunderboltTopologyView: View {
                         // count.
                         DeviceRouterTree(router: device,
                                          selection: $selection)
+                    } else if let peer = host.peer {
+                        // TB-networking peer (XDomain) — Mac/Linux/PC
+                        // on the other end. No device router, no
+                        // tunnels in the normal sense; render the cable
+                        // line + a dedicated peer card instead. Use
+                        // the host's XDomain-bearing lane adapter for
+                        // the cable speed/width (the lane has a Hop
+                        // Table entry for the XDomain control channel
+                        // even though there's no tunneled device).
+                        CableConnector(
+                            speed: host.adapters.first(where: \.isTunnelActive)?.currentLinkSpeed ?? 0,
+                            width: host.adapters.first(where: \.isTunnelActive)?.currentLinkWidth ?? 0,
+                            linkBandwidth: host.adapters.first(where: \.isTunnelActive)?.linkBandwidth ?? 0,
+                            tunnels: []
+                        )
+                        ThunderboltPeerCard(peer: peer)
+                            .frame(width: Self.deviceRouterWidth)
                     } else {
                         VStack(spacing: 6) {
                             trunkLine(height: 12)
@@ -1705,6 +1738,107 @@ private struct DeviceRouterCard: View {
     private func isTunnelSelected(_ t: Tunnel) -> Bool {
         if case .tunnel(let id) = selection { return id == t.id }
         return false
+    }
+}
+
+// MARK: - Thunderbolt-networking peer card
+
+/// Card rendered in place of a device router when the host is paired
+/// with a TB-networking peer (XDomain). Structured like the device
+/// router card so the visual hierarchy reads the same — but tinted
+/// teal so the user can tell at a glance "this isn't a normal TB
+/// device, it's a peer host." Shows vendor + hostname, the host-side
+/// network interface (en6 / en2 / …) with link speed and link state,
+/// MAC, vendor/device IDs, domain UUID.
+private struct ThunderboltPeerCard: View {
+    let peer: ThunderboltPeer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "personalhotspot")
+                    .foregroundStyle(.teal)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(peer.displayTitle)
+                        .font(.callout.bold())
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Thunderbolt Networking peer")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(peer.ipConnectionUp ? "Established" : "Pending")
+                    .font(.caption.monospacedDigit())
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(
+                        (peer.ipConnectionUp ? Color.teal : Color.secondary).opacity(0.18)
+                    ))
+                    .foregroundStyle(peer.ipConnectionUp ? .teal : .secondary)
+            }
+            Divider().opacity(0.4)
+            VStack(alignment: .leading, spacing: 6) {
+                if let bsd = peer.interfaceBSDName {
+                    peerRow(symbol: "network",
+                            label: "Interface",
+                            value: bsdLabel(bsd: bsd, peer: peer))
+                }
+                if let mac = peer.interfaceMAC {
+                    peerRow(symbol: "barcode.viewfinder",
+                            label: "MAC",
+                            value: mac)
+                }
+                if let vid = peer.vendorID, let did = peer.deviceID {
+                    peerRow(symbol: "number",
+                            label: "Vendor / Device",
+                            value: String(format: "0x%04X / 0x%04X", vid, did))
+                }
+                if let uuid = peer.domainUUID {
+                    peerRow(symbol: "lock.shield",
+                            label: "Domain UUID",
+                            value: uuid)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(LinearGradient(
+                    colors: [Color.teal.opacity(0.16), Color.teal.opacity(0.08)],
+                    startPoint: .top, endPoint: .bottom))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.teal.opacity(0.32), lineWidth: 1)
+        )
+        .shadow(color: Color.teal.opacity(0.10), radius: 4, x: 0, y: 1)
+    }
+
+    private func bsdLabel(bsd: String, peer: ThunderboltPeer) -> String {
+        var parts = [bsd]
+        if let speed = peer.linkSpeedLabel { parts.append(speed) }
+        if !peer.interfaceLinkActive { parts.append("link down") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func peerRow(symbol: String, label: String, value: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 14, alignment: .center)
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 96, alignment: .leading)
+            Text(value)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+            Spacer()
+        }
     }
 }
 
