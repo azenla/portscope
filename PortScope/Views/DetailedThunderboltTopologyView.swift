@@ -1156,7 +1156,7 @@ struct DetailedThunderboltTopologyView: View {
         VStack(alignment: .center, spacing: 0) {
             MacChassisBlock()
             trunkLine(height: 18)
-            hostBranchingTrunk(count: model.hostRouters.count)
+            hostBranchingTrunk(routers: model.hostRouters)
             hostRoutersBar(routers: model.hostRouters)
         }
         .padding(40)
@@ -1172,38 +1172,66 @@ struct DetailedThunderboltTopologyView: View {
     /// Horizontal bus + per-column vertical drops between the "This Mac"
     /// pill and the host router cards. Mirrors the way the dock card's
     /// downstream tree branches into separate display / USB / PCIe blocks
-    /// — visually the three host routers are siblings hanging off the
-    /// Mac, not children of just the centre column. A single straight
+    /// — visually the host routers are siblings hanging off the Mac,
+    /// not children of just the centre column. A single straight
     /// `trunkLine` made HR1 and HR3 look orphaned because the line only
     /// reached the middle host card.
-    private func hostBranchingTrunk(count: Int) -> some View {
-        let colWidth = Self.hostColumnWidth
+    ///
+    /// Drawn with `Canvas` rather than nested HStacks/ZStacks so the
+    /// drops land at the precise pixel centres of the host router
+    /// columns. **Column widths aren't uniform**: a column with a
+    /// downstream device router (the 520-pt dock card) or a TB-networking
+    /// peer (also 520) is wider than a column whose host has nothing
+    /// attached (just the 360-pt host card). The trunk reads each
+    /// router's downstream/peer status and computes per-column widths +
+    /// centres from that, so the drops always land on the host card
+    /// centre — which is what `HostRouterCard` is itself centred around
+    /// inside its column.
+    private func hostBranchingTrunk(routers: [HostRouter]) -> some View {
+        let widths = columnWidths(for: routers)
         let spacing: CGFloat = 28
-        return ZStack(alignment: .top) {
-            // Per-column vertical drops — each centered inside its
-            // 360-wide column, so they land on the top center of the
-            // corresponding host router card below.
-            HStack(alignment: .top, spacing: spacing) {
-                ForEach(0..<count, id: \.self) { _ in
-                    trunkLine(height: 18)
-                        .frame(width: colWidth)
-                }
+        let dropHeight: CGFloat = 18
+        // Walk left → right summing column widths + spacing to find each
+        // column's centre, then the total width.
+        var cursor: CGFloat = 0
+        var centers: [CGFloat] = []
+        for (idx, w) in widths.enumerated() {
+            centers.append(cursor + w / 2)
+            cursor += w
+            if idx < widths.count - 1 { cursor += spacing }
+        }
+        let totalWidth = cursor
+
+        return Canvas { ctx, _ in
+            let stroke = GraphicsContext.Shading.color(Color.secondary.opacity(0.35))
+            if let first = centers.first, let last = centers.last, centers.count > 1 {
+                var bus = Path()
+                bus.move(to: CGPoint(x: first, y: 1))
+                bus.addLine(to: CGPoint(x: last, y: 1))
+                ctx.stroke(bus, with: stroke, lineWidth: 2)
             }
-            // Horizontal bus across the top, inset by half a column on
-            // each side so the line ends exactly at the first and last
-            // drops. Suppressed when there's only one host router —
-            // no bus needed for a single vertical drop.
-            if count > 1 {
-                HStack(spacing: 0) {
-                    Spacer().frame(width: colWidth / 2 - 1)
-                    Rectangle()
-                        .fill(Color.secondary.opacity(0.35))
-                        .frame(height: 2)
-                    Spacer().frame(width: colWidth / 2 - 1)
-                }
+            for x in centers {
+                var drop = Path()
+                drop.move(to: CGPoint(x: x, y: 0))
+                drop.addLine(to: CGPoint(x: x, y: dropHeight))
+                ctx.stroke(drop, with: stroke, lineWidth: 2)
             }
         }
-        .fixedSize()
+        .frame(width: totalWidth, height: dropHeight)
+    }
+
+    /// Width of each host router's column in `hostRoutersBar` — the
+    /// natural width of the widest child in the VStack. A column with a
+    /// downstream device router or TB peer expands to `deviceRouterWidth`
+    /// (520), since both render at that width; otherwise it stays at the
+    /// host-card width (360). Keep in sync with the conditional branches
+    /// inside `hostRoutersBar`.
+    private func columnWidths(for routers: [HostRouter]) -> [CGFloat] {
+        routers.map { host in
+            (host.downstream != nil || host.peer != nil)
+                ? Self.deviceRouterWidth
+                : Self.hostColumnWidth
+        }
     }
 
     /// Per-host column width. Wide enough to fit three adapter
