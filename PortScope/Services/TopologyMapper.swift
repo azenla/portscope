@@ -53,6 +53,12 @@ struct PhysicalPort {
     /// allocations + port-level current ceilings. Nil when we can't see a
     /// matching xHCI port wrapper for the receptacle.
     let sourcePower: PortSourcePower?
+    /// Thunderbolt-networking peer on this port — populated when the
+    /// kernel publishes an `IOThunderboltXDomainLink` under this port's
+    /// TB controller. Nil for any port that isn't TB-capable (no
+    /// controller) or whose controller has no peer link up. See
+    /// `ThunderboltPeerModels.swift`.
+    let thunderboltPeer: ThunderboltPeer?
 
     /// The lane node whose `Link Bandwidth` to read for this port's link
     /// capacity. On Apple Silicon TB5 hardware the dock-side peer lane
@@ -328,7 +334,8 @@ nonisolated enum TopologyMapper {
                     usbDeviceRoots: usb?.roots ?? p.usbDeviceRoots,
                     tunnels: p.tunnels,
                     accessory: nil,
-                    sourcePower: usb?.power
+                    sourcePower: usb?.power,
+                    thunderboltPeer: p.thunderboltPeer
                 )
             }
         }
@@ -408,7 +415,8 @@ nonisolated enum TopologyMapper {
                     usbDeviceRoots: usb.roots.isEmpty ? tb.usbDeviceRoots : usb.roots,
                     tunnels: tb.tunnels,
                     accessory: acc,
-                    sourcePower: usbByPort[acc.portNumber]?.power
+                    sourcePower: usbByPort[acc.portNumber]?.power,
+                    thunderboltPeer: tb.thunderboltPeer
                 ))
             } else {
                 // HPM port with no matching TB controller (rare; fall back to a
@@ -425,7 +433,8 @@ nonisolated enum TopologyMapper {
                     usbDeviceRoots: usb.roots,
                     tunnels: [],
                     accessory: acc,
-                    sourcePower: usbByPort[acc.portNumber]?.power
+                    sourcePower: usbByPort[acc.portNumber]?.power,
+                    thunderboltPeer: nil
                 ))
             }
         }
@@ -444,7 +453,8 @@ nonisolated enum TopologyMapper {
                 usbDeviceRoots: usb?.roots ?? tb.usbDeviceRoots,
                 tunnels: tb.tunnels,
                 accessory: nil,
-                sourcePower: usb?.power
+                sourcePower: usb?.power,
+                thunderboltPeer: tb.thunderboltPeer
             ))
         }
 
@@ -474,7 +484,8 @@ nonisolated enum TopologyMapper {
                 usbDeviceRoots: tree.roots,
                 tunnels: [],
                 accessory: acc,
-                sourcePower: tree.power
+                sourcePower: tree.power,
+                thunderboltPeer: nil
             ))
         }
 
@@ -501,7 +512,8 @@ nonisolated enum TopologyMapper {
                 usbDeviceRoots: [],
                 tunnels: [],
                 accessory: acc,
-                sourcePower: nil
+                sourcePower: nil,
+                thunderboltPeer: nil
             ))
         }
 
@@ -530,7 +542,8 @@ nonisolated enum TopologyMapper {
                 usbDeviceRoots: [],
                 tunnels: [],
                 accessory: acc,
-                sourcePower: nil
+                sourcePower: nil,
+                thunderboltPeer: nil
             ))
         }
 
@@ -563,7 +576,8 @@ nonisolated enum TopologyMapper {
                 usbDeviceRoots: [],
                 tunnels: [],
                 accessory: acc,
-                sourcePower: nil
+                sourcePower: nil,
+                thunderboltPeer: nil
             ))
         }
 
@@ -586,7 +600,8 @@ nonisolated enum TopologyMapper {
                 usbDeviceRoots: [],
                 tunnels: [],
                 accessory: acc,
-                sourcePower: nil
+                sourcePower: nil,
+                thunderboltPeer: nil
             )
         }
         let ethernetPorts = snapshot.accessories.compactMap { acc -> PhysicalPort? in
@@ -604,7 +619,8 @@ nonisolated enum TopologyMapper {
                 usbDeviceRoots: [],
                 tunnels: [],
                 accessory: acc,
-                sourcePower: nil
+                sourcePower: nil,
+                thunderboltPeer: nil
             )
         }
 
@@ -1015,7 +1031,8 @@ nonisolated enum TopologyMapper {
             usbDeviceRoots: [],
             tunnels: tunnels,
             accessory: accessory,
-            sourcePower: nil
+            sourcePower: nil,
+            thunderboltPeer: findThunderboltPeer(in: controller)
         )
     }
 

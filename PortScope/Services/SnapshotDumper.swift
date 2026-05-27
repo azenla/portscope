@@ -215,6 +215,11 @@ enum SnapshotDumper {
         } else {
             out["connected_device"] = NSNull()
         }
+        if let peer = p.thunderboltPeer {
+            out["thunderbolt_peer"] = thunderboltPeerToJSON(peer)
+        } else {
+            out["thunderbolt_peer"] = NSNull()
+        }
         if let acc = p.accessory { out["accessory"] = accessoryToJSON(acc) }
         // power_input mirrors power_output for symmetry: a flat summary of
         // the negotiated USB-PD contract when the Mac is sinking power on
@@ -262,6 +267,25 @@ enum SnapshotDumper {
             ]
         }
         return out
+    }
+
+    private static func thunderboltPeerToJSON(_ peer: ThunderboltPeer) -> [String: Any] {
+        return [
+            "device_name": peer.deviceName ?? NSNull(),
+            "vendor_name": peer.vendorName ?? NSNull(),
+            "vendor_id": peer.vendorID.map { NSNumber(value: $0) } ?? NSNull(),
+            "device_id": peer.deviceID.map { NSNumber(value: $0) } ?? NSNull(),
+            "domain_uuid": peer.domainUUID ?? NSNull(),
+            "max_hop_id": peer.maxHopID.map { NSNumber(value: $0) } ?? NSNull(),
+            "interface_bsd_name": peer.interfaceBSDName ?? NSNull(),
+            "interface_mac": peer.interfaceMAC ?? NSNull(),
+            "interface_link_speed_bps": peer.interfaceLinkSpeedBps.map { NSNumber(value: $0) } ?? NSNull(),
+            "interface_link_active": peer.interfaceLinkActive,
+            "ip_connection_up": peer.ipConnectionUp,
+            "ip_transmitter_up": peer.ipTransmitterUp,
+            "display_title": peer.displayTitle,
+            "link_speed_label": peer.linkSpeedLabel ?? NSNull()
+        ]
     }
 
     private static func connectedDeviceToJSON(_ d: ConnectedDevice) -> [String: Any] {
@@ -784,6 +808,16 @@ private final class PrettyPrinter {
                 for chained in device.daisyChained {
                     line("         ↳ \(chained.title)\(chained.subtitle.map { dim(" · \($0)") } ?? "")")
                 }
+            }
+            if let peer = port.thunderboltPeer {
+                var trailer: [String] = []
+                if let bsd = peer.interfaceBSDName {
+                    if let speed = peer.linkSpeedLabel { trailer.append("\(bsd) · \(speed)") }
+                    else { trailer.append(bsd) }
+                }
+                if !peer.interfaceLinkActive { trailer.append("link down") }
+                let trailerStr = trailer.isEmpty ? "" : dim(" (" + trailer.joined(separator: " · ") + ")")
+                line("      \(blue("🛰"))  TB Networking · \(bold(peer.displayTitle))\(trailerStr)")
             }
             for root in flattenedRoots(port.usbDeviceRoots) {
                 line("      \(cyan("🔌")) \(root.title)\(root.subtitle.map { dim(" · \($0)") } ?? "")")

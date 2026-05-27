@@ -57,6 +57,9 @@ struct PhysicalPortDetailView: View {
                 if !port.tunnels.isEmpty {
                     tunnelsCard
                 }
+                if let peer = port.thunderboltPeer {
+                    thunderboltPeerCard(peer)
+                }
                 if !port.attachedUSBDevices.isEmpty {
                     usbCard
                 }
@@ -107,6 +110,9 @@ struct PhysicalPortDetailView: View {
 
     private var subheadline: String {
         if let dev = port.connectedDevice { return dev.title }
+        // TB-networking peer (a Mac/Linux/PC on the other end of the
+        // cable) shows up here when there's no traditional dock/router.
+        if let peer = port.thunderboltPeer { return peer.displayTitle }
         if let acc = port.accessory {
             if acc.connection.isConnected { return acc.connection.label }
         }
@@ -813,6 +819,67 @@ struct PhysicalPortDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: - Thunderbolt Networking peer
+
+    /// Card surfacing a TB-networking peer (Mac-to-Mac or Mac-to-Linux/PC
+    /// TB Bridge). The kernel publishes an `IOThunderboltXDomainLink`
+    /// under the lane carrying the host-to-host fabric and an
+    /// `AppleThunderboltIPService` interface (en2 / en6 / …) on the
+    /// controller's local-node side. Combined they tell the user "there's
+    /// a peer host on this port and we're talking to it over enN at
+    /// 80 Gb/s," which is otherwise invisible in PortScope (the kernel
+    /// doesn't dress an XDomain peer up as a TB switch or a USB device,
+    /// so the other passes skip it).
+    private func thunderboltPeerCard(_ peer: ThunderboltPeer) -> some View {
+        var rows: [InfoRow] = []
+        if let v = peer.vendorName {
+            rows.append(InfoRow(label: "Vendor",
+                                value: v,
+                                symbol: "building.2"))
+        }
+        if let n = peer.deviceName {
+            rows.append(InfoRow(label: "Device Name",
+                                value: n,
+                                symbol: "macwindow"))
+        }
+        rows.append(InfoRow(label: "Connection",
+                            value: peer.ipConnectionUp ? "Established" : "Pending",
+                            symbol: peer.ipConnectionUp ? "checkmark.circle.fill" : "circle.dashed",
+                            tint: peer.ipConnectionUp ? .green : .secondary))
+        if let bsd = peer.interfaceBSDName {
+            let speed = peer.linkSpeedLabel.map { " · \($0)" } ?? ""
+            let active = peer.interfaceLinkActive ? "" : " (link down)"
+            rows.append(InfoRow(label: "Interface",
+                                value: "\(bsd)\(speed)\(active)",
+                                symbol: "network",
+                                tint: peer.interfaceLinkActive ? .blue : .secondary))
+        }
+        if let mac = peer.interfaceMAC {
+            rows.append(InfoRow(label: "MAC Address",
+                                value: mac,
+                                symbol: "barcode.viewfinder"))
+        }
+        if let vid = peer.vendorID, let did = peer.deviceID {
+            rows.append(InfoRow(label: "Vendor / Device",
+                                value: String(format: "0x%04X / 0x%04X", vid, did),
+                                symbol: "number"))
+        }
+        if let uuid = peer.domainUUID {
+            rows.append(InfoRow(label: "Domain UUID",
+                                value: uuid,
+                                symbol: "lock.shield"))
+        }
+        if let hop = peer.maxHopID {
+            rows.append(InfoRow(label: "Max Hop ID",
+                                value: "\(hop)",
+                                symbol: "arrow.triangle.branch"))
+        }
+        return SectionCard(title: "Thunderbolt Networking",
+                           symbol: "personalhotspot") {
+            InfoRowsView(rows: rows)
         }
     }
 

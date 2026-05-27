@@ -336,12 +336,30 @@ nonisolated struct PortAccessoryInfo: Identifiable, Hashable {
 
     /// Whether this port is currently carrying Thunderbolt / USB4 (CIO transport).
     var carriesThunderbolt: Bool { activeTransports.contains(.cio) }
-    /// Whether this port is actively driving a display. Requires the
-    /// connection to actually be live — `HPDAsserted` alone can linger from
-    /// a previous attachment even after the cable is unplugged.
+    /// Whether this port is actively driving a display via USB-C alt-mode.
+    /// Requires both the connection to be live *and* a real DP signal:
+    ///   * DisplayPort in `activeTransports` (kernel's authoritative "DP is
+    ///     running on this connector" flag), or
+    ///   * a non-zero `DisplayPortPinAssignment` (DP alt-mode pin layout
+    ///     successfully negotiated on the connector's CC lines).
+    ///
+    /// `HPDAsserted` alone is not sufficient — the kernel raises HPD for
+    /// non-display partners too (e.g. a Linux/PC peer in Thunderbolt-
+    /// networking mode reads `HPDAsserted = true` while no DP is provisioned
+    /// or active), and HPD also lingers after a display is unplugged.
+    ///
+    /// Per-PHY `dpLinks` / `dpTunnels` aren't connector-level signals —
+    /// they report DP traffic flowing through the PHY's CIO lanes (e.g. the
+    /// internal panel routed through atc0's DP-IN adapter), so they fire on
+    /// the controller hosting the internal display even when no monitor is
+    /// plugged into that USB-C connector. Display-tunneled (dock-attached)
+    /// panels are surfaced via `portCarriesAnyDisplay`'s tunnels branch
+    /// instead.
     var carriesDisplay: Bool {
         guard connectionActive else { return false }
-        return activeTransports.contains(.displayPort) || hpdAsserted
+        if activeTransports.contains(.displayPort) { return true }
+        if displayPortPinAssignment > 0 { return true }
+        return false
     }
 
     /// Vendor & product label, e.g. `"Infineon (VID 0x291A · PID 0x83B5)"`.
