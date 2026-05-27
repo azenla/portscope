@@ -1018,10 +1018,20 @@ struct DetailedThunderboltTopologyView: View {
     /// explicit args because SwiftUI defers @State writes until the
     /// next view pass.
     private func fitScaleFor(content: CGSize, canvas: CGSize) -> Double {
-        guard content.width > 0, canvas.width > 0 else { return 1.0 }
+        // Two-axis fit: take the more restrictive of the width and height
+        // ratios so the whole topology lands inside the viewport. The
+        // earlier width-first form worked fine when the dock card was
+        // the tallest thing on the canvas — but with a tall device router
+        // (a 14-port dock with adapters + tunnel chips) the content
+        // overflows vertically and the user has to scroll to see the
+        // bottom rows. Fitting both axes keeps the overview-style read.
+        guard content.width > 0, content.height > 0,
+              canvas.width > 0, canvas.height > 0 else { return 1.0 }
         let availW = canvas.width - 32
+        let availH = canvas.height - 32
         let sx = availW / content.width
-        return max(0.3, min(1.0, sx))
+        let sy = availH / content.height
+        return max(0.3, min(1.0, min(sx, sy)))
     }
 
     /// Convenience: fit using whatever sizes we have on file.
@@ -1142,9 +1152,10 @@ struct DetailedThunderboltTopologyView: View {
     /// The actual topology drawing. Rendered at natural size; the
     /// canvas applies the zoom transform.
     private func topologyContent(model: DTTModel) -> some View {
-        VStack(alignment: .center, spacing: 28) {
+        VStack(alignment: .center, spacing: 0) {
             MacChassisBlock()
             trunkLine(height: 18)
+            hostBranchingTrunk(count: model.hostRouters.count)
             hostRoutersBar(routers: model.hostRouters)
         }
         .padding(40)
@@ -1155,6 +1166,43 @@ struct DetailedThunderboltTopologyView: View {
         Rectangle()
             .fill(Color.secondary.opacity(0.35))
             .frame(width: 2, height: height)
+    }
+
+    /// Horizontal bus + per-column vertical drops between the "This Mac"
+    /// pill and the host router cards. Mirrors the way the dock card's
+    /// downstream tree branches into separate display / USB / PCIe blocks
+    /// — visually the three host routers are siblings hanging off the
+    /// Mac, not children of just the centre column. A single straight
+    /// `trunkLine` made HR1 and HR3 look orphaned because the line only
+    /// reached the middle host card.
+    private func hostBranchingTrunk(count: Int) -> some View {
+        let colWidth = Self.hostColumnWidth
+        let spacing: CGFloat = 28
+        return ZStack(alignment: .top) {
+            // Per-column vertical drops — each centered inside its
+            // 360-wide column, so they land on the top center of the
+            // corresponding host router card below.
+            HStack(alignment: .top, spacing: spacing) {
+                ForEach(0..<count, id: \.self) { _ in
+                    trunkLine(height: 18)
+                        .frame(width: colWidth)
+                }
+            }
+            // Horizontal bus across the top, inset by half a column on
+            // each side so the line ends exactly at the first and last
+            // drops. Suppressed when there's only one host router —
+            // no bus needed for a single vertical drop.
+            if count > 1 {
+                HStack(spacing: 0) {
+                    Spacer().frame(width: colWidth / 2 - 1)
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.35))
+                        .frame(height: 2)
+                    Spacer().frame(width: colWidth / 2 - 1)
+                }
+            }
+        }
+        .fixedSize()
     }
 
     /// Per-host column width. Wide enough to fit three adapter
@@ -1212,8 +1260,12 @@ struct DetailedThunderboltTopologyView: View {
                         ThunderboltPeerCard(peer: peer)
                             .frame(width: Self.deviceRouterWidth)
                     } else {
-                        VStack(spacing: 6) {
-                            trunkLine(height: 12)
+                        // Match the cable-connector "tail" pattern so
+                        // empty / device / peer slots all align at the
+                        // same y-offset under the host card: 16-px line,
+                        // muted pill, no trailing line.
+                        VStack(spacing: 4) {
+                            trunkLine(height: 16)
                             Text("No device attached")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
