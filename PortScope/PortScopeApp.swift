@@ -12,6 +12,7 @@
 import SwiftUI
 import Foundation
 import Darwin
+import AppKit
 
 @main
 enum PortScopeMain {
@@ -185,6 +186,7 @@ struct PortScopeApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(vm)
+                .maximizedOnFirstAppear()
         }
         .windowToolbarStyle(.unified(showsTitle: true))
         .windowResizability(.contentSize)
@@ -215,6 +217,7 @@ struct PortScopeApp: App {
                id: PortScopeWindowID.simplifiedTopology) {
             SimplifiedTopologyWindowHost()
                 .environmentObject(vm)
+                .maximizedOnFirstAppear()
         }
         .windowResizability(.contentSize)
         .restorationBehavior(.disabled)
@@ -223,6 +226,7 @@ struct PortScopeApp: App {
                id: PortScopeWindowID.detailedTopology) {
             DetailedTopologyWindowHost()
                 .environmentObject(vm)
+                .maximizedOnFirstAppear()
         }
         .windowResizability(.contentSize)
         .restorationBehavior(.disabled)
@@ -231,6 +235,7 @@ struct PortScopeApp: App {
                id: PortScopeWindowID.hardwareSensors) {
             HardwareSensorsView()
                 .environmentObject(vm)
+                .maximizedOnFirstAppear()
         }
         .windowResizability(.contentSize)
         .restorationBehavior(.disabled)
@@ -238,6 +243,64 @@ struct PortScopeApp: App {
         Settings {
             SettingsView()
         }
+    }
+}
+
+// MARK: - Window sizing
+
+/// Bridge to AppKit so we can grab the hosting `NSWindow` for a SwiftUI
+/// view. SwiftUI doesn't surface NSWindow directly on macOS; the standard
+/// workaround is a zero-size NSViewRepresentable backed by a regular
+/// NSView, queried for its `.window` after layout. `DispatchQueue.main.async`
+/// defers the lookup to the next runloop tick so the view is already in
+/// the window hierarchy when the callback fires.
+private struct WindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            if let w = view.window { onWindow(w) }
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// Tracks which NSWindows we've already maximized once so the same
+/// window doesn't get yanked back to full-screen if the user resizes
+/// it down — `WindowAccessor`'s `DispatchQueue.main.async` can fire
+/// repeatedly on view re-creations (snapshot refresh, tab switches),
+/// and we only want the zoom-to-fill behaviour on the *first* layout
+/// after the window is born.
+@MainActor
+private enum MaximizeTracker {
+    private static var seen: Set<ObjectIdentifier> = []
+
+    static func zoomOnce(_ window: NSWindow) {
+        let key = ObjectIdentifier(window)
+        guard !seen.contains(key) else { return }
+        seen.insert(key)
+        // Direct `setFrame` to the screen's visible frame instead of
+        // `zoom(_:)` — zoom toggles based on `isZoomed`, which means
+        // a no-op if SwiftUI happened to size the window close to the
+        // standard frame on launch. setFrame is unconditional and
+        // guarantees the user sees a fully-expanded window.
+        let screen = window.screen ?? NSScreen.main
+        if let frame = screen?.visibleFrame {
+            window.setFrame(frame, display: true, animate: false)
+        }
+    }
+}
+
+extension View {
+    /// Expand the hosting NSWindow to fill the screen's visible frame
+    /// when the view first lands in a window. Equivalent to clicking
+    /// the green + traffic-light once. Idempotent across re-renders.
+    fileprivate func maximizedOnFirstAppear() -> some View {
+        background(WindowAccessor { window in
+            MaximizeTracker.zoomOnce(window)
+        })
     }
 }
 
