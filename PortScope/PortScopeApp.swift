@@ -202,6 +202,14 @@ struct PortScopeApp: App {
         // brings the existing one to the front instead of spawning a
         // duplicate. They share the main window's view model via the
         // environment so they always see the latest snapshot.
+        //
+        // `restorationBehavior(.disabled)` keeps these out of macOS's
+        // window-state restoration: if the user quit with one of them
+        // open, the next launch starts with the main inspector only,
+        // and the secondary window stays closed until the user reopens
+        // it from the More menu. Without this, a topology window left
+        // open across quit/launch would re-appear unprompted on every
+        // start.
 
         Window("Simplified Thunderbolt Topology",
                id: PortScopeWindowID.simplifiedTopology) {
@@ -209,6 +217,7 @@ struct PortScopeApp: App {
                 .environmentObject(vm)
         }
         .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
 
         Window("Detailed Thunderbolt Topology",
                id: PortScopeWindowID.detailedTopology) {
@@ -216,6 +225,7 @@ struct PortScopeApp: App {
                 .environmentObject(vm)
         }
         .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
 
         Window("Hardware Sensors",
                id: PortScopeWindowID.hardwareSensors) {
@@ -223,6 +233,7 @@ struct PortScopeApp: App {
                 .environmentObject(vm)
         }
         .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
 
         Settings {
             SettingsView()

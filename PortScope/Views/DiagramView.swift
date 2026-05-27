@@ -17,7 +17,6 @@ import SwiftUI
 
 struct DiagramView: View {
     let snapshot: SystemSnapshot
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,8 +66,6 @@ struct DiagramView: View {
                 .foregroundStyle(.tint)
             Text("Thunderbolt Topology").font(.title2.bold())
             Spacer()
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.cancelAction)
         }
         .padding()
     }

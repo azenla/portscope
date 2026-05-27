@@ -882,7 +882,6 @@ private enum DTTBuilder {
 
 struct DetailedThunderboltTopologyView: View {
     let snapshot: SystemSnapshot
-    @Environment(\.dismiss) private var dismiss
     @State private var selection: DTTSelection? = nil
     /// User-controlled zoom factor (1.0 = 100%). Persists across
     /// resizes; the "Fit" button recomputes it from current sizes.
@@ -917,11 +916,15 @@ struct DetailedThunderboltTopologyView: View {
             HStack(spacing: 0) {
                 canvas(model: model)
                     .frame(maxWidth: .infinity)
-                Divider()
-                sidebar(model: model)
-                    .frame(width: 340)
-                    .background(.background)
+                if selection != nil {
+                    Divider()
+                    sidebar(model: model)
+                        .frame(width: 340)
+                        .background(.background)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
+            .animation(.easeInOut(duration: 0.18), value: selection)
         }
         .frame(minWidth: 1180, minHeight: 760)
         // Build the topology model once when the view appears and
@@ -954,8 +957,6 @@ struct DetailedThunderboltTopologyView: View {
             Divider().frame(height: 18).padding(.horizontal, 4)
             legendDot(color: .green, label: "Host")
             legendDot(color: .blue, label: "Device")
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.cancelAction)
         }
         .padding()
     }
@@ -1281,15 +1282,22 @@ struct DetailedThunderboltTopologyView: View {
 
     // MARK: Sidebar
 
+    /// Selection-driven inspector. The whole sidebar is gated on
+    /// `selection != nil` by the caller (the canvas takes the full width
+    /// when nothing is selected), so this view only ever renders for a
+    /// real selection. A dedicated close button at the top clears the
+    /// selection — placed at the leading edge of the sidebar (right next
+    /// to the divider that splits canvas / sidebar) so it's directly
+    /// reachable when the user wants to dismiss without aiming for a
+    /// small system traffic-light.
     @ViewBuilder
     private func sidebar(model: DTTModel) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                sidebarCloseBar
                 if let sel = selection {
                     sidebarHeader(for: sel, model: model)
                     sidebarBody(for: sel, model: model)
-                } else {
-                    sidebarEmpty
                 }
             }
             .padding(18)
@@ -1297,16 +1305,32 @@ struct DetailedThunderboltTopologyView: View {
         }
     }
 
-    private var sidebarEmpty: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: "hand.point.up.left")
-                .font(.title2).foregroundStyle(.tertiary)
-            Text("Select a router, adapter, or tunnel")
-                .font(.callout.weight(.medium))
-            Text("Click any element in the diagram to see its raw IORegistry data.")
-                .font(.caption).foregroundStyle(.secondary)
+    /// Big, easy-to-hit close affordance at the very top of the sidebar.
+    /// Made deliberately large (32-pt hit target) with a label so the user
+    /// doesn't have to aim for a tiny X — matches the "easy to hit"
+    /// requirement.
+    private var sidebarCloseBar: some View {
+        HStack {
+            Button {
+                selection = nil
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                    Text("Close")
+                        .font(.callout.weight(.medium))
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.secondary.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help("Close inspector (Esc)")
+            Spacer()
         }
-        .padding(.top, 40)
     }
 
     @ViewBuilder
