@@ -55,74 +55,10 @@ struct ContentView: View {
                                            onNavigate: { vm.select($0) })
                         .id(sel)
                 }
-            } else if SystemInfoSelector.isSystemID(sel) {
-                SystemInfoView(info: vm.snapshot.internalHardware.systemInfo)
-                    .id(sel)
-            } else if StorageSelector.isStorageID(sel),
-                      let storage = vm.snapshot.internalHardware.systemInfo.internalStorage {
-                StorageDetailView(
-                    storage: storage,
-                    cryptexes: vm.snapshot.internalHardware.systemInfo.cryptexes
-                ).id(sel)
-            } else if MemorySelector.isMemoryID(sel) {
-                MemoryDetailView(
-                    dimms: vm.snapshot.internalHardware.systemInfo.memoryDIMMs,
-                    totalBytes: vm.snapshot.internalHardware.systemInfo.memoryBytes
-                ).id(sel)
-            } else if GPUSelector.isGPUID(sel) {
-                GPUDetailView(info: vm.snapshot.internalHardware.systemInfo).id(sel)
-            } else if TouchIDSelector.isTouchIDID(sel) {
-                TouchIDDetailView(
-                    info: vm.snapshot.internalHardware.systemInfo.touchID,
-                    trustedAccessories: vm.snapshot.internalHardware.systemInfo.trustedAccessories
-                ).id(sel)
-            } else if InputDevicesSelector.isInputID(sel) {
-                InputDevicesDetailView(info: vm.snapshot.internalHardware.systemInfo.inputDevices).id(sel)
-            } else if NVRAMSelector.isNVRAMID(sel) {
-                NVRAMDetailView(snapshot: vm.snapshot.internalHardware.systemInfo.nvram).id(sel)
-            } else if HIDDevicesSelector.isHIDID(sel) {
-                HIDDevicesDetailView(snapshot: vm.snapshot.internalHardware.systemInfo.hidDevices).id(sel)
-            } else if WiFiSelector.isWiFiID(sel),
-                      let wifi = vm.snapshot.internalHardware.systemInfo.wifi {
-                ScrollView { WiFiDetailView(info: wifi) }.id(sel)
-            } else if CameraSelector.isCameraID(sel),
-                      let cam = findCamera(id: sel) {
-                // Pass the ISP info for *every* camera row — the view
-                // decides whether to render the card based on the
-                // camera's identity (Continuity vs built-in). Built-in
-                // is detected by the absence of an iPhone-style
-                // `modelID`.
-                CameraDetailView(
-                    camera: cam,
-                    isp: vm.snapshot.internalHardware.systemInfo.cameraISP
-                ).id(sel)
-            } else if AudioSelector.isAudioID(sel),
-                      let dev = findAudio(id: sel) {
-                AudioDeviceDetailView(device: dev).id(sel)
             } else if MagSafeSelector.isMagSafeID(sel),
                       let magsafe = vm.snapshot.internalHardware.magsafe {
                 ScrollView {
                     MagSafeView(accessory: magsafe)
-                        .padding(24)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minWidth: 620)
-                .id(sel)
-            } else if BluetoothSelector.isControllerID(sel),
-                      let controller = vm.snapshot.bluetooth.controller {
-                ScrollView {
-                    BluetoothControllerView(controller: controller,
-                                            snapshot: vm.snapshot.bluetooth,
-                                            onNavigate: { vm.select($0) })
-                        .padding(24)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minWidth: 620)
-                .id(sel)
-            } else if BluetoothSelector.isDeviceID(sel),
-                      let device = findBluetoothDevice(id: sel) {
-                ScrollView {
-                    BluetoothDeviceView(device: device)
                         .padding(24)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -159,21 +95,6 @@ struct ContentView: View {
         return displaysAttributed(to: port,
                                   allPorts: allPorts,
                                   allDisplays: vm.snapshot.displays.displays)
-    }
-
-    private func findBluetoothDevice(id: TBNodeID) -> BluetoothDevice? {
-        let all = vm.snapshot.bluetooth.connected + vm.snapshot.bluetooth.paired
-        return all.first { BluetoothSelector.id(for: $0).raw == id.raw }
-    }
-
-    private func findCamera(id: TBNodeID) -> CameraInfo? {
-        vm.snapshot.internalHardware.systemInfo.cameras
-            .first { CameraSelector.id(for: $0).raw == id.raw }
-    }
-
-    private func findAudio(id: TBNodeID) -> AudioDeviceInfo? {
-        vm.snapshot.internalHardware.systemInfo.audioDevices
-            .first { AudioSelector.id(for: $0).raw == id.raw }
     }
 
     private func findPCINode(id: TBNodeID, in roots: [PCINode]) -> PCINode? {

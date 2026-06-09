@@ -334,10 +334,10 @@ nonisolated struct SystemSnapshot {
     // Fields are `var` so the streaming rescan in `PortScopeViewModel`
     // can update one slice at a time as each scanner completes — the
     // sidebar populates progressively (TB ports first, then PCIe, then
-    // Bluetooth / Displays trickling in) instead of waiting on the
-    // slowest scanner to publish anything. Value semantics keep this
-    // safe: each MainActor.run block copies the struct, sets one field,
-    // assigns back; the runs are serialised by the actor.
+    // Displays trickling in) instead of waiting on the slowest scanner
+    // to publish anything. Value semantics keep this safe: each
+    // MainActor.run block copies the struct, sets one field, assigns
+    // back; the runs are serialised by the actor.
     var tb: TBSnapshot
     var usb: USBSnapshot
     /// Per-physical-port runtime state from `IOAccessoryManager`. Includes
@@ -345,10 +345,8 @@ nonisolated struct SystemSnapshot {
     /// `connector` field distinguishes them. Empty on Macs that don't expose
     /// HPM interfaces (e.g. Intel hosts).
     var accessories: [PortAccessoryInfo]
-    /// Internal-fabric buses and devices: I²C, SPI, smart battery, MagSafe.
+    /// Chassis power hardware: smart battery and MagSafe.
     var internalHardware: InternalHardwareSnapshot
-    /// Bluetooth controller + paired/connected devices, from SPBluetoothDataType.
-    var bluetooth: BluetoothSnapshot
     /// Built-in + external displays. Empty on Intel hosts.
     var displays: DisplaySnapshot
     /// PCIe topology rooted at host bridges. Empty on Macs without a
@@ -360,7 +358,6 @@ nonisolated struct SystemSnapshot {
                                       usb: .empty,
                                       accessories: [],
                                       internalHardware: .empty,
-                                      bluetooth: .empty,
                                       displays: .empty,
                                       pcie: .empty,
                                       capturedAt: .distantPast)

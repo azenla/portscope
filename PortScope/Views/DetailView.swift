@@ -66,12 +66,11 @@ struct DetailView: View {
             } else {
                 GenericDeviceView(node: node)
             }
-        case .i2cBus, .spiBus:
-            BusView(node: node, onNavigate: onNavigate)
-        case .busDevice:
-            BusSlaveView(node: node)
-        case .socCoprocessor:
-            SoCCoprocessorView(node: node)
+        case .i2cBus, .spiBus, .busDevice, .socCoprocessor:
+            // No scanner surfaces these as sidebar roots anymore; they can
+            // still appear inside generic registry subtrees, so give them
+            // the generic property page rather than nothing.
+            GenericDeviceView(node: node)
         default:
             EmptyView()
         }
@@ -1148,57 +1147,6 @@ private struct GenericDeviceView: View {
     let node: TBNode
     var body: some View {
         EmptyView()
-    }
-}
-
-/// Read-only summary of a named SoC block (Secure Enclave, Always-On
-/// Processor, Apple Neural Engine, display / video coprocessors, NAND
-/// controller, SMC, etc.). The Developer-details disclosure below carries
-/// the raw IORegistry properties for the block — clock / power gates,
-/// MMIO regions, IOMMU parent, and so on.
-private struct SoCCoprocessorView: View {
-    let node: TBNode
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let mmio = mmio {
-                LabeledContent("MMIO base", value: mmio)
-            }
-            if let provider = node.properties["IOProviderClass"]?.asString {
-                LabeledContent("Provider", value: provider)
-            }
-            if let compat = compatibleString {
-                LabeledContent("Compatible", value: compat)
-            }
-        }
-        .font(.callout)
-    }
-
-    private var mmio: String? {
-        guard case let .array(arr) = node.properties["IODeviceMemory"], let first = arr.first else { return nil }
-        if case let .array(inner) = first, let dict = inner.first, case let .dictionary(kv) = dict {
-            for (k, v) in kv where k == "address" {
-                if let addr = v.asUInt { return String(format: "0x%llX", addr) }
-            }
-        }
-        if case let .dictionary(kv) = first {
-            for (k, v) in kv where k == "address" {
-                if let addr = v.asUInt { return String(format: "0x%llX", addr) }
-            }
-        }
-        return nil
-    }
-
-    private var compatibleString: String? {
-        // `compatible` is an array of device-tree match strings — the
-        // primary name + a chain of older-silicon aliases the kext also
-        // binds against. Render the full chain (e.g. "jpeg,t8110jpeg ·
-        // s5l8920x") so the user sees the bus name *and* knows the kext
-        // is a long-lived design with backwards compatibility built in.
-        if let val = node.properties["compatible"] {
-            return prettyCompatibleString(val)
-        }
-        return nil
     }
 }
 

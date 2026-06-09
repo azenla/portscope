@@ -66,12 +66,10 @@ final class PortScopeViewModel: ObservableObject {
     /// and writes only its own field of `snapshot`. The sidebar's bindings
     /// re-render incrementally — Physical Device + Thunderbolt + USB show
     /// up first (those scanners finish in tens of milliseconds), then
-    /// PCIe, then Internal Hardware, with the slow `BluetoothScanner`
-    /// (SPBluetoothDataType) and the heavy half of SystemInfo coming in
-    /// last. Total wall-clock matches the previous serial implementation
-    /// (capped by the slowest scanner), but first-paint is dramatically
-    /// faster — the user starts navigating the device tree while the
-    /// background tasks fill in.
+    /// PCIe and Displays fill in behind them. Total wall-clock is capped
+    /// by the slowest scanner, but first-paint is dramatically faster —
+    /// the user starts navigating the device tree while the background
+    /// tasks fill in.
     func rescan() {
         isScanning = true
         Task {
@@ -116,14 +114,6 @@ final class PortScopeViewModel: ObservableObject {
                     let displays = DisplayScanner.scan()
                     await MainActor.run { self.snapshot.displays = displays }
                 }
-                // Bluetooth — spawns `system_profiler SPBluetoothDataType`
-                // which historically takes ~15 s on a busy radio. Lowest
-                // priority so it doesn't compete with the cheap scanners
-                // for the QoS thread pool.
-                group.addTask(priority: .utility) { [self] in
-                    let bluetooth = BluetoothScanner.scan()
-                    await MainActor.run { self.snapshot.bluetooth = bluetooth }
-                }
             }
             // All slices have streamed in; stamp the snapshot and clear
             // the spinner. Selection picks up here if the user hadn't
@@ -150,12 +140,10 @@ final class PortScopeViewModel: ObservableObject {
 
     /// Lightweight refresh that re-reads only the per-port accessory state
     /// (USB-PD profiles, MagSafe, AC PSU telemetry, SD card, ethernet) and
-    /// the battery manager subtree. Bus topology (TB / USB / PCIe),
-    /// displays, Bluetooth, I²C/SPI buses and SoC coprocessors are carried
-    /// over from the previous snapshot — none of those change on the
-    /// few-second cadence we poll at, and re-running them would spawn
-    /// `system_profiler` and re-walk every `AppleARMIODevice`. Doesn't
-    /// touch `isScanning` so the toolbar spinner stays out of the way.
+    /// the battery manager subtree. Bus topology (TB / USB / PCIe) and
+    /// displays are carried over from the previous snapshot — none of
+    /// those change on the few-second cadence we poll at. Doesn't touch
+    /// `isScanning` so the toolbar spinner stays out of the way.
     private func refreshPower() async {
         let scanned = await Task.detached(priority: .utility) {
             let accessories = AccessoryScanner.scan()
@@ -172,19 +160,14 @@ final class PortScopeViewModel: ObservableObject {
             return false
         }
         let internalHardware = InternalHardwareSnapshot(
-            systemInfo: prev.internalHardware.systemInfo,
-            i2cBuses: prev.internalHardware.i2cBuses,
-            spiBuses: prev.internalHardware.spiBuses,
             batteryManager: battery ?? prev.internalHardware.batteryManager,
-            magsafe: magsafe,
-            coprocessorGroups: prev.internalHardware.coprocessorGroups
+            magsafe: magsafe
         )
         self.snapshot = SystemSnapshot(
             tb: prev.tb,
             usb: prev.usb,
             accessories: accessories,
             internalHardware: internalHardware,
-            bluetooth: prev.bluetooth,
             displays: prev.displays,
             pcie: prev.pcie,
             capturedAt: Date()
@@ -195,17 +178,14 @@ final class PortScopeViewModel: ObservableObject {
 
     /// Roots that the selection lookup walks. Includes TB controllers,
     /// USB controllers, the flattened TB-tunneled device lists, and the
-    /// internal-hardware buses + battery (so I²C / SPI children and the
-    /// battery node resolve from the sidebar). PCIe nodes and displays are
-    /// added so their developer-detail rows resolve too.
+    /// battery manager (so the battery node resolves from the sidebar).
+    /// PCIe nodes and displays are added so their developer-detail rows
+    /// resolve too.
     private var selectionRoots: [TBNode] {
         var roots = snapshot.tb.controllers
             + snapshot.usb.controllers
             + snapshot.tb.pcieDevicesOverTB
             + snapshot.tb.usbDevicesOverTB
-            + snapshot.internalHardware.i2cBuses
-            + snapshot.internalHardware.spiBuses
-            + snapshot.internalHardware.socCoprocessors
             + snapshot.displays.displays.map(\.node)
             + pciRootNodes()
         if let bm = snapshot.internalHardware.batteryManager {
@@ -279,32 +259,7 @@ final class PortScopeViewModel: ObservableObject {
 
     private func exists(id: TBNodeID) -> Bool {
         if PhysicalPortSelector.isPortID(id) { return true }
-        if SystemInfoSelector.isSystemID(id) { return snapshot.internalHardware.systemInfo.hasAnyData }
-        if StorageSelector.isStorageID(id) { return snapshot.internalHardware.systemInfo.internalStorage != nil }
-        if MemorySelector.isMemoryID(id) { return !snapshot.internalHardware.systemInfo.memoryDIMMs.isEmpty || snapshot.internalHardware.systemInfo.memoryBytes != nil }
-        if GPUSelector.isGPUID(id) { return snapshot.internalHardware.systemInfo.gpuCoreCount != nil || snapshot.internalHardware.systemInfo.metalVersion != nil }
-        if TouchIDSelector.isTouchIDID(id) { return snapshot.internalHardware.systemInfo.touchID.isPresent }
-        if InputDevicesSelector.isInputID(id) {
-            let i = snapshot.internalHardware.systemInfo.inputDevices
-            return i.trackpad != nil || i.keyboard != nil
-        }
-        if NVRAMSelector.isNVRAMID(id) { return !snapshot.internalHardware.systemInfo.nvram.allVariables.isEmpty }
-        if HIDDevicesSelector.isHIDID(id) { return true }
-        if WiFiSelector.isWiFiID(id) { return snapshot.internalHardware.systemInfo.wifi != nil }
-        if CameraSelector.isCameraID(id) {
-            return snapshot.internalHardware.systemInfo.cameras
-                .contains { CameraSelector.id(for: $0).raw == id.raw }
-        }
-        if AudioSelector.isAudioID(id) {
-            return snapshot.internalHardware.systemInfo.audioDevices
-                .contains { AudioSelector.id(for: $0).raw == id.raw }
-        }
         if MagSafeSelector.isMagSafeID(id) { return snapshot.internalHardware.magsafe != nil }
-        if BluetoothSelector.isControllerID(id) { return snapshot.bluetooth.controller != nil }
-        if BluetoothSelector.isDeviceID(id) {
-            let all = snapshot.bluetooth.connected + snapshot.bluetooth.paired
-            return all.contains { BluetoothSelector.id(for: $0).raw == id.raw }
-        }
         return node(for: id) != nil
     }
 
@@ -317,46 +272,6 @@ final class PortScopeViewModel: ObservableObject {
 
     func select(_ id: TBNodeID) {
         selection = id
-    }
-}
-
-/// Synthetic IDs used for sidebar rows that don't have a unique IORegistry
-/// entry to point at (Bluetooth controller, paired Bluetooth devices, etc.).
-/// The high 32 bits act as a namespace tag so the IDs never collide with
-/// real registry entry IDs.
-enum BluetoothSelector {
-    private static let controllerMask: UInt64 = 0xB7E0_0000_0000_0000
-    private static let deviceMask: UInt64     = 0xB7E1_0000_0000_0000
-
-    static let controllerID = TBNodeID(raw: controllerMask)
-
-    static func isControllerID(_ id: TBNodeID) -> Bool {
-        id.raw == controllerMask
-    }
-
-    /// Synthesise an ID from the device's stable identifier (BD_ADDR). A
-    /// simple hash is fine — collisions across the user's paired-device
-    /// set are astronomically unlikely, and even on a collision we'd just
-    /// route to the wrong device's detail card.
-    static func id(for device: BluetoothDevice) -> TBNodeID {
-        let key = (device.address ?? device.name).lowercased()
-        let h = UInt64(bitPattern: Int64(stableHash(key)))
-        return TBNodeID(raw: deviceMask | (h & 0x0000_FFFF_FFFF_FFFF))
-    }
-
-    static func isDeviceID(_ id: TBNodeID) -> Bool {
-        (id.raw & 0xFFFF_0000_0000_0000) == deviceMask
-    }
-
-    private static func stableHash(_ s: String) -> Int {
-        // Deterministic 64-bit FNV-1a so the row identity survives rescans
-        // (Swift's `String.hashValue` is randomised per launch).
-        var h: UInt64 = 0xcbf29ce484222325
-        for b in s.utf8 {
-            h ^= UInt64(b)
-            h = h &* 0x100000001b3
-        }
-        return Int(bitPattern: UInt(h))
     }
 }
 

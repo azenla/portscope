@@ -39,9 +39,6 @@ struct SidebarView: View {
     /// want when they launch a hardware-inspector. Toggle off to focus on
     /// the high-level Physical Ports view.
     @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = true
-    /// Persistent preference (Settings → Show All Devices). When false the
-    /// sidebar omits Displays / Bluetooth / Internal Hardware. Default off.
-    @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
     /// Persistent preference (Settings → Show Intermediate USB Hubs). When
     /// off (the default) USB hub nodes are flattened away so leaf devices
     /// sit directly under the port — useful for cascaded dock internals
@@ -79,7 +76,8 @@ struct SidebarView: View {
         // Built-in panel (laptop lid / iMac screen) and the internal battery
         // sit behind the Show Built-in Devices toggle so the default
         // Physical Device list reads as "receptacles you can plug into".
-        // External displays stay independently gated by Show All Devices.
+        // External displays render in the always-visible Displays section
+        // and nested under the port that carries them.
         let builtInDisplay: DisplayInfo? = showBuiltinDevices
             ? vm.snapshot.displays.displays.first { $0.isBuiltIn }
             : nil
@@ -145,20 +143,6 @@ struct SidebarView: View {
         }()
 
         List(selection: $vm.selection) {
-            // System Overview is gated behind Show All Devices because the
-            // heavy parts (storage, Wi-Fi, cameras, audio, firmware) come
-            // from `system_profiler` calls that add ~0.5–1 s to launch.
-            // Hiding it at startup keeps Physical Device responsive; users
-            // who want the chassis overview enable the toggle and a
-            // rescan kicks in automatically (see `onChange` below).
-            if showAllDevices && hw.systemInfo.hasAnyData {
-                collapsibleSubgroup(key: "physical:System",
-                                    title: "System",
-                                    collapsedSubgroups: $collapsedSubgroups) {
-                    SystemInfoSidebarRow(info: hw.systemInfo)
-                        .tag(SystemInfoSelector.id)
-                }
-            }
             physicalDeviceContent(ports: ports,
                                   hw: hw,
                                   batteryNode: batteryNode,
@@ -198,25 +182,9 @@ struct SidebarView: View {
                 }
             }
 
-            if showAllDevices {
-                gpuSection
-                storageSection
-                memorySection
-                displaysSection
-                bluetoothSection
-                wifiSection
-                camerasSection
-                audioSection
-                touchIDSection
-                inputDevicesSection
-                hidDevicesSection
-                nvramSection
-            }
+            displaysSection
             if showBuses {
                 pcieSection
-            }
-            if showAllDevices {
-                internalHardwareSection
             }
         }
         .listStyle(.sidebar)
@@ -290,15 +258,6 @@ struct SidebarView: View {
                 .menuStyle(.borderlessButton)
             }
         }
-        .onChange(of: showAllDevices) { _, isOn in
-            // The Wi-Fi / Cameras / Audio sections + the heavy half of
-            // the System Overview view come from `system_profiler` calls
-            // that we skip at launch when this toggle is off. When the
-            // user flips it on for the first time those sections render
-            // empty until the next rescan — kick one off automatically
-            // so the data is there immediately.
-            if isOn { vm.rescan() }
-        }
         .task(id: vm.snapshot.capturedAt) {
             seedExpansion(ports: ports)
         }
@@ -348,13 +307,7 @@ struct SidebarView: View {
         for ctrl in vm.tbSnapshot.controllers { walkNode(ctrl, into: &out) }
         for ctrl in vm.usbSnapshot.controllers { walkNode(ctrl, into: &out) }
         for root in vm.snapshot.pcie.roots { walkPCI(root, into: &out) }
-        let hw = vm.snapshot.internalHardware
-        for b in hw.i2cBuses { walkNode(b, into: &out) }
-        for b in hw.spiBuses { walkNode(b, into: &out) }
-        for g in hw.coprocessorGroups {
-            for c in g.coprocessors { walkNode(c, into: &out) }
-        }
-        if let bm = hw.batteryManager { walkNode(bm, into: &out) }
+        if let bm = vm.snapshot.internalHardware.batteryManager { walkNode(bm, into: &out) }
         return out
     }
 
@@ -443,181 +396,12 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private var bluetoothSection: some View {
-        let bt = vm.snapshot.bluetooth
-        if bt.controller != nil || bt.totalDeviceCount > 0 {
-            collapsibleSection("Bluetooth", icon: "dot.radiowaves.left.and.right") {
-                if let _ = bt.controller {
-                    BluetoothControllerRow(snapshot: bt)
-                        .tag(BluetoothSelector.controllerID)
-                }
-                if !bt.connected.isEmpty {
-                    collapsibleSubgroup(key: "bt:Connected",
-                                        title: "Connected (\(bt.connected.count))",
-                                        collapsedSubgroups: $collapsedSubgroups) {
-                        ForEach(bt.connected) { dev in
-                            BluetoothDeviceRow(device: dev)
-                                .tag(BluetoothSelector.id(for: dev))
-                        }
-                    }
-                }
-                if !bt.paired.isEmpty {
-                    collapsibleSubgroup(key: "bt:Paired",
-                                        title: "Paired (\(bt.paired.count))",
-                                        collapsedSubgroups: $collapsedSubgroups) {
-                        ForEach(bt.paired) { dev in
-                            BluetoothDeviceRow(device: dev)
-                                .tag(BluetoothSelector.id(for: dev))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var gpuSection: some View {
-        let info = vm.snapshot.internalHardware.systemInfo
-        if info.gpuCoreCount != nil || info.metalVersion != nil {
-            collapsibleSection("GPU", icon: "cube.transparent") {
-                GPUSidebarRow(info: info).tag(GPUSelector.id)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var touchIDSection: some View {
-        let info = vm.snapshot.internalHardware.systemInfo.touchID
-        if info.isPresent {
-            collapsibleSection("Touch ID", icon: "touchid") {
-                TouchIDSidebarRow(info: info).tag(TouchIDSelector.id)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var inputDevicesSection: some View {
-        let info = vm.snapshot.internalHardware.systemInfo.inputDevices
-        if info.trackpad != nil || info.keyboard != nil {
-            collapsibleSection("Input Devices", icon: "hand.tap") {
-                InputDevicesSidebarRow(info: info).tag(InputDevicesSelector.id)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var hidDevicesSection: some View {
-        let snap = vm.snapshot.internalHardware.systemInfo.hidDevices
-        if !snap.devices.isEmpty {
-            collapsibleSection("HID Devices", icon: "keyboard.macwindow") {
-                HIDDevicesSidebarRow(snapshot: snap).tag(HIDDevicesSelector.id)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var nvramSection: some View {
-        let snap = vm.snapshot.internalHardware.systemInfo.nvram
-        if !snap.allVariables.isEmpty {
-            collapsibleSection("NVRAM", icon: "memorychip.fill") {
-                NVRAMSidebarRow(snapshot: snap).tag(NVRAMSelector.id)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var storageSection: some View {
-        if let storage = vm.snapshot.internalHardware.systemInfo.internalStorage {
-            collapsibleSection("Storage", icon: "internaldrive") {
-                StorageSidebarRow(storage: storage).tag(StorageSelector.id)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var memorySection: some View {
-        let info = vm.snapshot.internalHardware.systemInfo
-        if !info.memoryDIMMs.isEmpty || info.memoryBytes != nil {
-            collapsibleSection("Memory", icon: "memorychip") {
-                MemorySidebarRow(info: info).tag(MemorySelector.id)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var wifiSection: some View {
-        if let wifi = vm.snapshot.internalHardware.systemInfo.wifi {
-            collapsibleSection("Wi-Fi", icon: "wifi") {
-                WiFiSidebarRow(info: wifi).tag(WiFiSelector.id)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var camerasSection: some View {
-        let cameras = vm.snapshot.internalHardware.systemInfo.cameras
-        if !cameras.isEmpty {
-            collapsibleSection("Cameras", icon: "camera") {
-                ForEach(cameras) { cam in
-                    CameraSidebarRow(camera: cam).tag(CameraSelector.id(for: cam))
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var audioSection: some View {
-        let devices = vm.snapshot.internalHardware.systemInfo.audioDevices
-        if !devices.isEmpty {
-            collapsibleSection("Audio", icon: "speaker.wave.2") {
-                ForEach(devices) { dev in
-                    AudioSidebarRow(device: dev).tag(AudioSelector.id(for: dev))
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
     private var pcieSection: some View {
         let pcie = vm.snapshot.pcie
         if !pcie.roots.isEmpty {
             collapsibleSection("PCIe", icon: "square.stack.3d.up") {
                 ForEach(pcie.roots) { root in
                     PCIBranch(node: root, expanded: $expanded)
-                }
-            }
-        }
-    }
-
-    /// Replaces the old single "Internal Hardware" wrapper with one
-    /// top-level Section per subsystem. The user wanted each thematic
-    /// bucket (I²C, SPI, display / image-ML / video codec / storage /
-    /// security / radio coprocessors) directly visible at the top level
-    /// instead of buried under a single collapsible header — easier to
-    /// scan, easier to deep-link, and consistent with how Displays /
-    /// Bluetooth / Wi-Fi already render.
-    @ViewBuilder
-    private var internalHardwareSection: some View {
-        let hw = vm.snapshot.internalHardware
-        if !hw.i2cBuses.isEmpty {
-            collapsibleSection("I²C Buses", icon: "point.3.connected.trianglepath.dotted") {
-                ForEach(hw.i2cBuses, id: \.id) { bus in
-                    FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
-                }
-            }
-        }
-        if !hw.spiBuses.isEmpty {
-            collapsibleSection("SPI Buses", icon: "wave.3.right") {
-                ForEach(hw.spiBuses, id: \.id) { bus in
-                    FullTopologyRow(node: bus, depth: 0, expanded: $expanded)
-                }
-            }
-        }
-        ForEach(hw.coprocessorGroups) { group in
-            collapsibleSection(group.category.topLevelTitle,
-                               icon: group.category.symbol) {
-                ForEach(group.coprocessors, id: \.id) { block in
-                    FullTopologyRow(node: block, depth: 0, expanded: $expanded)
                 }
             }
         }
@@ -696,8 +480,8 @@ private struct PortsByConnector: View {
     let magsafe: PortAccessoryInfo?
     /// Built-in panel (laptop lid / iMac display). Surfaced in its own
     /// "Display" subgroup so the lid screen shows up by default — it's a
-    /// chassis-physical component, not gated by Show All Devices. Nil on
-    /// headless Macs (Mac mini / Pro / Studio without an internal panel).
+    /// chassis-physical component. Nil on headless Macs (Mac mini / Pro /
+    /// Studio without an internal panel).
     let builtInDisplay: DisplayInfo?
     /// Full display list — used to attribute externals to each port so the
     /// sidebar can render a display row alongside the dock's USB devices.
@@ -1527,55 +1311,6 @@ private struct BatteryRow: View {
     }
 }
 
-/// One-row chip summary for the System Overview entry in Internal Hardware.
-/// The detail view is `SystemInfoView`; this sidebar row just gives the user
-/// a recognisable hook (chip name + memory + GPU) so they don't have to
-/// open the full page to confirm what host they're inspecting.
-private struct SystemInfoSidebarRow: View {
-    let info: SystemInfoSnapshot
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "laptopcomputer")
-                .foregroundStyle(.tint)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).lineLimit(1)
-                if let s = subtitle, !s.isEmpty {
-                    Text(s)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-    }
-
-    private var title: String {
-        info.chipName ?? info.marketingName ?? "This Mac"
-    }
-
-    private var subtitle: String? {
-        var parts: [String] = []
-        if let mem = info.memoryBytes {
-            // Memory rendered with Apple's binary-GB convention (a
-            // 137,438,953,472-byte module reads as "128 GB", not
-            // "137.44 GB"). Storage stays decimal — those two domains
-            // genuinely use different units in Apple's UI.
-            let gib = mem / (1024 * 1024 * 1024)
-            parts.append("\(gib) GB")
-        }
-        if let storage = info.internalStorage?.capacityBytes {
-            let fmt = ByteCountFormatter()
-            fmt.allowedUnits = [.useGB, .useTB]
-            fmt.countStyle = .decimal
-            fmt.includesActualByteCount = false
-            parts.append("SSD \(fmt.string(fromByteCount: Int64(storage)))")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-}
-
 /// Synthetic IDs for the MagSafe row in the Internal Hardware section. The
 /// underlying `AppleHPMInterfaceType11` entry has its own real registry ID,
 /// but routing the row through a synthetic ID lets `ContentView` dispatch to
@@ -1586,63 +1321,6 @@ enum MagSafeSelector {
 
     static func isMagSafeID(_ id: TBNodeID) -> Bool { id.raw == mask }
 }
-
-// MARK: - Bluetooth rows
-
-private struct BluetoothControllerRow: View {
-    let snapshot: BluetoothSnapshot
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "dot.radiowaves.left.and.right")
-                .foregroundStyle(snapshot.controller?.isOn == true ? .blue : .secondary)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Bluetooth Controller")
-                Text(subtitle)
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-    }
-
-    private var subtitle: String {
-        guard let c = snapshot.controller else { return "—" }
-        var parts: [String] = []
-        if c.isOn { parts.append("On") } else { parts.append("Off") }
-        if !c.displayChipset.isEmpty && c.displayChipset != "Unknown" {
-            parts.append(c.displayChipset)
-        }
-        return parts.joined(separator: " · ")
-    }
-}
-
-private struct BluetoothDeviceRow: View {
-    let device: BluetoothDevice
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: device.category.symbol)
-                .foregroundStyle(device.isConnected ? device.category.color : .secondary)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(device.name).lineLimit(1)
-                if let s = subtitle, !s.isEmpty {
-                    Text(s)
-                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-        }
-    }
-
-    private var subtitle: String? {
-        var parts: [String] = []
-        if device.isConnected { parts.append("Connected") }
-        if let m = device.minorType, !m.isEmpty { parts.append(m) }
-        if let rssi = device.rssi { parts.append("\(rssi) dBm") }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-}
-
 
 // MARK: - Display row
 

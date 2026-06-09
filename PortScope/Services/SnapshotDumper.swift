@@ -28,17 +28,15 @@ enum SnapshotDumper {
     /// `ioreg`. Sorted keys mean the same physical state produces a
     /// byte-identical dump across runs.
     ///
-    /// Defaults mirror the GUI sidebar: bare invocation emits only
-    /// `physical_ports` (plus `accessories` for the underlying HPM data
-    /// and `host` / `captured_at` metadata). `showBuses` adds the raw
-    /// `thunderbolt` / `usb` / `pcie` trees; `showAll` adds `bluetooth`
-    /// / `displays` / `internal_hardware`. Omitted keys are absent (not
-    /// set to null) so consumers don't accidentally inherit stale schema
-    /// fields.
-    static func json(_ snapshot: SystemSnapshot, showBuses: Bool, showAll: Bool, showHubs: Bool) -> String {
+    /// Defaults mirror the GUI sidebar: bare invocation emits
+    /// `physical_ports` and `displays` (plus `accessories` for the
+    /// underlying HPM data and `host` / `captured_at` metadata).
+    /// `showBuses` adds the raw `thunderbolt` / `usb` / `pcie` trees.
+    /// Omitted keys are absent (not set to null) so consumers don't
+    /// accidentally inherit stale schema fields.
+    static func json(_ snapshot: SystemSnapshot, showBuses: Bool, showHubs: Bool) -> String {
         let root: [String: Any] = snapshotToJSONObject(snapshot,
                                                        showBuses: showBuses,
-                                                       showAll: showAll,
                                                        flattenHubs: !showHubs)
         let data = (try? JSONSerialization.data(
             withJSONObject: root,
@@ -47,12 +45,13 @@ enum SnapshotDumper {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    private static func snapshotToJSONObject(_ s: SystemSnapshot, showBuses: Bool, showAll: Bool, flattenHubs: Bool) -> [String: Any] {
+    private static func snapshotToJSONObject(_ s: SystemSnapshot, showBuses: Bool, flattenHubs: Bool) -> [String: Any] {
         var out: [String: Any] = [
             "captured_at": ISO8601DateFormatter().string(from: s.capturedAt),
             "host": hostInfoJSON(),
             "physical_ports": TopologyMapper.physicalPorts(from: s).map { physicalPortToJSON($0, flattenHubs: flattenHubs) },
-            "accessories": s.accessories.map(accessoryToJSON(_:))
+            "accessories": s.accessories.map(accessoryToJSON(_:)),
+            "displays": s.displays.displays.map(displayToJSON(_:))
         ]
         if showBuses {
             out["thunderbolt"] = [
@@ -71,66 +70,7 @@ enum SnapshotDumper {
             ]
             out["pcie"] = s.pcie.roots.map(pciNodeToJSON(_:))
         }
-        if showAll {
-            out["bluetooth"] = bluetoothJSON(s.bluetooth)
-            out["displays"] = s.displays.displays.map(displayToJSON(_:))
-            out["internal_hardware"] = [
-                "battery": s.internalHardware.batteryManager.map { nodeToJSON($0, flattenHubs: flattenHubs) } ?? NSNull(),
-                "magsafe": s.internalHardware.magsafe.map(accessoryToJSON(_:)) ?? NSNull(),
-                "i2c_buses": s.internalHardware.i2cBuses.map { nodeToJSON($0, flattenHubs: flattenHubs) },
-                "spi_buses": s.internalHardware.spiBuses.map { nodeToJSON($0, flattenHubs: flattenHubs) },
-                "soc_coprocessor_groups": s.internalHardware.coprocessorGroups.map { g in
-                    [
-                        "category": g.category.rawValue,
-                        "title": g.category.title,
-                        "coprocessors": g.coprocessors.map { nodeToJSON($0, flattenHubs: flattenHubs) }
-                    ] as [String: Any]
-                },
-                "soc_coprocessors": s.internalHardware.socCoprocessors.map { nodeToJSON($0, flattenHubs: flattenHubs) }
-            ]
-        }
         return out
-    }
-
-    private static func bluetoothJSON(_ bt: BluetoothSnapshot) -> [String: Any] {
-        let controller: Any = bt.controller.map { c -> [String: Any] in
-            [
-                "address": c.address ?? NSNull(),
-                "chipset": c.chipset ?? NSNull(),
-                "firmware_version": c.firmwareVersion ?? NSNull(),
-                "vendor_id": c.vendorID ?? NSNull(),
-                "product_id": c.productID ?? NSNull(),
-                "transport": c.transport ?? NSNull(),
-                "is_on": c.isOn,
-                "is_discoverable": c.isDiscoverable,
-                "supported_services": c.supportedServices
-            ]
-        } ?? NSNull()
-        return [
-            "controller": controller,
-            "connected": bt.connected.map(btDeviceJSON(_:)),
-            "paired": bt.paired.map(btDeviceJSON(_:))
-        ]
-    }
-
-    private static func btDeviceJSON(_ d: BluetoothDevice) -> [String: Any] {
-        return [
-            "name": d.name,
-            "address": d.address ?? NSNull(),
-            "vendor_id": d.vendorID ?? NSNull(),
-            "product_id": d.productID ?? NSNull(),
-            "firmware_version": d.firmwareVersion ?? NSNull(),
-            "minor_type": d.minorType ?? NSNull(),
-            "rssi": d.rssi ?? NSNull(),
-            "serial_number": d.serialNumber ?? NSNull(),
-            "is_connected": d.isConnected,
-            "category": d.category.rawValue,
-            "services": d.services,
-            "battery_level": d.batteryLevel ?? NSNull(),
-            "battery_level_left": d.batteryLevelLeft ?? NSNull(),
-            "battery_level_right": d.batteryLevelRight ?? NSNull(),
-            "battery_level_case": d.batteryLevelCase ?? NSNull()
-        ]
     }
 
     private static func displayToJSON(_ d: DisplayInfo) -> [String: Any] {
@@ -579,10 +519,10 @@ enum SnapshotDumper {
     /// Render a `SystemSnapshot` as a colourful tree. When stdout is a TTY
     /// the output uses ANSI colour escapes; otherwise the escapes are
     /// stripped so piping into a file produces clean text. Section gating
-    /// matches the GUI sidebar: bare invocation emits only the Physical
-    /// Ports section, `showBuses` adds Thunderbolt / USB / PCIe trees, and
-    /// `showAll` adds Bluetooth / Displays / Internal Hardware.
-    static func pretty(_ snapshot: SystemSnapshot, useColor: Bool, showBuses: Bool, showAll: Bool, showHubs: Bool) -> String {
+    /// matches the GUI sidebar: bare invocation emits the Physical Ports
+    /// and Displays sections; `showBuses` adds Thunderbolt / USB / PCIe
+    /// trees.
+    static func pretty(_ snapshot: SystemSnapshot, useColor: Bool, showBuses: Bool, showHubs: Bool) -> String {
         let p = PrettyPrinter(useColor: useColor, flattenHubs: !showHubs)
         p.header(snapshot)
         p.physicalPorts(TopologyMapper.physicalPorts(from: snapshot))
@@ -591,11 +531,7 @@ enum SnapshotDumper {
             p.usb(snapshot.usb)
             p.pcie(snapshot.pcie)
         }
-        if showAll {
-            p.displays(snapshot.displays)
-            p.bluetooth(snapshot.bluetooth)
-            p.internalHardware(snapshot.internalHardware)
-        }
+        p.displays(snapshot.displays)
         return p.flush()
     }
 
@@ -604,7 +540,7 @@ enum SnapshotDumper {
     /// Tab-separated port summary, one record per chassis receptacle. Columns
     /// are stable, fields never contain tabs, and `-` denotes absent. Lines
     /// prefixed with `#` are comments (header + schema version) that scripts
-    /// can skip with `grep -v '^#'`. Modifiers (`--buses`, `--all`) are
+    /// can skip with `grep -v '^#'`. Modifiers (`--buses`, `--hubs`) are
     /// ignored on purpose — `--simple` is a one-thing-only summary.
     static func simple(_ snapshot: SystemSnapshot) -> String {
         let ports = TopologyMapper.physicalPorts(from: snapshot)
@@ -882,107 +818,6 @@ private final class PrettyPrinter {
         line()
     }
 
-    // MARK: Internal Hardware
-
-    func internalHardware(_ hw: InternalHardwareSnapshot) {
-        let any = hw.batteryManager != nil
-            || hw.magsafe != nil
-            || !hw.i2cBuses.isEmpty
-            || !hw.spiBuses.isEmpty
-            || !hw.socCoprocessors.isEmpty
-        section("🧠 Internal Hardware", any ? nil : "none")
-        if !any { line(); return }
-
-        // Desktops publish AppleSmartBattery as a telemetry-only endpoint
-        // with BatteryInstalled = false — don't print a bogus "0% · On AC"
-        // battery row for those.
-        if let bm = hw.batteryManager {
-            let battery = bm.children.first(where: { $0.kind == .battery }) ?? bm
-            if battery.properties["BatteryInstalled"]?.asBool == true {
-                renderBattery(battery)
-            }
-        }
-        if let mag = hw.magsafe {
-            let label = mag.connectionActive
-                ? "Connected" + (mag.usbPD?.winning.map { " · charging \($0.powerLabel)" } ?? "")
-                : "Idle"
-            line("   🧲 \(bold("MagSafe 3"))  \(dim(label))")
-        }
-        if !hw.i2cBuses.isEmpty {
-            line("   \(yellow("⚙"))  I²C Buses")
-            for (i, bus) in hw.i2cBuses.enumerated() {
-                let isLast = i == hw.i2cBuses.count - 1
-                let prefix = "      "
-                line(prefix + (isLast ? "└─ " : "├─ ") + bold(bus.title) + dim(bus.subtitle.map { " · \($0)" } ?? ""))
-                let kids = bus.children
-                for (j, slave) in kids.enumerated() {
-                    let last = j == kids.count - 1
-                    let p = prefix + (isLast ? "    " : "│   ")
-                    line(p + (last ? "└ " : "├ ") + slave.title + dim(slave.subtitle.map { " · \($0)" } ?? ""))
-                }
-            }
-        }
-        if !hw.spiBuses.isEmpty {
-            line("   \(magenta("⚙"))  SPI Buses")
-            for (i, bus) in hw.spiBuses.enumerated() {
-                let isLast = i == hw.spiBuses.count - 1
-                let prefix = "      "
-                line(prefix + (isLast ? "└─ " : "├─ ") + bold(bus.title) + dim(bus.subtitle.map { " · \($0)" } ?? ""))
-            }
-        }
-        if !hw.coprocessorGroups.isEmpty {
-            line("   \(blue("◈"))  SoC Coprocessors")
-            for (g, group) in hw.coprocessorGroups.enumerated() {
-                let isLastGroup = g == hw.coprocessorGroups.count - 1
-                let groupPrefix = "      "
-                line(groupPrefix + (isLastGroup ? "└ " : "├ ") + bold(group.category.title))
-                for (i, cop) in group.coprocessors.enumerated() {
-                    let isLast = i == group.coprocessors.count - 1
-                    let childPrefix = groupPrefix + (isLastGroup ? "    " : "│   ")
-                    let emoji = coprocessorEmoji(for: cop)
-                    line(childPrefix + (isLast ? "└─ " : "├─ ") + "\(emoji) " + cop.title + dim(cop.subtitle.map { " · \($0)" } ?? ""))
-                }
-            }
-        }
-        line()
-    }
-
-    // MARK: Bluetooth
-
-    func bluetooth(_ snap: BluetoothSnapshot) {
-        let total = snap.totalDeviceCount
-        let sub = snap.controller == nil ? "no controller" : pluralize(total, "device")
-        section("📶 Bluetooth", sub)
-        if let c = snap.controller {
-            let state = c.isOn ? green("On") : dim("Off")
-            line("   \(bold(c.displayChipset)) · \(state) · \(c.transport ?? "—") · \(c.address ?? "—")")
-            if let fw = c.firmwareVersion {
-                line("   " + dim("Firmware: \(fw)"))
-            }
-        }
-        if !snap.connected.isEmpty {
-            line("   " + dim("Connected:"))
-            for d in snap.connected {
-                line("      " + green("◉ ") + d.name + dim(deviceSubtitle(d)))
-            }
-        }
-        if !snap.paired.isEmpty {
-            line("   " + dim("Paired:"))
-            for d in snap.paired {
-                line("      " + dim("○ ") + d.name + dim(deviceSubtitle(d)))
-            }
-        }
-        line()
-    }
-
-    private func deviceSubtitle(_ d: BluetoothDevice) -> String {
-        var parts: [String] = []
-        if let m = d.minorType, !m.isEmpty { parts.append(m) }
-        if let addr = d.address { parts.append(addr) }
-        if let rssi = d.rssi { parts.append("\(rssi) dBm") }
-        return parts.isEmpty ? "" : " · \(parts.joined(separator: " · "))"
-    }
-
     // MARK: Displays
 
     func displays(_ snap: DisplaySnapshot) {
@@ -1047,38 +882,6 @@ private final class PrettyPrinter {
         for (i, c) in n.children.enumerated() {
             renderPCI(c, prefix: nextPrefix, isLast: i == n.children.count - 1)
         }
-    }
-
-    private func renderBattery(_ node: TBNode) {
-        let pct = node.properties["CurrentCapacity"]?.asUInt ?? 0
-        let charging = node.properties["IsCharging"]?.asBool ?? false
-        let external = node.properties["ExternalConnected"]?.asBool ?? false
-        let state = charging ? "Charging" : (external ? "On AC" : "On battery")
-        let icon = charging ? "🔌🔋" : "🔋"
-        line("   \(icon) \(bold("Battery"))  \(dim("\(pct)% · \(state)"))")
-    }
-
-    private func coprocessorEmoji(for node: TBNode) -> String {
-        let name = node.properties["name"].flatMap { v -> String? in
-            if case let .string(s) = v { return s }
-            if case let .data(d) = v {
-                return String(data: d, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters)
-            }
-            return nil
-        } ?? ""
-        if name.hasPrefix("sep") { return "🛡 " }
-        if name.hasPrefix("aop") { return "☁️ " }
-        if name.hasPrefix("ane") { return "🧠" }
-        if name.hasPrefix("isp") { return "📷" }
-        if name.hasPrefix("dcp") || name.hasPrefix("disp") { return "🖥 " }
-        if name.hasPrefix("ans") { return "💾" }
-        if name.hasPrefix("smc") { return "🌡 " }
-        if name.hasPrefix("pmp") || name.hasPrefix("pmgr") { return "⚡️" }
-        if name.hasPrefix("wlan") { return "📡" }
-        if name.hasPrefix("bluetooth") { return "📶" }
-        if name.hasPrefix("avd") || name.hasPrefix("ave") { return "🎞 " }
-        if name.hasPrefix("jpeg") { return "🖼 " }
-        return "◈ "
     }
 
     // MARK: Generic node rendering

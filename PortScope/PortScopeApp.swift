@@ -26,19 +26,9 @@ enum PortScopeMain {
 
     private static func runCLI(request: CLIRequest) {
         let snapshot: SystemSnapshot = {
-            // TB / USB / accessories always scan — they're what `--simple`
-            // and the bare default emit, and they're fast (no `Process`
-            // spawns). The other scanners are gated on the flags that
-            // would surface their data in the dump:
-            //   * `bluetooth` spawns `system_profiler SPBluetoothDataType`
-            //     and routinely takes 10+ seconds. Only meaningful when
-            //     `--all` is set (output gates the `bluetooth` key the
-            //     same way).
-            //   * `displays` is moderate but only emitted under `--all`.
-            //   * `pcie` is cheap but only emitted under `--buses`.
-            //   * `InternalHardwareScanner` always runs (used by the
-            //     Physical Device summary), but its heavy `SystemInfo`
-            //     half is gated by `includeHeavyHostInfo: request.showAll`.
+            // TB / USB / accessories / displays always scan — none of them
+            // spawn a `Process`, so the dump stays fast. `pcie` is cheap
+            // but only emitted under `--buses`.
             let tb = ThunderboltScanner.scan()
             let usb = USBScanner.scan()
             let accessories = AccessoryScanner.scan()
@@ -46,22 +36,16 @@ enum PortScopeMain {
                 + PowerInputScanner.scan()
                 + EthernetScanner.scan()
             let internalHardware = InternalHardwareScanner.scan(
-                accessories: accessories,
-                includeHeavyHostInfo: request.showAll
+                accessories: accessories
             )
-            let bluetooth = request.showAll
-                ? BluetoothScanner.scan()
-                : BluetoothSnapshot.empty
-            let displays = request.showAll
-                ? DisplayScanner.scan()
-                : DisplaySnapshot.empty
+            let displays = DisplayScanner.scan()
             let pcie = request.showBuses
                 ? PCIScanner.scan()
                 : PCISnapshot.empty
             return SystemSnapshot(
                 tb: tb, usb: usb, accessories: accessories,
                 internalHardware: internalHardware,
-                bluetooth: bluetooth, displays: displays, pcie: pcie,
+                displays: displays, pcie: pcie,
                 capturedAt: Date()
             )
         }()
@@ -70,14 +54,12 @@ enum PortScopeMain {
         case .json:
             output = SnapshotDumper.json(snapshot,
                                          showBuses: request.showBuses,
-                                         showAll: request.showAll,
                                          showHubs: request.showHubs)
         case .pretty(let forceColor):
             let isTTY = isatty(fileno(stdout)) != 0
             output = SnapshotDumper.pretty(snapshot,
                                            useColor: forceColor ?? isTTY,
                                            showBuses: request.showBuses,
-                                           showAll: request.showAll,
                                            showHubs: request.showHubs)
         case .simple:
             output = SnapshotDumper.simple(snapshot)
@@ -89,10 +71,9 @@ enum PortScopeMain {
 }
 
 /// One invocation's worth of CLI options. The format selects the output
-/// renderer; `showBuses` adds the raw Thunderbolt / USB / PCIe trees,
-/// `showAll` adds Bluetooth / Displays / Internal Hardware, and
+/// renderer; `showBuses` adds the raw Thunderbolt / USB / PCIe trees, and
 /// `showHubs` un-flattens the chains of intermediate USB hubs that the
-/// default view hides. All three default off, matching the GUI sidebar.
+/// default view hides. Both default off, matching the GUI sidebar.
 private struct CLIRequest {
     enum Format {
         case pretty(forceColor: Bool?)
@@ -101,7 +82,6 @@ private struct CLIRequest {
     }
     let format: Format
     let showBuses: Bool
-    let showAll: Bool
     let showHubs: Bool
 
     static func from(_ argv: [String]) -> CLIRequest? {
@@ -109,7 +89,6 @@ private struct CLIRequest {
         var json = false
         var simple = false
         var showBuses = false
-        var showAll = false
         var showHubs = false
         var forceColor: Bool? = nil
         for arg in argv.dropFirst() {
@@ -118,7 +97,6 @@ private struct CLIRequest {
             case "--json", "-j": json = true
             case "--simple", "-s": simple = true
             case "--buses", "-b": showBuses = true
-            case "--all", "-a": showAll = true
             case "--hubs", "--show-hubs": showHubs = true
             case "--color", "--colour": forceColor = true
             case "--no-color", "--no-colour": forceColor = false
@@ -136,10 +114,8 @@ private struct CLIRequest {
 
                 Modifiers (all default off — match the GUI sidebar):
                   --buses  | -b     Include raw Thunderbolt, USB, and PCIe
-                                    bus trees. Default: Physical Ports only.
-                                    Ignored by --simple.
-                  --all    | -a     Include Bluetooth, Displays, and Internal
-                                    Hardware sections. Ignored by --simple.
+                                    bus trees. Default: Physical Ports +
+                                    Displays only. Ignored by --simple.
                   --hubs            Show intermediate USB hubs. By default the
                                     sidebar/tree hides cascaded hub chains and
                                     promotes their leaf devices up so dock
@@ -157,9 +133,9 @@ private struct CLIRequest {
                 continue
             }
         }
-        if simple { return CLIRequest(format: .simple, showBuses: showBuses, showAll: showAll, showHubs: showHubs) }
-        if json { return CLIRequest(format: .json, showBuses: showBuses, showAll: showAll, showHubs: showHubs) }
-        if pretty { return CLIRequest(format: .pretty(forceColor: forceColor), showBuses: showBuses, showAll: showAll, showHubs: showHubs) }
+        if simple { return CLIRequest(format: .simple, showBuses: showBuses, showHubs: showHubs) }
+        if json { return CLIRequest(format: .json, showBuses: showBuses, showHubs: showHubs) }
+        if pretty { return CLIRequest(format: .pretty(forceColor: forceColor), showBuses: showBuses, showHubs: showHubs) }
         return nil
     }
 }
@@ -331,7 +307,6 @@ private struct DetailedTopologyWindowHost: View {
 /// sidebar sections are visible.
 private struct SettingsView: View {
     @AppStorage(SidebarVisibility.showBusesKey) private var showBuses: Bool = true
-    @AppStorage(SidebarVisibility.showAllDevicesKey) private var showAllDevices: Bool = false
     @AppStorage(SidebarVisibility.showIntermediateHubsKey) private var showIntermediateHubs: Bool = false
     @AppStorage(SidebarVisibility.showBuiltinDevicesKey) private var showBuiltinDevices: Bool = true
 
@@ -339,13 +314,6 @@ private struct SettingsView: View {
         Form {
             Toggle("Show Hardware Buses", isOn: $showBuses)
             Text("Show the raw Thunderbolt, USB, and PCIe bus trees in the sidebar. On by default. The Physical Ports section is always visible.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Toggle("Show All Devices", isOn: $showAllDevices)
-                .padding(.top, 8)
-            Text("Also show Bluetooth, Displays, and Internal Hardware in the sidebar.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -378,8 +346,6 @@ enum SidebarVisibility {
     /// actually want when they launch a hardware-inspector. Toggle off
     /// to focus on the high-level Physical Ports view.
     static let showBusesKey = "showBuses"
-    /// Gates Displays / Bluetooth / Internal Hardware. Default off.
-    static let showAllDevicesKey = "showAllDevices"
     /// When off (the default), USB hubs in the sidebar are treated as
     /// pass-through wrappers (like `.other` IOService kexts): their non-hub
     /// descendants are promoted up so cascaded dock internals don't bury the

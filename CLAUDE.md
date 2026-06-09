@@ -6,7 +6,9 @@ Guidance for Claude Code working in this repo.
 
 PortScope is a macOS-only SwiftUI app (target `macOS 26.5`, Swift 5, default actor isolation `MainActor`) that introspects host hardware buses via IOKit. It surfaces Thunderbolt (controllers / routers / ports / adapters / hop tables / tunnels / bandwidth), USB (controllers / hubs / devices / interfaces), and a unified **Physical Device** sidebar section organised into subgroups (Power, USB-C, USB-A, HDMI, SD Card, Ethernet). Per-receptacle data comes from `IOAccessoryManager` (transports, USB-PD voltage/current, plug orientation, DP HPD, cable e-marker) plus dedicated scanners for the non-USB-C receptacles. **Power Input** = power entering the Mac (USB-PD sink on laptops via `IOPortFeaturePowerIn`, or `AppleSmartBattery.PowerTelemetryData` on desktops); **Power Output** = power the Mac is sourcing (per-device sink allocations + xHCI port wrappers). Use those terms consistently. Per-receptacle chassis labels come from a static catalogue keyed by `hw.model` (see "Adding a new Mac model" below).
 
-External displays / USB-Ethernet adapters / TB-attached devices nest under the receptacle they're plugged into, not under the top-level Displays/Bluetooth/PCIe/Internal Hardware sections. Display↔port attribution is a heuristic (see `displaysAttributed(to:allPorts:allDisplays:)`) — strict topology isn't possible on Apple Silicon; surfacing what's there is.
+External displays / USB-Ethernet adapters / TB-attached devices nest under the receptacle they're plugged into, not under the top-level Displays/PCIe sections. Display↔port attribution is a heuristic (see `displaysAttributed(to:allPorts:allDisplays:)`) — strict topology isn't possible on Apple Silicon; surfacing what's there is.
+
+The app is deliberately scoped to **port/bus introspection**: Physical Ports, Thunderbolt, USB, PCIe, Displays, Ethernet, and chassis power (battery + MagSafe in the Power subgroup). The old "Show All Devices" mode (Bluetooth, System Overview, GPU/Storage/Memory/Wi-Fi/Cameras/Audio/Touch ID/Input/HID/NVRAM sections, SoC coprocessors, I²C/SPI buses, `system_profiler` spawns) was removed — don't reintroduce host-inventory features here.
 
 ## Build / run
 
@@ -27,18 +29,18 @@ The app binary is **dual-mode**. No args → GUI; `--pretty` / `--json` → runs
 APP=$(ls -td ~/Library/Developer/Xcode/DerivedData/PortScope-*/Build/Products/Debug/PortScope.app | head -1)
 BIN="$APP/Contents/MacOS/PortScope"
 
-"$BIN" --pretty                  # physical ports only (auto TTY)
+"$BIN" --pretty                  # physical ports + displays (auto TTY)
 "$BIN" --pretty --buses          # + raw TB / USB / PCIe trees
-"$BIN" --pretty --all --buses    # everything: + bluetooth, displays, internal_hardware
-"$BIN" --json --all --buses | jq .
+"$BIN" --json --buses | jq .
 "$BIN" --simple                  # tab-separated port summary
 ```
 
 CLI flags mirror the Settings toggles, all default off:
 
 - `--buses` / `-b` → Show Hardware Buses (reveals `thunderbolt` / `usb` / `pcie` keys).
-- `--all` / `-a` → Show All Devices (reveals `bluetooth` / `displays` / `internal_hardware`). When inspecting internals (Wi-Fi, battery, SoC coprocessors) **don't forget `--all`**.
 - `--hubs` → Show Intermediate USB Hubs (un-flattens cascaded hub chains). Display-only — affects sidebar/CLI rendering, not data.
+
+`physical_ports`, `accessories`, and `displays` are always emitted.
 
 Omitted keys are *absent*, not null. When `ioreg` and the CLI dump disagree, **trust the CLI dump** — the difference is usually the bug.
 
@@ -46,23 +48,23 @@ Source: `Services/SnapshotDumper.swift` + `PortScopeApp.swift` (`PortScopeMain` 
 
 ## Entitlements
 
-`PortScope/PortScope.entitlements` sets `com.apple.security.app-sandbox = false`. Sandbox is intentionally **off** so `IOServiceAddMatchingNotification`, full registry reads, and `Process` spawns (for `system_profiler`) work. Don't re-enable `ENABLE_APP_SANDBOX` without moving everything IOKit-touching into a helper — TB hot-plug notifications and Bluetooth data break under the sandbox.
+`PortScope/PortScope.entitlements` sets `com.apple.security.app-sandbox = false`. Sandbox is intentionally **off** so `IOServiceAddMatchingNotification` and full registry reads work. Don't re-enable `ENABLE_APP_SANDBOX` without moving everything IOKit-touching into a helper — TB hot-plug notifications break under the sandbox.
 
 ## Architecture
 
 Data flow: **IOKit → Scanners → SystemSnapshot → ViewModel → SwiftUI views**.
 
-Scanners in `Services/` (full list: `ThunderboltScanner`, `USBScanner`, `AccessoryScanner`, `SDCardScanner`, `PowerInputScanner`, `EthernetScanner`, `InternalHardwareScanner`, `BluetoothScanner`, `DisplayScanner`, `PCIScanner`, `SoCCatalog`, `CryptexScanner`, plus sensors). TB and USB share `NodeBuilder` (recursive `IORegistry → TBNode`) and `NodeFormatter` (classify / label / preferred-key-order — **add classify/label logic here, not in scanners**). `IORegBridge` is the generic CF-to-Swift IOKit shim. `IORegMonitor` posts debounced rescan notifications on hot-plug. `TopologyMapper` derives the user-facing `PhysicalPort` topology. `MacPortCatalog` loads `Resources/MacPortLocations.json` for chassis-relative receptacle labels.
+Scanners in `Services/` (full list: `ThunderboltScanner`, `USBScanner`, `AccessoryScanner`, `SDCardScanner`, `PowerInputScanner`, `EthernetScanner`, `InternalHardwareScanner` (battery + MagSafe only), `DisplayScanner`, `PCIScanner`, plus sensors). TB and USB share `NodeBuilder` (recursive `IORegistry → TBNode`) and `NodeFormatter` (classify / label / preferred-key-order — **add classify/label logic here, not in scanners**). `IORegBridge` is the generic CF-to-Swift IOKit shim. `IORegMonitor` posts debounced rescan notifications on hot-plug. `TopologyMapper` derives the user-facing `PhysicalPort` topology. `MacPortCatalog` loads `Resources/MacPortLocations.json` for chassis-relative receptacle labels.
 
-In addition to the on-demand full rescan, the ViewModel runs a **2-second `refreshPower()` poll** that re-scans only the per-port accessory state plus the battery subtree, carrying over `tb` / `usb` / `bluetooth` / `displays` / `pcie` / the static parts of `internalHardware` from the previous snapshot. Don't slip a heavy scanner into the refresh path.
+In addition to the on-demand full rescan, the ViewModel runs a **2-second `refreshPower()` poll** that re-scans only the per-port accessory state plus the battery subtree, carrying over `tb` / `usb` / `displays` / `pcie` from the previous snapshot. Don't slip a heavy scanner into the refresh path.
 
-Models in `Models/`: `TBNode` / `TBNodeKind` is used for **any** IOKit-derived entity (name predates USB expansion). `SystemSnapshot { tb, usb, accessories, internalHardware, bluetooth, displays, pcie, capturedAt }` is the top-level type the ViewModel owns. Per-subsystem snapshots and per-port types live in their respective `*Models.swift` files.
+Models in `Models/`: `TBNode` / `TBNodeKind` is used for **any** IOKit-derived entity (name predates USB expansion). `SystemSnapshot { tb, usb, accessories, internalHardware, displays, pcie, capturedAt }` is the top-level type the ViewModel owns (`internalHardware` is just `{ batteryManager, magsafe }`). Per-subsystem snapshots and per-port types live in their respective `*Models.swift` files.
 
-ViewModel: `PortScopeViewModel` is `@MainActor ObservableObject`, scans off-main via `Task.detached`. **Owned by `PortScopeApp` as `@StateObject`** and injected via `.environmentObject(...)` so the main window and the secondary topology / sensors windows share one snapshot + selection. Synthetic selectors (`PhysicalPortSelector` / `BluetoothSelector` / `CameraSelector` / etc) mint synthetic `TBNodeID`s (high bits like `0xC0DE_…`, `0xB7E0_…`) so sidebar rows that don't map to a registry entry don't collide with real entry IDs. `ContentView.detail` checks synthetic-ID predicates first; `port.connector ∈ {.acPower, .ethernet, .hdmi, .sdCard}` route to curated views in `BuiltInPortViews.swift`, while `.usbC / .usbA / .magsafe / .other` flow through the unified `PhysicalPortDetailView`.
+ViewModel: `PortScopeViewModel` is `@MainActor ObservableObject`, scans off-main via `Task.detached`. **Owned by `PortScopeApp` as `@StateObject`** and injected via `.environmentObject(...)` so the main window and the secondary topology / sensors windows share one snapshot + selection. Synthetic selectors (`PhysicalPortSelector` / `MagSafeSelector`) mint synthetic `TBNodeID`s (high bits like `0xC0DE_…`) so sidebar rows that don't map to a registry entry don't collide with real entry IDs. `ContentView.detail` checks synthetic-ID predicates first; `port.connector ∈ {.acPower, .ethernet, .hdmi, .sdCard}` route to curated views in `BuiltInPortViews.swift`, while `.usbC / .usbA / .magsafe / .other` flow through the unified `PhysicalPortDetailView`.
 
-Views in `Views/`: `SidebarView` is the main window. Three independent `@AppStorage` toggles: `showBuses` (default ON), `showAllDevices` (default off), `showIntermediateHubs` (default off — *display-only* — controls hub flattening in sidebar/CLI). The sidebar threads a `flattenHubs = !showIntermediateHubs` boolean through the recursion.
+Views in `Views/`: `SidebarView` is the main window. Three independent `@AppStorage` toggles: `showBuses` (default ON), `showBuiltinDevices` (default ON — battery / built-in display rows in Physical Device), `showIntermediateHubs` (default off — *display-only* — controls hub flattening in sidebar/CLI). The sidebar threads a `flattenHubs = !showIntermediateHubs` boolean through the recursion. The Displays section is always visible.
 
-**Subgroups** (Power / USB-C / USB-A / HDMI / SD Card / Ethernet inside Physical Device; Buses + each SoC coprocessor category inside Internal Hardware; Connected + Paired inside Bluetooth) are real `Section`s with a chevron Button as the header, namespaced collapse state. **Never `withAnimation` on toggle** — animating row inserts inside a sidebar `List` causes text bleed-through between cells.
+**Subgroups** (Power / USB-C / USB-A / HDMI / SD Card / Ethernet inside Physical Device) are real `Section`s with a chevron Button as the header, namespaced collapse state. **Never `withAnimation` on toggle** — animating row inserts inside a sidebar `List` causes text bleed-through between cells.
 
 **Secondary windows** (Simplified Thunderbolt Topology = `DiagramView`; Detailed Thunderbolt Topology = `DetailedThunderboltTopologyView`; Hardware Sensors = `HardwareSensorsView`) are real macOS `Window` scenes in `PortScopeApp`, opened via `@Environment(\.openWindow)` from the More menu. Each is a single Window (re-opening focuses the existing one), shares the VM via environment, and the user can move / resize / minimize them independently of the main window.
 
@@ -164,7 +166,6 @@ Duplicate the entry for both `hw.model` keys when one chassis maps to two identi
 
 - **Don't label every `IOEthernetInterface` lacking `IOMediaIcon` as "Thunderbolt Networking".** USB-Ethernet drivers also don't set `IOMediaIcon`. `NodeFormatter` uses `IOBuiltin` ("Built-in Network Interface" vs "Network Interface") and carrier-specific labelling lives in the per-port detail view.
 
-- **Bluetooth data must come from `system_profiler SPBluetoothDataType -xml`**, not IOKit. `IOBluetoothHCIController` has almost nothing useful. Requires sandbox off (`Process` spawn).
 
 ### IOKit shape gotchas
 
@@ -188,7 +189,7 @@ Duplicate the entry for both `hw.model` keys when one chassis maps to two identi
 
 - **Physical Port sidebar rows use synthetic IDs.** `PhysicalPortSelector` packs port number into the high bits of a `TBNodeID`. `ContentView.detail` checks `PhysicalPortSelector.portNumber(sel)` *first* before falling through to `vm.node(for: sel)`.
 
-- **Add new IOKit-classifiable kinds in `NodeFormatter.classify`**, not the scanners. Same for `makeLabels` and `preferredOrder`. `SoCCoprocessorGroup` categories key off device-tree name prefix; `matches(name:prefix:)` accepts exact match or prefix-followed-by-digits — `disp0` matches `disp` but `disp` doesn't grab `dispext0`.
+- **Add new IOKit-classifiable kinds in `NodeFormatter.classify`**, not the scanners. Same for `makeLabels` and `preferredOrder`.
 
 ### SwiftUI layout perf
 
