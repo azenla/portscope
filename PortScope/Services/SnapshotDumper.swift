@@ -893,9 +893,14 @@ private final class PrettyPrinter {
         section("🧠 Internal Hardware", any ? nil : "none")
         if !any { line(); return }
 
-        if let bm = hw.batteryManager,
-           let battery = bm.children.first(where: { $0.kind == .battery }) ?? Optional(bm) {
-            renderBattery(battery)
+        // Desktops publish AppleSmartBattery as a telemetry-only endpoint
+        // with BatteryInstalled = false — don't print a bogus "0% · On AC"
+        // battery row for those.
+        if let bm = hw.batteryManager {
+            let battery = bm.children.first(where: { $0.kind == .battery }) ?? bm
+            if battery.properties["BatteryInstalled"]?.asBool == true {
+                renderBattery(battery)
+            }
         }
         if let mag = hw.magsafe {
             let label = mag.connectionActive

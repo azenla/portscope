@@ -160,7 +160,7 @@ struct PhysicalPortDetailView: View {
                      value: speed > 0 ? tbLinkSpeedLabel(speed) : "Inactive",
                      symbol: "antenna.radiowaves.left.and.right"),
                 Stat(label: "Lane Width",
-                     value: width > 0 ? "\(width) lanes" : "—",
+                     value: width > 0 ? tbCurrentLinkWidthLabel(width) : "—",
                      symbol: "arrow.left.and.right"),
                 Stat(label: "Link Capacity",
                      value: bw > 0 ? tbBandwidthLabel(bw) : "—",
@@ -1022,18 +1022,20 @@ private struct TransportChipsRow: View {
                               state: state(for: t))
             }
             // Render any vendor / unknown transports the kernel published.
-            ForEach(Array(otherTransports), id: \.self) { t in
+            ForEach(otherTransports, id: \.self) { t in
                 TransportChip(transport: t, state: state(for: t))
             }
         }
     }
 
-    private var otherTransports: Set<USBCTransport> {
+    /// Sorted by label so the chips don't shuffle on every 2-second
+    /// power-poll refresh (Set iteration order isn't stable).
+    private var otherTransports: [USBCTransport] {
         let known = Set(USBCTransport.allCases)
         let all = accessory.supportedTransports
             .union(accessory.provisionedTransports)
             .union(accessory.activeTransports)
-        return all.subtracting(known)
+        return all.subtracting(known).sorted { $0.label < $1.label }
     }
 
     private func state(for t: USBCTransport) -> TransportChip.State {

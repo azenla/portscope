@@ -275,12 +275,15 @@ private struct WindowAccessor: NSViewRepresentable {
 /// after the window is born.
 @MainActor
 private enum MaximizeTracker {
-    private static var seen: Set<ObjectIdentifier> = []
+    /// Weak-keyed so entries vanish with their window. A plain
+    /// `Set<ObjectIdentifier>` would both leak and — since the identifier
+    /// is the object's address — mistake a new window allocated at a
+    /// recycled address for one we've already maximized.
+    private static let seen = NSMapTable<NSWindow, NSNumber>.weakToStrongObjects()
 
     static func zoomOnce(_ window: NSWindow) {
-        let key = ObjectIdentifier(window)
-        guard !seen.contains(key) else { return }
-        seen.insert(key)
+        guard seen.object(forKey: window) == nil else { return }
+        seen.setObject(true, forKey: window)
         // Direct `setFrame` to the screen's visible frame instead of
         // `zoom(_:)` — zoom toggles based on `isZoomed`, which means
         // a no-op if SwiftUI happened to size the window close to the

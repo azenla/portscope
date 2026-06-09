@@ -188,15 +188,17 @@ struct HexDumpView: View {
         }
         .frame(maxHeight: 240)
         .padding(8)
-        .background(.black.opacity(0.05))
+        .background(Color.secondary.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
     private var rowCount: Int { (data.count + bytesPerRow - 1) / bytesPerRow }
 
     private func hexBytes(forRow row: Int) -> String {
-        let start = row * bytesPerRow
-        let end = min(start + bytesPerRow, data.count)
+        // Offset from startIndex: Data slices preserve the parent's indices,
+        // so `data[0...]` is not safe in general.
+        let start = data.index(data.startIndex, offsetBy: row * bytesPerRow)
+        let end = data.index(start, offsetBy: bytesPerRow, limitedBy: data.endIndex) ?? data.endIndex
         let slice = data[start..<end]
         var parts: [String] = []
         parts.reserveCapacity(bytesPerRow)
@@ -206,8 +208,8 @@ struct HexDumpView: View {
     }
 
     private func asciiBytes(forRow row: Int) -> String {
-        let start = row * bytesPerRow
-        let end = min(start + bytesPerRow, data.count)
+        let start = data.index(data.startIndex, offsetBy: row * bytesPerRow)
+        let end = data.index(start, offsetBy: bytesPerRow, limitedBy: data.endIndex) ?? data.endIndex
         let slice = data[start..<end]
         var s = ""
         for b in slice {

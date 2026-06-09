@@ -223,62 +223,81 @@ nonisolated enum SystemInfoScanner {
     /// concurrent `DispatchQueue` + `DispatchGroup`. SP itself is a
     /// process-per-invocation tool with negligible internal locking, so
     /// firing six processes in parallel lets the OS overlap their I/O.
-    /// Each closure writes to its own `nonisolated(unsafe)` slot — there's
-    /// no shared state to coordinate, and the `group.wait()` provides the
-    /// happens-before that lets us read the results back safely on the
-    /// caller.
+    /// Each closure does its (slow) work first, then takes `lock` for the
+    /// (fast) write into the shared struct — the fields are disjoint, but
+    /// concurrent mutations of one captured `var` violate Swift's
+    /// exclusivity rules without the lock. `group.wait()` provides the
+    /// happens-before for the final read.
     private static func parseHeavySources() -> HeavySources {
         nonisolated(unsafe) var out = HeavySources()
+        let lock = NSLock()
         let queue = DispatchQueue.global(qos: .userInitiated)
         let group = DispatchGroup()
 
         queue.async(group: group) {
             let g = parseGPUInfo()
-            out.gpuCores = g.cores
-            out.metal = g.metal
+            lock.withLock {
+                out.gpuCores = g.cores
+                out.metal = g.metal
+            }
         }
         queue.async(group: group) {
             let m = parseMemoryInfo()
-            out.memoryType = m.type
-            out.memoryManufacturer = m.manufacturer
-            out.memoryDIMMs = parseMemoryDIMMs(rolledUpType: m.type,
-                                               rolledUpManufacturer: m.manufacturer)
+            let dimms = parseMemoryDIMMs(rolledUpType: m.type,
+                                         rolledUpManufacturer: m.manufacturer)
+            lock.withLock {
+                out.memoryType = m.type
+                out.memoryManufacturer = m.manufacturer
+                out.memoryDIMMs = dimms
+            }
         }
         queue.async(group: group) {
-            out.storage = parseStorageInfo()
+            let v = parseStorageInfo()
+            lock.withLock { out.storage = v }
         }
         queue.async(group: group) {
-            out.firmware = parseHardwareInfo()
+            let v = parseHardwareInfo()
+            lock.withLock { out.firmware = v }
         }
         queue.async(group: group) {
-            out.wifi = parseWiFiInfo()
+            let v = parseWiFiInfo()
+            lock.withLock { out.wifi = v }
         }
         queue.async(group: group) {
-            out.cameras = parseCameras()
+            let v = parseCameras()
+            lock.withLock { out.cameras = v }
         }
         queue.async(group: group) {
-            out.cameraISP = scanCameraISP()
+            let v = scanCameraISP()
+            lock.withLock { out.cameraISP = v }
         }
         queue.async(group: group) {
-            out.audio = parseAudio()
+            let v = parseAudio()
+            lock.withLock { out.audio = v }
         }
         queue.async(group: group) {
-            out.nvram = NVRAMScanner.scan()
+            let v = NVRAMScanner.scan()
+            lock.withLock { out.nvram = v }
         }
         queue.async(group: group) {
-            out.hidDevices = HIDDeviceScanner.scan()
+            let v = HIDDeviceScanner.scan()
+            lock.withLock { out.hidDevices = v }
         }
         queue.async(group: group) {
-            out.touchID = TouchIDInfo.read()
+            let v = TouchIDInfo.read()
+            lock.withLock { out.touchID = v }
         }
         queue.async(group: group) {
-            out.trustedAccessories = TrustedAccessoryScanner.scan()
+            let v = TrustedAccessoryScanner.scan()
+            lock.withLock { out.trustedAccessories = v }
         }
         queue.async(group: group) {
-            out.cryptexes = CryptexScanner.scan()
+            let v = CryptexScanner.scan()
+            lock.withLock { out.cryptexes = v }
         }
         queue.async(group: group) {
-            out.inputDevices = InputDevicesInfo.read()
+            let v = InputDevicesInfo.read()
+            lock.withLock { out.inputDevices = v }
         }
         group.wait()
         return out
@@ -907,10 +926,12 @@ nonisolated enum SystemInfoScanner {
         proc.standardOutput = pipe
         proc.standardError = Pipe()
         do { try proc.run() } catch { return nil }
+        // Drain stdout *before* waiting: if the child fills the 64 KB pipe
+        // buffer it blocks writing while we'd block in waitUntilExit().
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
         guard proc.terminationStatus == 0 else { return nil }
-        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                      encoding: .utf8)
+        return String(data: data, encoding: .utf8)
     }
 
     // MARK: - Camera ISP

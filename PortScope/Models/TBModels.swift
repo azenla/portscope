@@ -228,7 +228,8 @@ nonisolated extension TBNode {
             }
         case "Link Bandwidth", "Maximum Bandwidth Allocated", "Required Bandwidth Allocated":
             if let v = value.asUInt {
-                let gbps = Double(v) / 100.0
+                // 100 Mb/s units: 800 → 80 Gb/s.
+                let gbps = Double(v) / 10.0
                 return "\(v) (\(String(format: "%.1f", gbps)) Gb/s)"
             }
         case "Current Link Speed":

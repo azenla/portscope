@@ -168,9 +168,11 @@ nonisolated enum NVRAMScanner {
         proc.standardOutput = pipe
         proc.standardError = Pipe()
         do { try proc.run() } catch { return nil }
+        // Drain stdout *before* waiting: a large `nvram -p` dump can fill
+        // the 64 KB pipe buffer and deadlock against waitUntilExit().
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
         guard proc.terminationStatus == 0 else { return nil }
-        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                      encoding: .utf8)
+        return String(data: data, encoding: .utf8)
     }
 }

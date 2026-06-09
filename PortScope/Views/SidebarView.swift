@@ -314,7 +314,7 @@ struct SidebarView: View {
                                        flattenHubs: Bool,
                                        pcieByPortID: [TBNodeID: [PCINode]]) -> some View {
         if ports.isEmpty && hw.magsafe == nil && batteryNode == nil && builtInDisplay == nil {
-            Text(vm.isScanning ? "Scanning…" : "No Thunderbolt controllers")
+            Text(vm.isScanning ? "Scanning…" : "No physical ports detected")
                 .foregroundStyle(.secondary)
                 .font(.callout)
         } else {

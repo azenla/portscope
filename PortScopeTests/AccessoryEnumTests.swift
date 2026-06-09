@@ -136,19 +136,24 @@ struct AccessoryEnumTests {
         #expect(none.cableLabel == nil)
     }
 
-    @Test("carriesDisplay requires the connection to actually be live")
+    @Test("carriesDisplay keys off live DP alt-mode, never HPD")
     func carriesDisplay() {
-        // CLAUDE.md: HPDAsserted can linger after a display is unplugged, so
-        // we must gate it on connectionActive — otherwise an empty port
-        // reads as "carrying a display".
+        // HPDAsserted lingers after a display is unplugged and fires for
+        // panels routed through the controller, so `carriesDisplay`
+        // ignores it entirely — only a live connection with the
+        // DisplayPort transport active (or a non-zero pin assignment)
+        // counts. See the doc comment on `carriesDisplay`.
         let lingering = Fix.accessory(connectionActive: false, hpdAsserted: true)
         #expect(lingering.carriesDisplay == false)
 
-        let live = Fix.accessory(connectionActive: true, hpdAsserted: true)
-        #expect(live.carriesDisplay == true)
+        let hpdOnly = Fix.accessory(connectionActive: true, hpdAsserted: true)
+        #expect(hpdOnly.carriesDisplay == false)
 
         let altMode = Fix.accessory(connectionActive: true, active: [.displayPort])
         #expect(altMode.carriesDisplay == true)
+
+        let inactiveAltMode = Fix.accessory(connectionActive: false, active: [.displayPort])
+        #expect(inactiveAltMode.carriesDisplay == false)
     }
 
     @Test("carriesThunderbolt mirrors the CIO transport flag")

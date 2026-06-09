@@ -145,6 +145,7 @@ struct ContentView: View {
                     tbContextForUSB: { id in vm.usbSnapshot.tbContext[id] },
                     ancestors: vm.ancestors(of: sel)
                 )
+                .id(sel)
             } else {
                 emptyState
             }

@@ -96,9 +96,13 @@ struct PCIDeviceView: View {
         // otherwise have to compute by hand from the two link rows above.
         if let curS = node.linkSpeed, let curW = node.linkWidth,
            let maxS = node.maxLinkSpeed, let maxW = node.maxLinkWidth,
-           maxS > 0, maxW > 0 {
-            let curThroughput = Double(curS) * Double(curW)
-            let maxThroughput = Double(maxS) * Double(maxW)
+           let curRate = pciGenTransferRate(curS), let maxRate = pciGenTransferRate(maxS),
+           maxW > 0 {
+            // Generation codes aren't linear rates — Gen 1..6 transfer at
+            // 2.5 / 5 / 8 / 16 / 32 / 64 GT/s, so the ratio must use the
+            // real per-lane rate, not the code itself.
+            let curThroughput = curRate * Double(curW)
+            let maxThroughput = maxRate * Double(maxW)
             let pct = Int((curThroughput / maxThroughput * 100).rounded())
             stats.append(Stat(label: "Link Efficiency",
                               value: pct >= 100 ? "100% (at capability)" : "\(pct)% of capability",

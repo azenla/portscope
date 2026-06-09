@@ -95,7 +95,6 @@ private struct DeviceRouter: Identifiable {
     let routeString: UInt64?
     let uid: UInt64?
     let firmware: String?
-    let usb4SpecLabel: String?
     let adapters: [Adapter]
     let tunnels: [Tunnel]       // tunnels rooted on this router's function adapters
     let daisyChained: [DeviceRouter]
@@ -399,9 +398,6 @@ private enum DTTBuilder {
             routeString: switchNode.properties["Route String"]?.asUInt,
             uid: switchNode.properties["UID"]?.asUInt,
             firmware: switchNode.properties["Firmware Version"]?.asString,
-            usb4SpecLabel: usb4SpecLabel(
-                raw: switchNode.properties["Thunderbolt Version"]?.asUInt
-            ),
             adapters: adapters,
             tunnels: tunnels,
             daisyChained: daisy,
@@ -411,13 +407,10 @@ private enum DTTBuilder {
         )
     }
 
-    /// Translate the kernel's TB version BCD into a "Spec X.Y" string.
-    private static func usb4SpecLabel(raw: UInt64?) -> String? {
-        guard let v = raw else { return nil }
-        let major = (v >> 4) & 0xF
-        let minor = v & 0xF
-        return "USB4 Spec \(major).\(minor)"
-    }
+    // The kernel's `Thunderbolt Version` BCD is deliberately NOT decoded
+    // into a "USB4 Spec X.Y" label — Apple maps the high nibble loosely
+    // on TB5 hardware and the result is misleading (DiagramView dropped
+    // the same field for the same reason).
 
     /// Pull every `IOThunderboltPort` directly under a switch and turn
     /// it into a typed `Adapter`. Children of the switch that aren't
@@ -932,7 +925,23 @@ struct DetailedThunderboltTopologyView: View {
         // identity on `capturedAt` is cheap (a `Date`) and changes
         // exactly when the ViewModel publishes a fresh scan.
         .task(id: snapshot.capturedAt) {
-            cachedModel = DTTBuilder.build(from: snapshot)
+            let model = DTTBuilder.build(from: snapshot)
+            cachedModel = model
+            // Drop a selection that no longer resolves in the rebuilt model
+            // (e.g. the dock was unplugged) — otherwise the inspector stays
+            // open showing nothing but its Close button.
+            if let sel = selection, !resolves(sel, in: model) {
+                selection = nil
+            }
+        }
+    }
+
+    private func resolves(_ sel: DTTSelection, in model: DTTModel) -> Bool {
+        switch sel {
+        case .hostRouter(let id):   return findHost(id: id, in: model) != nil
+        case .deviceRouter(let id): return findDevice(id: id, in: model) != nil
+        case .adapter(let id):      return findAdapter(id: id, in: model) != nil
+        case .tunnel(let id):       return findTunnel(id: id, in: model) != nil
         }
     }
 
@@ -942,7 +951,7 @@ struct DetailedThunderboltTopologyView: View {
         HStack(spacing: 14) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.title2).foregroundStyle(.tint)
-            Text("Thunderbolt Topology").font(.title2.bold())
+            Text("Detailed Thunderbolt Topology").font(.title2.bold())
             Text("·").foregroundStyle(.tertiary)
             statChip(systemImage: "cpu",
                      count: model.routerCount,
@@ -1258,10 +1267,14 @@ struct DetailedThunderboltTopologyView: View {
                         // card can expand wider than the host column
                         // — it's centered under the host so the
                         // visual lineage is still obvious.
+                        // Prefer the device's upstream lane for the cable
+                        // bandwidth — the lowest-numbered lane adapter may
+                        // be an idle downstream port reporting 0.
                         CableConnector(
                             speed: host.adapters.first(where: \.isTunnelActive)?.currentLinkSpeed ?? 0,
                             width: host.adapters.first(where: \.isTunnelActive)?.currentLinkWidth ?? 0,
-                            linkBandwidth: device.adapters.first(where: { $0.kind == .lane })?.linkBandwidth ?? 0,
+                            linkBandwidth: (device.adapters.first(where: \.isUpstreamLane)
+                                ?? device.adapters.first(where: { $0.kind == .lane }))?.linkBandwidth ?? 0,
                             tunnels: device.tunnels
                         )
                         // The card itself is constrained to a fixed
@@ -1468,9 +1481,6 @@ struct DetailedThunderboltTopologyView: View {
                     SidebarRow(label: "Model", value: m)
                 }
                 SidebarRow(label: "Depth", value: "\(device.depth)")
-                if let spec = device.usb4SpecLabel {
-                    SidebarRow(label: "Spec", value: spec)
-                }
                 if let fw = device.firmware {
                     SidebarRow(label: "Firmware", value: fw)
                 }
@@ -1788,8 +1798,8 @@ private struct DeviceRouterCard: View {
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
-                        if let spec = router.usb4SpecLabel {
-                            Text(spec)
+                        if let fw = router.firmware {
+                            Text("Firmware \(fw)")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

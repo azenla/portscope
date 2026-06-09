@@ -223,17 +223,15 @@ nonisolated enum USBCTransport: Hashable, CaseIterable {
 /// One USB-PD Power Data Object (fixed voltage). Mapped from each
 /// `PowerSourceOptions` entry under the "USB-PD" feature.
 nonisolated struct USBPDOption: Hashable, Identifiable {
-    let id: UUID
     let voltageMV: UInt64
     let maxCurrentMA: UInt64
     let maxPowerMW: UInt64
 
-    init(voltageMV: UInt64, maxCurrentMA: UInt64, maxPowerMW: UInt64, id: UUID = UUID()) {
-        self.voltageMV = voltageMV
-        self.maxCurrentMA = maxCurrentMA
-        self.maxPowerMW = maxPowerMW
-        self.id = id
-    }
+    /// Identity derived from the PDO values, not a per-scan UUID — a fresh
+    /// UUID on every 2-second power poll made profiles never compare equal,
+    /// defeating SwiftUI diffing (and resetting ForEach row identity) even
+    /// when nothing changed.
+    var id: String { "\(voltageMV)-\(maxCurrentMA)-\(maxPowerMW)" }
 
     var voltageLabel: String { String(format: "%.0f V", Double(voltageMV) / 1000.0) }
     var currentLabel: String { String(format: "%.2g A", Double(maxCurrentMA) / 1000.0) }
@@ -276,7 +274,8 @@ nonisolated struct PortAccessoryInfo: Identifiable, Hashable {
     let activeTransports: Set<USBCTransport>
     /// DisplayPort hot-plug-detect line — true when a display is attached.
     let hpdAsserted: Bool
-    /// Pin assignment for DP alt-mode (0 = none; 1..6 = A..F).
+    /// Pin assignment for DP alt-mode. Apple's compact encoding, not the
+    /// USB-IF spec values: 0 = none, 1 = C, 2 = D, 3 = E, 4 = F.
     let displayPortPinAssignment: UInt64
     let activeCable: Bool
     let opticalCable: Bool

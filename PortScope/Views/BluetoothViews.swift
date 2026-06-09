@@ -307,7 +307,9 @@ private struct BluetoothDeviceHero: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(device.name).font(.title2).bold().textSelection(.enabled)
-                Text(subtitle).foregroundStyle(.secondary)
+                if !subtitle.isEmpty {
+                    Text(subtitle).foregroundStyle(.secondary)
+                }
                 if device.isConnected {
                     HStack(spacing: 6) {
                         Circle().fill(.green).frame(width: 8, height: 8)

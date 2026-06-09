@@ -18,6 +18,11 @@ import SwiftUI
 struct DiagramView: View {
     let snapshot: SystemSnapshot
 
+    /// `TopologyMapper.physicalPorts(from:)` walks every controller subtree;
+    /// `body` re-evaluates per frame inside the GeometryReader during window
+    /// resize, so the build is cached per snapshot instead.
+    @State private var cachedPorts: [PhysicalPort] = []
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -33,11 +38,16 @@ struct DiagramView: View {
                 // many ports wrap to multiple rows.
                 .frame(minHeight: topologyContentHeight())
             }
-            .background(Color.black.opacity(0.04))
+            .background(Color.secondary.opacity(0.05))
             Divider()
             footer
         }
         .frame(minWidth: 1100, minHeight: 720)
+        .task(id: snapshot.capturedAt) {
+            cachedPorts = TopologyMapper.physicalPorts(from: snapshot)
+                .filter { $0.connector == .usbC }
+                .sorted { $0.number < $1.number }
+        }
     }
 
     /// Rough estimate of how tall the topology drawing wants to be, given
@@ -46,8 +56,7 @@ struct DiagramView: View {
     /// zero height otherwise). Doesn't need to be pixel-perfect — the
     /// ScrollView clips and scrolls past any overshoot.
     private func topologyContentHeight() -> CGFloat {
-        let ports = TopologyMapper.physicalPorts(from: snapshot)
-            .filter { $0.connector == .usbC }
+        let ports = cachedPorts
         let macBlock: CGFloat = 70
         // Each port row is roughly: trunk (32) + port box (60) + link card
         // (110) + connected device card when present (~150).
@@ -64,7 +73,7 @@ struct DiagramView: View {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.title2)
                 .foregroundStyle(.tint)
-            Text("Thunderbolt Topology").font(.title2.bold())
+            Text("Simplified Thunderbolt Topology").font(.title2.bold())
             Spacer()
         }
         .padding()
@@ -88,9 +97,7 @@ struct DiagramView: View {
 
     @ViewBuilder
     private func topology(availableWidth: CGFloat) -> some View {
-        let ports = TopologyMapper.physicalPorts(from: snapshot)
-            .filter { $0.connector == .usbC }
-            .sorted { $0.number < $1.number }
+        let ports = cachedPorts
 
         // Wrap ports into rows of `columnsPerRow` so chassis with more
         // ports than the sheet can fit horizontally (Mac Studio / Mac Pro)
@@ -332,34 +339,21 @@ private struct LinkSegment: View {
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.tertiary)
                     }
-                    if s.planExceedsCapacity {
-                        HStack(spacing: 6) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.red)
-                            Text("Plan \(tbBandwidthLabel(s.max))")
-                                .font(.caption2.monospacedDigit().weight(.medium))
-                                .foregroundStyle(.red)
-                            Text("overbooks by \(tbBandwidthLabel(s.max - s.linkBandwidth))")
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.red.opacity(0.85))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.85)
-                            Spacer()
-                        }
-                        .help("TB tunnels are budgeted on peak, but the scheduler relies on them not peaking at once. This is informational, not an error.")
-                    } else {
-                        HStack(spacing: 6) {
-                            Circle().fill(Color.yellow.opacity(0.55)).frame(width: 6, height: 6)
-                            Text("Max planned")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text(tbBandwidthLabel(s.max))
-                                .font(.caption2.monospacedDigit().weight(.medium))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                        }
+                    // No "overbooks" alarm here: the kernel budgets tunnels
+                    // on peak, and the per-adapter max sum routinely exceeds
+                    // link capacity on a busy dock. The scheduler arbitrates;
+                    // it's normal, not an error.
+                    HStack(spacing: 6) {
+                        Circle().fill(Color.yellow.opacity(0.55)).frame(width: 6, height: 6)
+                        Text("Max planned")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(tbBandwidthLabel(s.max))
+                            .font(.caption2.monospacedDigit().weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Spacer()
                     }
+                    .help("TB tunnels are budgeted on peak; the scheduler relies on them not all peaking at once, so the planned total may exceed link capacity.")
                 }
             }
             .padding(10)
@@ -406,12 +400,6 @@ private struct MiniBandwidthBar: View {
                     .fill(Color.gray.opacity(0.20))
             }
             .clipShape(Capsule())
-            .overlay(
-                Capsule().strokeBorder(
-                    summary.planExceedsCapacity ? Color.red.opacity(0.45) : Color.clear,
-                    lineWidth: 1
-                )
-            )
         }
         .frame(height: 8)
     }
@@ -423,7 +411,7 @@ private struct MiniBandwidthBar: View {
 private func linkSpeedDescriptor(port: PhysicalPort) -> String {
     let width = port.laneAdapter.properties["Current Link Width"]?.asUInt ?? 0
     if width == 0 { return "" }
-    return "\(width) lanes"
+    return tbCurrentLinkWidthLabel(width)
 }
 
 // MARK: - Device card

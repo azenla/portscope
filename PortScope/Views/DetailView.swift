@@ -607,7 +607,7 @@ private struct UpstreamLinkCard: View {
                     HStack(spacing: 14) {
                         Label(tbLinkSpeedLabel(currentSpeed), systemImage: "antenna.radiowaves.left.and.right")
                         if width > 0 {
-                            Label("\(width) lanes", systemImage: "arrow.left.and.right")
+                            Label(tbCurrentLinkWidthLabel(width), systemImage: "arrow.left.and.right")
                         }
                     }
                     .font(.callout)
@@ -823,7 +823,8 @@ private func usbEndpointSubtitle(_ node: TBNode) -> String? {
     // to USB-2 doesn't read as "just a USB-2 device" — the user sees both
     // numbers and the ↓ marker telling them where to look.
     if let s = speed, s > 0 {
-        if let cap = usbCapabilityFromBCD(bcdUSB), cap.rateMbps > USBSpeed(rawValue: Int(s))?.rateMbps ?? .infinity {
+        if usbIsDowngraded(bcdUSB: bcdUSB, currentSpeed: speed),
+           let cap = usbCapabilityFromBCD(bcdUSB) {
             parts.append("\(usbSpeedShortLabel(s)) ↓ \(cap.shortLabel)")
         } else {
             parts.append(usbSpeedShortLabel(s))

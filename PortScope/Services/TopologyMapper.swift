@@ -439,8 +439,11 @@ nonisolated enum TopologyMapper {
             }
         }
         // Append any leftover TB controllers (uncommon: HPM count < TB count).
+        // Capture the base count first — `out` grows inside the loop, so
+        // `out.count + i + 1` would double-count and skip numbers.
+        let leftoverBase = out.count
         for (i, tb) in remainingTB.enumerated() {
-            let portNumber = out.count + i + 1
+            let portNumber = leftoverBase + i + 1
             let usb = usbByPort[portNumber]
             out.append(PhysicalPort(
                 number: portNumber,

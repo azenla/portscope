@@ -445,7 +445,27 @@ struct USBLinkRateCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if isDowngraded {
+                if isLowBandwidthByDesign {
+                    Label("Runs below its declared protocol by design — typical for input devices",
+                          systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("Running below declared capability — a USB 2.0 hub or cable in the path is the usual cause",
+                          systemImage: "arrow.down.right.circle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
         }
+    }
+
+    /// HID peripherals (mice, keyboards) declare USB 2.0 but only have
+    /// Full-Speed endpoints — running "downgraded" is their normal state,
+    /// so they get a soft note instead of a warning.
+    private var isLowBandwidthByDesign: Bool {
+        deviceClass == 3 && negotiated == .full
     }
 
     /// Single bar with two fills: the device's capability ceiling as a
@@ -539,13 +559,29 @@ struct TBLinkCard: View {
     }
 }
 
+/// Immediate USB-device children below a hub/controller, promoted through
+/// the `.other` port wrappers (`AppleUSB[23]0XHCIARMPort`, `AppleUSB20HubPort`)
+/// that sit between a controller/hub and its real `IOUSBHostDevice` children.
+/// A flat kind filter drops the wrapper *and* the device underneath it.
+private func usbPromotedChildren(of node: TBNode) -> [TBNode] {
+    var out: [TBNode] = []
+    for c in node.children {
+        if c.kind == .other {
+            out.append(contentsOf: usbPromotedChildren(of: c))
+        } else if c.kind == .usbDevice || c.kind == .usbHub {
+            out.append(c)
+        }
+    }
+    return out
+}
+
 /// Section listing the immediate USB-device children below a hub/controller.
 struct USBDeviceTreeCard: View {
     let root: TBNode
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
-        let kids = root.children.filter { $0.kind == .usbDevice || $0.kind == .usbHub }
+        let kids = usbPromotedChildren(of: root)
         if !kids.isEmpty {
             SectionCard(title: "Attached USB Devices", symbol: "cable.connector") {
                 VStack(spacing: 0) {
@@ -612,7 +648,7 @@ struct USBDeviceRow: View {
                     }
                 }
                 Spacer()
-                if !node.children.filter({ $0.kind == .usbDevice || $0.kind == .usbHub }).isEmpty {
+                if !usbPromotedChildren(of: node).isEmpty {
                     Image(systemName: "chevron.right").foregroundStyle(.tertiary)
                 }
             }

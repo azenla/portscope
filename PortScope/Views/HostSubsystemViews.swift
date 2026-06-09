@@ -67,10 +67,18 @@ struct WiFiDetailView: View {
 
     /// Visual SNR bar — fills proportional to a clamped 0–70 dB SNR scale.
     /// Anything ≥40 dB is "excellent" (green); 25–40 is good (blue); 15–25
-    /// is fair (orange); <15 is poor (red).
+    /// is fair (orange); <15 is poor (red). Renders nothing when RSSI or
+    /// noise is missing — a fabricated "0 dB · Poor" bar would flag a
+    /// perfectly healthy link as broken.
     @ViewBuilder
     private var signalNoiseBar: some View {
-        let snr = (info.rssiDBm.flatMap { rssi in info.noiseDBm.map { rssi - $0 } }) ?? 0
+        if let rssi = info.rssiDBm, let noise = info.noiseDBm {
+            signalNoiseBarContent(snr: rssi - noise)
+        }
+    }
+
+    @ViewBuilder
+    private func signalNoiseBarContent(snr: Int) -> some View {
         let clamped = max(0, min(70, snr))
         let frac = Double(clamped) / 70.0
         let color: Color = clamped >= 40 ? .green
@@ -176,9 +184,7 @@ struct WiFiDetailView: View {
     /// is in the supported PHY list, then 6E, 6, 5, etc.
     private var wifiTier: String? {
         guard let phys = info.supportedPHYs?.lowercased() else { return nil }
-        if phys.contains("be") {
-            return info.supports6GHz ? "Wi-Fi 7" : "Wi-Fi 7"
-        }
+        if phys.contains("be") { return "Wi-Fi 7" }
         if phys.contains("ax") { return info.supports6GHz ? "Wi-Fi 6E" : "Wi-Fi 6" }
         if phys.contains("ac") { return "Wi-Fi 5" }
         if phys.contains("n")  { return "Wi-Fi 4" }

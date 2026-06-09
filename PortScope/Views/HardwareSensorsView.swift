@@ -38,7 +38,7 @@ struct HardwareSensorsView: View {
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(Color.black.opacity(0.04))
+            .background(Color.secondary.opacity(0.05))
             Divider()
             footer
         }

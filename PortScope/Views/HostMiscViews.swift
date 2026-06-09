@@ -174,6 +174,11 @@ struct GPUInfo: Hashable {
 struct GPUDetailView: View {
     let info: SystemInfoSnapshot
 
+    /// AGXAccelerator registry read, done once on appear — `stats` is
+    /// re-evaluated with every `body` pass and a synchronous IOKit scan
+    /// there runs on the MainActor per render.
+    @State private var agx: GPUInfo?
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -185,6 +190,7 @@ struct GPUDetailView: View {
         }
         .frame(minWidth: 620)
         .background(.background)
+        .task { agx = GPUInfo.read() }
     }
 
     private var hero: some View {
@@ -218,7 +224,7 @@ struct GPUDetailView: View {
         if let chip = info.chipName {
             out.append(Stat(label: "Chip", value: chip, symbol: "cpu"))
         }
-        if let agx = GPUInfo.read() {
+        if let agx {
             if let did = agx.deviceID {
                 out.append(Stat(label: "Device ID",
                                 value: String(format: "0x%04X", did),
@@ -344,7 +350,7 @@ struct TouchIDDetailView: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Touch ID").font(.title2).bold()
-                Text(info.isPresent ? "AppleMesaShim · Secure Enclave" : "Not present")
+                Text(info.isPresent ? "Fingerprint sensor · Secure Enclave" : "Not present")
                     .foregroundStyle(.secondary).font(.callout)
             }
             Spacer()
@@ -434,13 +440,12 @@ private struct TrustedAccessoryRow: View {
 
     private var idLabel: String {
         let vid = accessory.vendorID.map { String(format: "VID 0x%04X", $0) } ?? "VID —"
-        let pids = accessory.productIDs.prefix(4)
+        guard !accessory.productIDs.isEmpty else { return vid }
+        let pids = accessory.productIDs
             .map { String(format: "0x%04X", $0) }
             .joined(separator: ", ")
-        if accessory.productIDs.count > 4 {
-            return "\(vid) · PIDs \(pids) · +\(accessory.productIDs.count - 4) more"
-        }
-        return "\(vid) · PIDs \(pids)"
+        let label = accessory.productIDs.count == 1 ? "PID" : "PIDs"
+        return "\(vid) · \(label) \(pids)"
     }
 }
 
@@ -545,7 +550,7 @@ struct TouchIDSidebarRow: View {
             Image(systemName: "touchid").foregroundStyle(.pink).frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Touch ID").lineLimit(1)
-                Text(info.product ?? "AppleMesaShim")
+                Text(info.product ?? "Fingerprint sensor")
                     .font(.caption2).foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -592,8 +597,8 @@ nonisolated struct TrackpadInfo: Hashable {
         return TrackpadInfo(
             product: props["Product"]?.asString,
             vendor: props["Manufacturer"]?.asString,
-            firmwareVersion: props["Multitouch ID"]?.asUInt,
-            multitouchID: props["BCD Version"]?.asUInt
+            firmwareVersion: props["BCD Version"]?.asUInt,
+            multitouchID: props["Multitouch ID"]?.asUInt
         )
     }
 }
@@ -661,9 +666,9 @@ struct InputDevicesDetailView: View {
         var out: [Stat] = []
         if let p = tp.product { out.append(Stat(label: "Model", value: p, symbol: "rectangle")) }
         if let v = tp.vendor { out.append(Stat(label: "Vendor", value: v, symbol: "building.2")) }
-        if let f = tp.firmwareVersion { out.append(Stat(label: "Multitouch ID",
-                                                        value: "\(f)",
-                                                        symbol: "memorychip")) }
+        if let m = tp.multitouchID { out.append(Stat(label: "Multitouch ID",
+                                                     value: "\(m)",
+                                                     symbol: "memorychip")) }
         out.append(Stat(label: "Force Touch",
                         value: "Supported",
                         symbol: "hand.point.up.left.fill"))

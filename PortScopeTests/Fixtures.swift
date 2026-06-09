@@ -116,7 +116,8 @@ enum Fix {
             usbDeviceRoots: [],
             tunnels: tunnels,
             accessory: accessory,
-            sourcePower: nil
+            sourcePower: nil,
+            thunderboltPeer: nil
         )
     }
 

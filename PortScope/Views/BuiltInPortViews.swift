@@ -294,9 +294,11 @@ struct EthernetDetailView: View {
         if case .unsigned(let u)? = props["IOActiveMedium"] {
             return (u & 0x00100000) != 0 ? "Full" : "Half"
         }
-        if let s = props["IOActiveMedium"]?.asString,
-           let raw = UInt64(s, radix: 16) {
-            return (raw & 0x00100000) != 0 ? "Full" : "Half"
+        if var s = props["IOActiveMedium"]?.asString {
+            if s.hasPrefix("0x") || s.hasPrefix("0X") { s = String(s.dropFirst(2)) }
+            if let raw = UInt64(s, radix: 16) {
+                return (raw & 0x00100000) != 0 ? "Full" : "Half"
+            }
         }
         return "—"
     }

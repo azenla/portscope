@@ -115,6 +115,21 @@ nonisolated func pciLinkSpeedLabel(_ speed: UInt64) -> String {
     }
 }
 
+/// Per-lane transfer rate in GT/s for a PCIe link speed code. The codes
+/// are generation numbers, not rates — Gen 1..6 = 2.5 / 5 / 8 / 16 / 32 /
+/// 64 GT/s — so throughput math must go through this, never the raw code.
+nonisolated func pciGenTransferRate(_ speed: UInt64) -> Double? {
+    switch speed {
+    case 1: return 2.5
+    case 2: return 5
+    case 3: return 8
+    case 4: return 16
+    case 5: return 32
+    case 6: return 64
+    default: return nil
+    }
+}
+
 /// Short label for tight spaces.
 nonisolated func pciLinkSpeedShortLabel(_ speed: UInt64) -> String {
     switch speed {
