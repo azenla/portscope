@@ -134,7 +134,7 @@ Duplicate the entry for both `hw.model` keys when one chassis maps to two identi
 
 - **USB device "speed" has two numbers and they often disagree.** `bcdUSB` is the declared protocol; `kUSBCurrentSpeed` is what was negotiated. A USB 3.2 SSD reading "USB 3.0" is *downgraded* — usually a 2.0 hub or USB-A cable in the path. `usbCapabilityFromBCD(_:)` maps bcdUSB to peak speed; `usbIsDowngraded(bcdUSB:currentSpeed:)` is the comparison. HID devices (mice/keyboards) get a softer "by design" note instead of a downgrade warning when they declare USB 2.0 but run at Full Speed.
 
-- **USB device → physical-port mapping prefers `UsbIOPort` over `locationID >> 24`.** `physicalPortNumber(forUSBController:)` walks `XHCIPort` wrappers looking for a registry path ending in `Port-USB-C@N`. Falls back to `locationID >> 24 + 1`. The `UsbIOPort` value can be CFString or NUL-trimmed Data — both handled by `unwrapDataAsString`.
+- **USB device → physical-port mapping prefers `UsbIOPort` over `locationID >> 24`.** `physicalPortNumber(forUSBController:)` walks `XHCIPort` wrappers looking for a registry path ending in `Port-USB-C@N`. Falls back to `locationID >> 24 + 1`. The `UsbIOPort` value can be CFString or NUL-trimmed Data — both handled by `props["UsbIOPort"]?.asString ?? props["UsbIOPort"]?.asNulTrimmedString`.
 
 - **In the Detailed Thunderbolt Topology, suppress dock self-references in the USB leaves.** Hub chips (VIA Labs / Genesys Logic / ASMedia vendor) that advertise themselves as a USB device with "Docking" in their title would otherwise appear as leaves of the dock's own router card. Filter by `(hubChipVendor && titleContainsDocking) || (sharedVendorToken && titleContainsDocking)`. Also suppress placeholder vendor strings — Apple's USB-C Digital AV Adapter publishes literal `"xxxxxxxx"` as its vendor.
 
@@ -175,7 +175,7 @@ Duplicate the entry for both `hw.model` keys when one chassis maps to two identi
 
 - **The `compatible` IORegistry property is an array of device-tree match strings** (e.g. `("jpeg,t8110jpeg", "s5l8920x")`). Use `prettyCompatibleString` for display. Some paths serialise it as a NUL-separated `Data` blob; `prettyCompatibleString` handles both.
 
-- **`AAPL,slot-name` is a NUL-terminated `Data` blob, not a CFString.** `props["AAPL,slot-name"]?.asString` returns nil — fall through to `unwrapData`. Same trap for `name` on PCI bridges.
+- **`AAPL,slot-name` is a NUL-terminated `Data` blob, not a CFString.** `props["AAPL,slot-name"]?.asString` returns nil — fall through to `?.asDataString` (UTF-8, control-char-trimmed, nil-if-empty). Same trap for `name` on PCI bridges. `IORegValue` also exposes `asNulTrimmedString` (truncate at first NUL, keep empties) for `UsbIOPort`-style paths.
 
 - **`IOPCIDevice.IOName` is shared across every PCI bridge** (`pci-bridge`). Use the device-tree `name` property (a `Data` blob). `PCIScanner.makeLabels` falls through `name` → `IOName` → title.
 
