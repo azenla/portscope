@@ -73,14 +73,6 @@ struct SidebarView: View {
             else { return nil }
             return battery
         }()
-        // Built-in panel (laptop lid / iMac screen) and the internal battery
-        // sit behind the Show Built-in Devices toggle so the default
-        // Physical Device list reads as "receptacles you can plug into".
-        // External displays render in the always-visible Displays section
-        // and nested under the port that carries them.
-        let builtInDisplay: DisplayInfo? = showBuiltinDevices
-            ? vm.snapshot.displays.displays.first { $0.isBuiltIn }
-            : nil
         // Each Physical Device subgroup (Power / USB-C / USB-A / HDMI / …)
         // is its own Section, so SwiftUI's `List` can manage cell identity
         // cleanly across power-poll refreshes (a flat sequence of buttons +
@@ -146,7 +138,6 @@ struct SidebarView: View {
             physicalDeviceContent(ports: ports,
                                   hw: hw,
                                   batteryNode: batteryNode,
-                                  builtInDisplay: builtInDisplay,
                                   flattenHubs: !showIntermediateHubs,
                                   pcieByPortID: tbPCIeEndpointsByPort)
 
@@ -269,10 +260,9 @@ struct SidebarView: View {
     private func physicalDeviceContent(ports: [PhysicalPort],
                                        hw: InternalHardwareSnapshot,
                                        batteryNode: TBNode?,
-                                       builtInDisplay: DisplayInfo?,
                                        flattenHubs: Bool,
                                        pcieByPortID: [TBNodeID: [PCINode]]) -> some View {
-        if ports.isEmpty && hw.magsafe == nil && batteryNode == nil && builtInDisplay == nil {
+        if ports.isEmpty && hw.magsafe == nil && batteryNode == nil {
             Text(vm.isScanning ? "Scanning…" : "No physical ports detected")
                 .foregroundStyle(.secondary)
                 .font(.callout)
@@ -280,7 +270,6 @@ struct SidebarView: View {
             PortsByConnector(ports: ports,
                              battery: batteryNode,
                              magsafe: hw.magsafe,
-                             builtInDisplay: builtInDisplay,
                              allDisplays: vm.snapshot.displays.displays,
                              expanded: $expanded,
                              collapsedSubgroups: $collapsedSubgroups,
@@ -478,11 +467,6 @@ private struct PortsByConnector: View {
     let battery: TBNode?
     /// MagSafe receptacle accessory, when the chassis ships one.
     let magsafe: PortAccessoryInfo?
-    /// Built-in panel (laptop lid / iMac display). Surfaced in its own
-    /// "Display" subgroup so the lid screen shows up by default — it's a
-    /// chassis-physical component. Nil on headless Macs (Mac mini / Pro /
-    /// Studio without an internal panel).
-    let builtInDisplay: DisplayInfo?
     /// Full display list — used to attribute externals to each port so the
     /// sidebar can render a display row alongside the dock's USB devices.
     let allDisplays: [DisplayInfo]
@@ -533,13 +517,6 @@ private struct PortsByConnector: View {
                                flattenHubs: flattenHubs,
                                pcieEndpoints: pcieByPortID[PhysicalPortSelector.id(for: port)] ?? [])
                 }
-            }
-        }
-        if let builtInDisplay {
-            collapsibleSubgroup(key: "physical:Display",
-                                title: "Display",
-                                collapsedSubgroups: $collapsedSubgroups) {
-                DisplaySidebarRow(display: builtInDisplay).tag(builtInDisplay.id)
             }
         }
     }
