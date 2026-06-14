@@ -49,8 +49,11 @@ nonisolated enum EthernetScanner {
                 ctrlProps = IORegBridge.properties(of: parent)
                 IOObjectRelease(parent)
             }
-            let linkActive = (ctrlProps["IOLinkStatus"]?.asUInt ?? 0) & 0x1 == 0x1
-            let speedMbps = decodeMediumSpeedMbps(ctrlProps["IOActiveMedium"])
+            // Bit 0 (`kIONetworkLinkValid`) only means "status is
+            // meaningful" — a jack with no cable publishes 1. Bit 1
+            // (`kIONetworkLinkActive`) is the actual link.
+            let linkActive = (ctrlProps["IOLinkStatus"]?.asUInt ?? 0) & 0x3 == 0x3
+            let speedMbps = decodeEthernetSpeedMbps(ctrlProps["IOActiveMedium"])
 
             var merged = props
             // Surface the controller's link/medium properties under the
@@ -126,30 +129,7 @@ nonisolated enum EthernetScanner {
         return true
     }
 
-    /// Decode `IOActiveMedium` into a link speed in Mb/s. The kernel
-    /// publishes the medium as a hex-formatted string like "00100030".
-    /// That's a packed `IFM_*` word (see `<net/if_media.h>`): bits 5..7
-    /// hold the media type (`IFM_ETHER` = 0x20), bits 0..4 hold the
-    /// ethernet subtype (`IFM_1000_T` = 16, `IFM_10G_T` = 21, …), and
-    /// the high half holds options like `IFM_FDX = 0x00100000`.
-    /// Subtype values come from the macOS SDK header — FreeBSD's
-    /// `if_media.h` assigns different numbers (10G = 26 there, 21 here).
-    private static func decodeMediumSpeedMbps(_ value: IORegValue?) -> UInt64? {
-        // Newer drivers expose a numeric `Link Speed` directly — prefer it.
-        if case .unsigned(let u)? = value, u > 0 { return u }
-        guard var s = value?.asString else { return nil }
-        if s.hasPrefix("0x") || s.hasPrefix("0X") { s = String(s.dropFirst(2)) }
-        guard let raw = UInt64(s, radix: 16) else { return nil }
-        // Must be an ethernet medium word.
-        guard raw & 0xE0 == 0x20 else { return nil }
-        switch raw & 0x1F {
-        case 3:  return 10       // IFM_10_T
-        case 6:  return 100      // IFM_100_TX
-        case 16: return 1_000    // IFM_1000_T
-        case 21: return 10_000   // IFM_10G_T
-        case 22: return 2_500    // IFM_2500_T
-        case 23: return 5_000    // IFM_5000_T
-        default: return nil
-        }
-    }
+    // IOActiveMedium decoding lives in `decodeEthernetSpeedMbps`
+    // (USBEthernetSynth.swift) — one IFM_* table shared with the
+    // USB-Ethernet synth so the Darwin subtype codes can't drift.
 }

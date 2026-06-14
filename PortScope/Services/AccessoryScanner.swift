@@ -479,11 +479,13 @@ nonisolated enum AccessoryScanner {
     /// `AppleTypeCPhyDisplayPortTunnel` are dicts of sub-dicts, each
     /// sub-dict carrying a `Link Rate` string and optionally a `Clients`
     /// array. Flatten into a list of `PhyDPLink`. Empty top-level dict =
-    /// no active DP.
+    /// no active DP. Sub-keys are `"PCLK 1"` / `"Tunnel 0"` / … and the
+    /// kernel's dict order shuffles between reads — sort by the trailing
+    /// stream index so rows don't reorder on every 2-second power poll.
     private static func parsePhyDPDict(_ value: IORegValue?) -> [PhyDPLink] {
         guard case let .dictionary(kv) = value, !kv.isEmpty else { return [] }
-        var links: [PhyDPLink] = []
-        for (_, sub) in kv {
+        var links: [(index: Int, key: String, link: PhyDPLink)] = []
+        for (key, sub) in kv {
             guard case let .dictionary(subKV) = sub else { continue }
             let d = Dictionary(subKV, uniquingKeysWith: { a, _ in a })
             let rate = d["Link Rate"]?.asString ?? ""
@@ -493,10 +495,13 @@ nonisolated enum AccessoryScanner {
                case let .string(s) = first { client = s }
             else if let s = d["Client"]?.asString { client = s }
             if !rate.isEmpty {
-                links.append(PhyDPLink(linkRate: rate, client: client))
+                let index = key.split(separator: " ").last.flatMap { Int($0) } ?? Int.max
+                links.append((index, key, PhyDPLink(linkRate: rate, client: client)))
             }
         }
         return links
+            .sorted { ($0.index, $0.key) < ($1.index, $1.key) }
+            .map(\.link)
     }
 
     /// Decode the `Metadata.VDOs` array on one SOP service into a
@@ -524,16 +529,21 @@ nonisolated enum AccessoryScanner {
         guard let vdo0 = vdoAt(0) else { return nil }
         let idHeader = decodePDIDHeader(vdo0)
 
-        // For cables we expect VDO[3] (Cable VDO). For non-cable endpoints
-        // this isn't meaningful.
-        guard idHeader.ufpProductType.isCable, let vdo3 = vdoAt(3) else { return nil }
-        let isActive = idHeader.ufpProductType == .activeCable
-        let cableVDO = decodePDCableVDO(vdo3, isActive: isActive)
-
+        // VDO[3] is a Cable VDO only for cables. Non-cable responders
+        // (e.g. a VCONN-powered device like the Apple Watch magnetic
+        // charger) publish their own product-type VDO at that slot — keep
+        // the ID-header-level info (VID, product type, cert XID, product
+        // VDO) and mark the cable-VDO portion absent instead of dropping
+        // the whole record.
+        let cableVDO: PDCableVDO
         let activeVDO2: PDActiveCableVDO2?
-        if isActive, let vdo4 = vdoAt(4) {
-            activeVDO2 = decodePDActiveCableVDO2(vdo4)
+        if idHeader.ufpProductType.isCable {
+            guard let vdo3 = vdoAt(3) else { return nil }
+            let isActive = idHeader.ufpProductType == .activeCable
+            cableVDO = decodePDCableVDO(vdo3, isActive: isActive)
+            activeVDO2 = isActive ? vdoAt(4).map(decodePDActiveCableVDO2(_:)) : nil
         } else {
+            cableVDO = .absent
             activeVDO2 = nil
         }
 
@@ -641,14 +651,15 @@ nonisolated enum AccessoryScanner {
         return USBPDOption(voltageMV: v, maxCurrentMA: i, maxPowerMW: p)
     }
 
-    /// SOPVID / SOPPID come back as 2-byte little-endian `Data` blobs.
-    /// Convert them to a UInt64.
+    /// SOPVID / SOPPID come back as 2-byte `Data` blobs stored
+    /// most-significant byte first (port 3's Apple cable publishes
+    /// `<05 AC>` = 0x05AC). Assemble big-endian into a UInt64.
     private static func readDataAsUInt(_ value: IORegValue?) -> UInt64? {
         if let v = value?.asUInt { return v }
         guard case .data(let d) = value else { return nil }
         var result: UInt64 = 0
-        for (idx, byte) in d.enumerated() where idx < 8 {
-            result |= UInt64(byte) << (idx * 8)
+        for byte in d.prefix(8) {
+            result = (result << 8) | UInt64(byte)
         }
         return result == 0 ? nil : result
     }

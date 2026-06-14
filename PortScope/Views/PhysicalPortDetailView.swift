@@ -341,34 +341,45 @@ struct PhysicalPortDetailView: View {
     /// Darryl Morley).
     private func cableEmarkerCard(_ e: CableEmarkerInfo) -> some View {
         let vdo = e.cableVDO
-        var rows: [InfoRow] = [
-            InfoRow(label: "Cable Class",
-                    value: vdo.speed.label,
-                    symbol: "speedometer"),
-            InfoRow(label: "Current Rating",
-                    value: vdo.current.label,
-                    symbol: "bolt"),
-            InfoRow(label: "Max Voltage",
-                    value: "\(vdo.maxVolts) V",
-                    symbol: "bolt.circle"),
-            InfoRow(label: "Max Power",
-                    value: "~\(vdo.maxWatts) W (at \(vdo.maxVolts) V × \(vdo.current.maxAmps == 5 ? "5 A" : "3 A"))",
-                    symbol: "bolt.fill"),
-            InfoRow(label: "Construction",
-                    value: e.productType.label,
-                    symbol: e.productType == .activeCable ? "cpu" : "cable.connector.horizontal"),
-            InfoRow(label: "VBUS Through Cable",
-                    value: vdo.vbusThroughCable ? "Yes" : "No",
-                    symbol: vdo.vbusThroughCable ? "checkmark.circle" : "circle.slash"),
-            InfoRow(label: "EPR Capable",
-                    value: vdo.eprCapable ? "Yes (≥48 V)" : "No",
-                    symbol: vdo.eprCapable ? "checkmark.seal" : "seal.slash")
-        ]
-        if let ns = vdo.latencyNanoseconds {
-            rows.append(InfoRow(label: "Approx Length / Latency",
-                                value: latencyLabel(nanoseconds: ns,
-                                                    cableType: vdo.cableType),
-                                symbol: "ruler"))
+        var rows: [InfoRow] = []
+        // Cable-VDO rows only apply to cables — non-cable responders
+        // (VCONN-powered devices, AMAs) carry a placeholder `cableVDO`.
+        if e.productType.isCable {
+            rows.append(contentsOf: [
+                InfoRow(label: "Cable Class",
+                        value: vdo.speed.label,
+                        symbol: "speedometer"),
+                InfoRow(label: "Current Rating",
+                        value: vdo.current.label,
+                        symbol: "bolt"),
+                InfoRow(label: "Max Voltage",
+                        value: "\(vdo.maxVolts) V",
+                        symbol: "bolt.circle"),
+                InfoRow(label: "Max Power",
+                        value: "~\(vdo.maxWatts) W (at \(vdo.maxVolts) V × \(vdo.current.maxAmps == 5 ? "5 A" : "3 A"))",
+                        symbol: "bolt.fill")
+            ])
+        }
+        rows.append(InfoRow(label: "Construction",
+                            value: e.productType.label,
+                            symbol: e.productType == .activeCable ? "cpu" : "cable.connector.horizontal"))
+        if e.productType.isCable {
+            // The VBUS-through bit exists only in the Active Cable VDO 1;
+            // it decodes to nil on passive cables.
+            if let vbus = vdo.vbusThroughCable {
+                rows.append(InfoRow(label: "VBUS Through Cable",
+                                    value: vbus ? "Yes" : "No",
+                                    symbol: vbus ? "checkmark.circle" : "circle.slash"))
+            }
+            rows.append(InfoRow(label: "EPR Capable",
+                                value: vdo.eprCapable ? "Yes (≥48 V)" : "No",
+                                symbol: vdo.eprCapable ? "checkmark.seal" : "seal.slash"))
+            if let ns = vdo.latencyNanoseconds {
+                rows.append(InfoRow(label: "Approx Length / Latency",
+                                    value: latencyLabel(nanoseconds: ns,
+                                                        cableType: vdo.cableType),
+                                    symbol: "ruler"))
+            }
         }
         if let a = e.activeVDO2 {
             rows.append(contentsOf: [
@@ -402,11 +413,12 @@ struct PhysicalPortDetailView: View {
                                 symbol: "checkmark.seal.fill",
                                 tint: .green))
         }
-        rows.append(InfoRow(label: "Cable Silicon VID",
+        rows.append(InfoRow(label: e.productType.isCable ? "Cable Silicon VID" : "Vendor ID",
                             value: String(format: "0x%04X", e.vendorID),
                             symbol: "number"))
 
-        return SectionCard(title: "Cable E-Marker", symbol: "barcode.viewfinder") {
+        return SectionCard(title: e.productType.isCable ? "Cable E-Marker" : "USB-PD Identity",
+                           symbol: "barcode.viewfinder") {
             VStack(alignment: .leading, spacing: 10) {
                 InfoRowsView(rows: rows)
                 if !vdo.decodeWarnings.isEmpty {
@@ -485,6 +497,10 @@ struct PhysicalPortDetailView: View {
                     }
                     .font(.callout)
                 }
+                // `dpLinks` / `dpTunnels` arrive sorted by the kernel's
+                // trailing sub-key index ("PCLK 1", "Tunnel 0", …) — see
+                // `AccessoryScanner.parsePhyDPDict` — so the enumerated
+                // offsets below are stable across the 2-second power poll.
                 if !phy.dpLinks.isEmpty {
                     Divider()
                     Text("DisplayPort Pixel Clocks")

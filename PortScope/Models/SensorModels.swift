@@ -29,8 +29,17 @@ import Foundation
 /// as discovery rows without a live number — the right way to read
 /// them requires opening an HID event subscription, which we defer.
 nonisolated struct HardwareSensor: Hashable, Identifiable {
-    var id: String { "\(category.rawValue)#\(locationID ?? 0)#\(name)" }
+    /// Includes the kernel registry entry ID so same-category sensors
+    /// without a `LocationID` and with identical product strings still
+    /// get distinct `Identifiable` IDs (the sensors panel refreshes a
+    /// `ForEach` every 2 s — duplicate IDs scramble its diffing).
+    var id: String { "\(category.rawValue)#\(registryID)#\(locationID ?? 0)#\(name)" }
 
+    /// Kernel IORegistry entry ID of the backing service. Synthetic rows
+    /// (battery / PSU telemetry read off `AppleSmartBattery` properties)
+    /// use small fixed tokens instead — real registry IDs are large, so
+    /// the namespaces can't collide.
+    let registryID: UInt64
     /// Human-friendly name. Synthesised from the kernel `Product` string
     /// and / or the decoded `LocationID` SMC key.
     let name: String

@@ -84,16 +84,16 @@ struct TBFormattersTests {
         #expect(usbBcdVersion(nil) == "—")
     }
 
-    @Test("usbCapabilityFromBCD maps protocol version to peak speed")
-    func capabilityCeiling() {
-        // Major bumps mean a real ceiling change; minor bumps within 3.x
-        // distinguish 3.0 / 3.1 / 3.2 because USB-IF uses different
-        // signalling rates per minor (5G → 10G → 20G).
+    @Test("usbCapabilityFromBCD maps protocol version to a speed floor")
+    func capabilityFloor() {
+        // bcdUSB encodes spec-revision compliance, not the device's Gen/lane
+        // tier — almost every USB 3.2 Gen 1 (5 G) device ships bcdUSB 0x0320,
+        // so 3.x maps to the .super floor, never a 10/20 G ceiling claim.
         #expect(usbCapabilityFromBCD(0x0200) == .high)
         #expect(usbCapabilityFromBCD(0x0210) == .high)
         #expect(usbCapabilityFromBCD(0x0300) == .super)
-        #expect(usbCapabilityFromBCD(0x0310) == .superPlus)
-        #expect(usbCapabilityFromBCD(0x0320) == .superPlusBy2)
+        #expect(usbCapabilityFromBCD(0x0310) == .super)
+        #expect(usbCapabilityFromBCD(0x0320) == .super)
         #expect(usbCapabilityFromBCD(0x0110) == .full)
         #expect(usbCapabilityFromBCD(0x0100) == .full)
         #expect(usbCapabilityFromBCD(nil) == nil)
@@ -102,15 +102,29 @@ struct TBFormattersTests {
         #expect(usbCapabilityFromBCD(0x0500) == nil)
     }
 
-    @Test("usbIsDowngraded only fires when capability > negotiated")
+    @Test("usbDeclaredVersionLabel is version-only, no ceiling claims")
+    func declaredVersionLabel() {
+        #expect(usbDeclaredVersionLabel(0x0320) == "USB 3.2")
+        #expect(usbDeclaredVersionLabel(0x0310) == "USB 3.1")
+        #expect(usbDeclaredVersionLabel(0x0200) == "USB 2.0")
+        #expect(usbDeclaredVersionLabel(nil) == nil)
+    }
+
+    @Test("usbIsDowngraded fires only for 3.x devices below SuperSpeed")
     func downgrade() {
-        // USB-3.2 device negotiated at SuperSpeed (5 G) — downgraded.
+        // USB-3.2 device negotiated at High Speed (480 M) — a USB 2.0 hub
+        // or cable in the path. Downgraded.
         #expect(usbIsDowngraded(bcdUSB: 0x0320,
-                                currentSpeed: UInt64(USBSpeed.super.rawValue)) == true)
-        // USB-2.0 device negotiated at Full Speed — downgraded
-        // (HID-by-design is a hint the UI overlays, not a kernel signal).
+                                currentSpeed: UInt64(USBSpeed.high.rawValue)) == true)
+        // USB-3.2 device negotiated at SuperSpeed (5 G) — that may simply
+        // be its hardware maximum (Gen 1 parts ship bcdUSB 0x0320 too).
+        // Not flaggable from bcdUSB alone.
+        #expect(usbIsDowngraded(bcdUSB: 0x0320,
+                                currentSpeed: UInt64(USBSpeed.super.rawValue)) == false)
+        // USB-2.0 device at Full Speed is a device choice (HID etc.), not a
+        // path problem — 2.x devices never flag.
         #expect(usbIsDowngraded(bcdUSB: 0x0200,
-                                currentSpeed: UInt64(USBSpeed.full.rawValue)) == true)
+                                currentSpeed: UInt64(USBSpeed.full.rawValue)) == false)
         // USB-3.0 device negotiated at SuperSpeed — match, no downgrade.
         #expect(usbIsDowngraded(bcdUSB: 0x0300,
                                 currentSpeed: UInt64(USBSpeed.super.rawValue)) == false)

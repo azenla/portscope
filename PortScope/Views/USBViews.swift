@@ -140,7 +140,8 @@ struct USBHubView: View {
 
             if speed != nil || bcdUSB != nil {
                 USBLinkRateCard(currentSpeed: speed, bcdUSB: bcdUSB,
-                                deviceClass: node.properties["bDeviceClass"]?.asUInt)
+                                deviceClass: node.properties["bDeviceClass"]?.asUInt,
+                                hasHIDInterface: nodeHasHIDInterface(node))
             }
             if power.hasData {
                 USBSinkPowerCard(power: power)
@@ -212,7 +213,8 @@ struct USBDeviceView: View {
 
             if speed != nil || bcdUSB != nil {
                 USBLinkRateCard(currentSpeed: speed, bcdUSB: bcdUSB,
-                                deviceClass: cls)
+                                deviceClass: cls,
+                                hasHIDInterface: nodeHasHIDInterface(node))
             }
             if power.hasData {
                 USBSinkPowerCard(power: power)
@@ -394,6 +396,10 @@ struct USBLinkRateCard: View {
     let currentSpeed: UInt64?
     let bcdUSB: UInt64?
     let deviceClass: UInt64?
+    /// True when any exposed USB interface is HID (class 3). Composite
+    /// mice / keyboards declare `bDeviceClass = 0` with HID at the
+    /// interface level, so the device class alone misses them.
+    var hasHIDInterface: Bool = false
 
     private var negotiated: USBSpeed? {
         currentSpeed.flatMap { USBSpeed(rawValue: Int($0)) }
@@ -402,8 +408,7 @@ struct USBLinkRateCard: View {
         usbCapabilityFromBCD(bcdUSB)
     }
     private var isDowngraded: Bool {
-        guard let n = negotiated, let c = capability else { return false }
-        return c.rateMbps > n.rateMbps
+        usbIsDowngraded(bcdUSB: bcdUSB, currentSpeed: currentSpeed)
     }
 
     var body: some View {
@@ -418,9 +423,9 @@ struct USBLinkRateCard: View {
     }
 
     /// The negotiated line is the headline (it's what's happening right
-    /// now); the device's declared capability sits next to it so the user
-    /// can see the gap at a glance. Both labels use the long-form name
-    /// ("USB 3.0 SuperSpeed") so the card reads even without the bar.
+    /// now); the device's declared spec version sits below it. For 3.x
+    /// devices the version is shown without a rate — bcdUSB doesn't say
+    /// whether the hardware is Gen 1, Gen 2, or ×2.
     private var headline: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -435,43 +440,50 @@ struct USBLinkRateCard: View {
                     Text("Unknown").font(.callout).foregroundStyle(.secondary)
                 }
             }
-            if let c = capability {
+            if let version = usbDeclaredVersionLabel(bcdUSB) {
                 HStack {
                     Text("Capability").font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Text("up to \(c.shortLabel)").font(.callout)
+                    Text(version).font(.callout)
                         .foregroundStyle(.secondary)
-                    Text(c.rateLabel).font(.callout.monospaced())
-                        .foregroundStyle(.secondary)
+                    // bcdUSB doesn't encode the Gen/lane tier for 3.x, so
+                    // a rate claim is only honest below 3.0.
+                    if let v = bcdUSB, v < 0x0300, let c = capability {
+                        Text("up to \(c.rateLabel)").font(.callout.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-            if isDowngraded {
-                if isLowBandwidthByDesign {
-                    Label("Runs below its declared protocol by design — typical for input devices",
-                          systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Label("Running below declared capability — a USB 2.0 hub or cable in the path is the usual cause",
-                          systemImage: "arrow.down.right.circle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
+            if isDowngraded && !isLowBandwidthByDesign {
+                Label("Running below SuperSpeed — a USB 2.0 hub or cable in the path is the usual cause",
+                      systemImage: "arrow.down.right.circle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if isLowBandwidthByDesign, let n = negotiated {
+                Label("\(n == .low ? "Low" : "Full") Speed — normal for input devices",
+                      systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    /// HID peripherals (mice, keyboards) declare USB 2.0 but only have
-    /// Full-Speed endpoints — running "downgraded" is their normal state,
-    /// so they get a soft note instead of a warning.
+    /// HID peripherals (mice, keyboards) and billboard beacons only have
+    /// Full/Low-Speed endpoints — that's their normal state, so they get
+    /// a soft note instead of a warning.
     private var isLowBandwidthByDesign: Bool {
-        deviceClass == 3 && negotiated == .full
+        guard negotiated == .full || negotiated == .low else { return false }
+        return deviceClass == USBDeviceClass.hid.rawValue
+            || deviceClass == USBDeviceClass.billboard.rawValue
+            || hasHIDInterface
     }
 
-    /// Single bar with two fills: the device's capability ceiling as a
-    /// translucent backdrop, the negotiated rate on top in the speed's
-    /// accent colour. When they match, only the accent fill is visible.
-    /// Log-scaled so 12 Mb/s is still readable against 20 Gb/s.
+    /// Single bar with two fills: the device's guaranteed speed-class
+    /// floor as a translucent backdrop, the negotiated rate on top in the
+    /// speed's accent colour. When negotiated meets or beats the floor,
+    /// only the accent fill is visible; a 3.x device stuck on the USB 2.0
+    /// bus shows the gap. Log-scaled so 12 Mb/s is still readable
+    /// against 20 Gb/s.
     private var rateBar: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
@@ -520,10 +532,22 @@ struct USBLinkRateCard: View {
 
 /// Human-readable label for the device's declared protocol capability,
 /// used in the device/hub stat grid. Falls through to `"—"` so empty
-/// `bcdUSB` doesn't poison the row.
+/// `bcdUSB` doesn't poison the row. 3.x devices get the version-only
+/// label — bcdUSB doesn't encode the Gen/lane tier, so a rate ceiling
+/// would be a guess (see `usbCapabilityFromBCD`).
 nonisolated func usbCapabilityLabel(bcdUSB: UInt64?) -> String {
-    guard let cap = usbCapabilityFromBCD(bcdUSB) else { return "—" }
-    return "\(cap.shortLabel) · up to \(cap.rateLabel)"
+    guard let v = bcdUSB, let version = usbDeclaredVersionLabel(v) else { return "—" }
+    guard v < 0x0300, let cap = usbCapabilityFromBCD(v) else { return version }
+    return "\(version) · up to \(cap.rateLabel)"
+}
+
+/// True when any direct USB interface child is HID (class 3). Composite
+/// input devices (Logitech G502 / G910) declare `bDeviceClass = 0` and
+/// carry HID at the interface level only.
+private func nodeHasHIDInterface(_ node: TBNode) -> Bool {
+    node.children.contains {
+        $0.kind == .usbInterface && $0.properties["bInterfaceClass"]?.asUInt == 3
+    }
 }
 
 private extension USBSpeed {
@@ -605,8 +629,15 @@ struct USBDeviceRow: View {
         let bcdUSB = node.properties["bcdUSB"]?.asUInt
         let cls = node.properties["bDeviceClass"]?.asUInt
         let symbol = USBDeviceClass(rawValue: cls ?? 0)?.symbol ?? "cable.connector"
+        let negotiated = speed.flatMap { USBSpeed(rawValue: Int($0)) }
+        // HID / billboard devices at Full or Low Speed run there by
+        // design — never flag them, even if they declare a 3.x bcdUSB.
+        let byDesign = (negotiated == .full || negotiated == .low)
+            && (cls == USBDeviceClass.hid.rawValue
+                || cls == USBDeviceClass.billboard.rawValue
+                || nodeHasHIDInterface(node))
         let downgraded = usbIsDowngraded(bcdUSB: bcdUSB, currentSpeed: speed)
-        let capability = usbCapabilityFromBCD(bcdUSB)
+            && !byDesign
 
         Button {
             onNavigate(node.id)
@@ -618,7 +649,10 @@ struct USBDeviceRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(node.title).lineLimit(1)
                     HStack(spacing: 6) {
-                        if let s = speed, s > 0 {
+                        // Speed 0 is a real value (Low Speed) — Apple's
+                        // USB-C Digital AV Adapter publishes it — so only
+                        // a missing property hides the label.
+                        if let s = speed {
                             Text(usbSpeedShortLabel(s))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -627,12 +661,14 @@ struct USBDeviceRow: View {
                         // open the device to spot a downgraded link. The
                         // pill uses a stable color (orange) since it's a
                         // diagnostic hint, not a property of the device's
-                        // own speed class.
-                        if downgraded, let cap = capability {
+                        // own speed class. The declared version ("USB 3.2")
+                        // is the honest reference — the Gen tier isn't
+                        // derivable from bcdUSB.
+                        if downgraded, let version = usbDeclaredVersionLabel(bcdUSB) {
                             HStack(spacing: 2) {
                                 Image(systemName: "arrow.down.right")
                                     .font(.system(size: 9, weight: .bold))
-                                Text("vs \(cap.shortLabel)")
+                                Text("vs \(version)")
                                     .font(.caption2)
                             }
                             .foregroundStyle(.orange)

@@ -232,6 +232,12 @@ private struct Tunnel: Identifiable, Hashable {
 private enum DTTBuilder {
     static func build(from snapshot: SystemSnapshot) -> DTTModel {
         var hosts: [HostRouter] = []
+        // TB-tunneled PCIe endpoints live in `snapshot.pcie` under the
+        // "Thunderbolt PCIe Slot N" roots, paired to controllers by
+        // registry-ID lockstep — `tb.pcieDevicesOverTB` is structurally
+        // empty on Apple Silicon.
+        let pcieSlots = pcieSlotMap(controllers: snapshot.tb.controllers,
+                                    pcieRoots: snapshot.pcie.roots)
         for (idx, controller) in snapshot.tb.controllers.enumerated() {
             guard let hostSwitch = findHostSwitch(in: controller) else { continue }
             let adapters = adapterList(of: hostSwitch)
@@ -258,9 +264,13 @@ private enum DTTBuilder {
             let usbTree = collectUSBTreeForSocket(socketID,
                                                   snapshot: snapshot,
                                                   deviceTitle: downstreamSwitchTitle)
+            let pcieLeaves = collectPCIeBlocks(snapshot: snapshot,
+                                               slot: pcieSlots[controller.id])
             let downstream = findFirstDeviceRouter(in: hostSwitch,
                                                    snapshot: snapshot,
-                                                   usbTree: usbTree)
+                                                   usbTree: usbTree,
+                                                   pcieLeaves: pcieLeaves,
+                                                   upstreamAdapters: adapters)
             // TB-networking peers (XDomain) don't publish a switch, so
             // they slip past the device-router probe. Surface them as a
             // sibling slot on the host router. We only look when there's
@@ -314,12 +324,18 @@ private enum DTTBuilder {
     /// look at direct children.
     private static func findFirstDeviceRouter(in parent: TBNode,
                                               snapshot: SystemSnapshot,
-                                              usbTree: [USBNode]) -> DeviceRouter? {
-        if let s = findSwitch(in: parent,
-                              minDepth: (parent.properties["Depth"]?.asUInt ?? 0) + 1) {
+                                              usbTree: [USBNode],
+                                              pcieLeaves: [PCIeLeaf],
+                                              upstreamAdapters: [Adapter]) -> DeviceRouter? {
+        if let (lane, s) = findSwitchWithParent(
+            in: parent,
+            minDepth: (parent.properties["Depth"]?.asUInt ?? 0) + 1) {
             return makeDeviceRouter(switchNode: s,
+                                    upstreamLane: lane,
                                     snapshot: snapshot,
-                                    usbTree: usbTree)
+                                    usbTree: usbTree,
+                                    pcieLeaves: pcieLeaves,
+                                    upstreamAdapters: upstreamAdapters)
         }
         return nil
     }
@@ -330,21 +346,72 @@ private enum DTTBuilder {
     /// daisy-chained routers will be picked up by the recursion in
     /// `makeDeviceRouter`.
     private static func findSwitch(in node: TBNode, minDepth: UInt64) -> TBNode? {
+        findSwitchWithParent(in: node, minDepth: minDepth)?.switchNode
+    }
+
+    /// Like `findSwitch`, but also captures the lane port immediately
+    /// wrapping the switch — the cable-bearing *upstream* lane. The kernel
+    /// publishes a device router's upstream lane as the PARENT of the
+    /// device switch (host lane → device-side peer lane → switch), never
+    /// as one of the switch's children, so `adapterList(of: switchNode)`
+    /// can never see it. Same approach as `TopologyMapper.findDownstreamLink`.
+    private static func findSwitchWithParent(in node: TBNode, minDepth: UInt64)
+        -> (upstreamLane: TBNode?, switchNode: TBNode)?
+    {
         if node.kind == .switch,
            (node.properties["Depth"]?.asUInt ?? 0) >= minDepth {
-            return node
+            return (nil, node)
         }
         for c in node.children {
-            if let s = findSwitch(in: c, minDepth: minDepth) { return s }
+            if let found = findSwitchWithParent(in: c, minDepth: minDepth) {
+                if found.upstreamLane == nil,
+                   node.kind == .port,
+                   node.properties["Description"]?.asString == "Thunderbolt Port" {
+                    // We are the immediate lane wrapper of the switch.
+                    return (node, found.switchNode)
+                }
+                return found
+            }
         }
         return nil
     }
 
     private static func makeDeviceRouter(switchNode: TBNode,
+                                         upstreamLane: TBNode?,
                                          snapshot: SystemSnapshot,
-                                         usbTree: [USBNode]) -> DeviceRouter {
-        let adapters = adapterList(of: switchNode)
-        let tunnels = tunnelList(adapters: adapters)
+                                         usbTree: [USBNode],
+                                         pcieLeaves: [PCIeLeaf],
+                                         upstreamAdapters: [Adapter]) -> DeviceRouter {
+        var adapters = adapterList(of: switchNode)
+        // The cable-bearing upstream lane is the kernel's *parent* of the
+        // device switch, never a child, so adapterList can't see it.
+        // Inject it with its authoritative numbers (Link Bandwidth /
+        // reservations live there — the in-switch mirror lane reports 0)
+        // so the "↑ cable" chip renders and CableConnector reads real
+        // bandwidth.
+        if let lane = upstreamLane,
+           !adapters.contains(where: { $0.id == lane.id }) {
+            let p = lane.properties
+            adapters.append(Adapter(
+                id: lane.id,
+                portNumber: p["Port Number"]?.asUInt ?? 0,
+                description: p["Description"]?.asString ?? "Thunderbolt Port",
+                kind: .lane,
+                node: lane,
+                isTunnelActive: tbLaneLinkUp(props: p,
+                                             childCount: lane.children.count),
+                currentLinkSpeed: p["Current Link Speed"]?.asUInt ?? 0,
+                currentLinkWidth: p["Current Link Width"]?.asUInt ?? 0,
+                linkBandwidth: p["Link Bandwidth"]?.asUInt ?? 0,
+                requiredBandwidth: p["Required Bandwidth Allocated"]?.asUInt ?? 0,
+                maxBandwidth: p["Maximum Bandwidth Allocated"]?.asUInt ?? 0,
+                socketID: p["Socket ID"]?.asString,
+                routedViaPort: nil,
+                isUpstreamLane: true
+            ))
+            adapters.sort { $0.portNumber < $1.portNumber }
+        }
+        let tunnels = tunnelList(adapters: adapters, upstream: upstreamAdapters)
         var daisy: [DeviceRouter] = []
         let myDepth = switchNode.properties["Depth"]?.asUInt ?? 0
         // Daisy-chained docks sit inside one of *this* router's lane
@@ -355,13 +422,18 @@ private enum DTTBuilder {
         // sub-tree from there.
         for c in switchNode.children {
             if c.kind == .switch { continue }   // already this router
-            if let s = findSwitch(in: c, minDepth: myDepth + 1) {
+            if let (lane, s) = findSwitchWithParent(in: c, minDepth: myDepth + 1) {
                 // Daisy-chained docks share the same host-side
                 // chassis port, so they pull USB leaves from the
-                // same pool the parent router was given.
+                // same pool the parent router was given. Their
+                // upstream adapters are this router's (placeholder
+                // numbers — tunnelList falls back to the gate).
                 daisy.append(makeDeviceRouter(switchNode: s,
+                                              upstreamLane: lane,
                                               snapshot: snapshot,
-                                              usbTree: usbTree))
+                                              usbTree: usbTree,
+                                              pcieLeaves: pcieLeaves,
+                                              upstreamAdapters: adapters))
             }
         }
         // The first-hop router on the cable gets the USB tree we
@@ -376,9 +448,7 @@ private enum DTTBuilder {
             ? collectDisplayBlocks(snapshot: snapshot,
                                    adapters: adapters)
             : []
-        let attributedPCIe = myDepth == 1
-            ? collectPCIeBlocks(snapshot: snapshot)
-            : []
+        let attributedPCIe = myDepth == 1 ? pcieLeaves : []
         let vendor = switchNode.properties["Device Vendor Name"]?.asString
         let model = switchNode.properties["Device Model Name"]?.asString
         let title: String
@@ -420,7 +490,14 @@ private enum DTTBuilder {
         // Upstream port number is published on the switch itself —
         // identifies which lane port the cable enters this router
         // through. Lets device-side lane adapters show "↑ cable".
-        let upstreamPort = switchNode.properties["Upstream Port Number"]?.asUInt
+        // (On Apple Silicon the upstream lane is usually the *parent*
+        // of the switch — injected by `makeDeviceRouter` — but some
+        // controller generations publish it as a child, so keep the
+        // match.) Depth-gated: a depth-0 host root has no upstream cable.
+        let depth = switchNode.properties["Depth"]?.asUInt ?? 0
+        let upstreamPort = depth > 0
+            ? switchNode.properties["Upstream Port Number"]?.asUInt
+            : nil
         for c in switchNode.children where c.kind == .port {
             let portN = c.properties["Port Number"]?.asUInt ?? 0
             let desc = c.properties["Description"]?.asString ?? ""
@@ -430,11 +507,22 @@ private enum DTTBuilder {
             let linkBW = c.properties["Link Bandwidth"]?.asUInt ?? 0
             let reqBW = c.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
             let maxBW = c.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
+            let isUpstreamLane = (kind == .lane)
+                && (upstreamPort != nil)
+                && (upstreamPort == portN)
             // A function adapter (DP/USB/PCIe) is "tunneling" when it
-            // has a non-empty Hop Table. Lane adapters use Current Link
-            // Speed instead.
+            // has a non-empty Hop Table. Lane adapters need a live-peer
+            // signal beyond Current Link Speed — a device router's empty
+            // downstream lanes publish idle defaults (CLS=8 / LBW=100)
+            // that would render as active TB3 links (see `tbLaneLinkUp`).
+            // A child lane matching the switch's upstream port number is
+            // up by definition when the switch itself is connected.
             let isActiveTunnel: Bool = {
-                if case .lane = kind { return speed > 0 }
+                if case .lane = kind {
+                    return isUpstreamLane
+                        || tbLaneLinkUp(props: c.properties,
+                                        childCount: c.children.count)
+                }
                 if case .nhi = kind { return false }
                 if case .inactive = kind { return false }
                 if case .array(let arr) = c.properties["Hop Table"] {
@@ -454,9 +542,6 @@ private enum DTTBuilder {
                     return nil
                 }
             }()
-            let isUpstreamLane = (kind == .lane)
-                && (upstreamPort != nil)
-                && (upstreamPort == portN)
             out.append(Adapter(
                 id: c.id,
                 portNumber: portN,
@@ -490,7 +575,33 @@ private enum DTTBuilder {
     /// attached leaves — those live on the device router as
     /// separately laid-out blocks (`displays`, `usbTree`,
     /// `pcieLeaves`).
-    private static func tunnelList(adapters: [Adapter]) -> [Tunnel] {
+    ///
+    /// Device-side function adapters publish placeholder reservations
+    /// (DP: Required = Maximum = 1 = 100 Mb/s) on live tunnels. The
+    /// authoritative numbers live on the matching *upstream-side*
+    /// function adapter (the host root for a first-hop dock); same-kind
+    /// active adapters are paired in port-number order, consuming each
+    /// upstream adapter once. When no real upstream number resolves
+    /// (e.g. daisy-chained routers whose upstream is itself a device
+    /// router), the existing `max(required, max) >= 10` placeholder
+    /// gate applies and the tunnel renders as "Active" with no number
+    /// (reserved/max forced to 0).
+    private static func tunnelList(adapters: [Adapter],
+                                   upstream: [Adapter]) -> [Tunnel] {
+        var upstreamByKind: [AdapterKind: [Adapter]] = [:]
+        for u in upstream where u.isTunnelActive {
+            switch u.kind {
+            case .dp, .usb, .pcie:
+                upstreamByKind[u.kind, default: []].append(u)
+            default:
+                break
+            }
+        }
+        upstreamByKind = upstreamByKind.mapValues {
+            $0.sorted { $0.portNumber < $1.portNumber }
+        }
+        var consumed: [AdapterKind: Int] = [:]
+
         var out: [Tunnel] = []
         for a in adapters where a.isTunnelActive {
             switch a.kind {
@@ -499,6 +610,26 @@ private enum DTTBuilder {
             default:
                 break
             }
+            // Consume the next unclaimed same-kind upstream adapter so
+            // multi-tunnel classes (two DP streams) stay index-aligned.
+            let idx = consumed[a.kind] ?? 0
+            consumed[a.kind] = idx + 1
+            let candidates = upstreamByKind[a.kind] ?? []
+            let match: Adapter? = idx < candidates.count ? candidates[idx] : nil
+
+            var reserved = a.requiredBandwidth
+            var maxBW = a.maxBandwidth
+            if max(reserved, maxBW) < 10 {
+                if let m = match,
+                   max(m.requiredBandwidth, m.maxBandwidth) >= 10 {
+                    reserved = m.requiredBandwidth
+                    maxBW = m.maxBandwidth
+                } else {
+                    reserved = 0
+                    maxBW = 0
+                }
+            }
+
             let hops = hopTableEntries(a.node)
             let pathID = ([a.portNumber] + hops.map { $0.dstPort })
                 .map { "P\($0)" }
@@ -507,8 +638,8 @@ private enum DTTBuilder {
                 id: a.id,
                 kind: a.kind,
                 pathID: pathID,
-                reservedBW: a.requiredBandwidth,
-                maxBW: a.maxBandwidth,
+                reservedBW: reserved,
+                maxBW: maxBW,
                 hopCount: hops.count
             ))
         }
@@ -770,10 +901,11 @@ private enum DTTBuilder {
         // "ancient hardware" to users. The declared bcdUSB ("USB
         // 2.0", "USB 3.2") is the device's nominal protocol class,
         // which is what users mean when they ask "what kind of USB
-        // device is this".
+        // device is this". Version-only label — bcdUSB doesn't encode
+        // the Gen/lane ceiling, so no speed claim is rendered.
         if let bcd = node.properties["bcdUSB"]?.asUInt,
-           let cap = usbCapabilityFromBCD(bcd) {
-            parts.append(cap.shortLabel)
+           let declared = usbDeclaredVersionLabel(bcd) {
+            parts.append(declared)
         } else if let speed = node.properties["Device Speed"]?.asUInt
             ?? node.properties["kUSBCurrentSpeed"]?.asUInt,
                   speed > 0 {
@@ -827,19 +959,63 @@ private enum DTTBuilder {
             }
     }
 
-    /// PCIe endpoints tunneled through this device router. On Apple
-    /// Silicon most docks tunnel their storage over USB rather than
-    /// PCIe (the dock's NVMe lives behind a USB-mass-storage bridge),
-    /// so this typically returns empty. We still walk
-    /// `snapshot.tb.pcieDevicesOverTB` for completeness.
-    private static func collectPCIeBlocks(snapshot: SystemSnapshot) -> [PCIeLeaf] {
-        return snapshot.tb.pcieDevicesOverTB.map { node in
-            PCIeLeaf(
-                id: node.id,
-                title: node.title,
-                subtitle: node.subtitle
-            )
+    /// For each TB controller, find the "Thunderbolt PCIe Slot N" root
+    /// allocated alongside it in the IOKit registry. Apple Silicon
+    /// allocates the TB controller and its TB PCIe downstream root port
+    /// as adjacent IORegistry entries; there's no explicit
+    /// cross-reference, so walk both id-sorted lists in lockstep,
+    /// consuming each slot once a controller claims it. The allocation
+    /// doesn't strictly interleave (this MBP: controllers 0xBEC, 0xBF0,
+    /// 0xC8B; slots 0xC07, 0xCAA, 0xCC6) — a naive non-consuming "first
+    /// slot with a greater id" pairs two controllers with the same slot
+    /// and orphans another. Mirrors `tbControllerPCIeSlotMap` in
+    /// SidebarView.swift — keep the two in sync.
+    private static func pcieSlotMap(controllers: [TBNode],
+                                    pcieRoots: [PCINode]) -> [TBNodeID: PCINode] {
+        let slots = pcieRoots
+            .filter { $0.slotName?.contains("Slot-") == true }
+            .sorted { $0.id.raw < $1.id.raw }
+        let ctrls = controllers.sorted { $0.id.raw < $1.id.raw }
+        var out: [TBNodeID: PCINode] = [:]
+        var slotIndex = 0
+        for c in ctrls {
+            while slotIndex < slots.count, slots[slotIndex].id.raw <= c.id.raw {
+                slotIndex += 1
+            }
+            guard slotIndex < slots.count else { break }
+            out[c.id] = slots[slotIndex]
+            slotIndex += 1
         }
+        return out
+    }
+
+    /// PCIe endpoints tunneled through this controller's device router.
+    /// Sourced from the controller's "Thunderbolt PCIe Slot N" subtree in
+    /// `snapshot.pcie` — `tb.pcieDevicesOverTB` is structurally empty on
+    /// Apple Silicon (tunneled PCIe enumerates under the PCI plane, not
+    /// the TB tree). The legacy list is still appended for Intel hosts,
+    /// where it's the populated source.
+    private static func collectPCIeBlocks(snapshot: SystemSnapshot,
+                                          slot: PCINode?) -> [PCIeLeaf] {
+        var out: [PCIeLeaf] = []
+        var seen = Set<UInt64>()
+        if let slot {
+            var stack = [slot]
+            while let n = stack.popLast() {
+                if n.kind == .endpoint, seen.insert(n.id.raw).inserted {
+                    out.append(PCIeLeaf(id: n.id,
+                                        title: n.title,
+                                        subtitle: n.subtitle))
+                }
+                stack.append(contentsOf: n.children)
+            }
+        }
+        for node in snapshot.tb.pcieDevicesOverTB where seen.insert(node.id.raw).inserted {
+            out.append(PCIeLeaf(id: node.id,
+                                title: node.title,
+                                subtitle: node.subtitle))
+        }
+        return out
     }
 
     /// Decode `Hop Table` rows into `(dstPort, dstHopID)` tuples. The
@@ -1519,7 +1695,11 @@ struct DetailedThunderboltTopologyView: View {
                     SidebarRow(label: "Link Bandwidth",
                                value: tbBandwidthLabel(adapter.linkBandwidth))
                 }
-                if adapter.requiredBandwidth > 0 || adapter.maxBandwidth > 0 {
+                // Device-side function adapters publish placeholder
+                // Required=Max=1 (100 Mb/s) on live tunnels — only show
+                // numbers for a real reservation (≥ 1 Gb/s); the Tunnel
+                // row below already says Active.
+                if max(adapter.requiredBandwidth, adapter.maxBandwidth) >= 10 {
                     SidebarRow(label: "Reserved",
                                value: tbBandwidthLabel(adapter.requiredBandwidth))
                     SidebarRow(label: "Max Planned",
@@ -1537,10 +1717,18 @@ struct DetailedThunderboltTopologyView: View {
                 SidebarRow(label: "Type", value: tunnel.kind.label)
                 SidebarRow(label: "Path", value: tunnel.pathID)
                 SidebarRow(label: "Hops", value: "\(tunnel.hopCount)")
-                SidebarRow(label: "Reserved",
-                           value: tbBandwidthLabel(tunnel.reservedBW))
-                SidebarRow(label: "Max Planned",
-                           value: tbBandwidthLabel(tunnel.maxBW))
+                if tunnel.reservedBW > 0 || tunnel.maxBW > 0 {
+                    SidebarRow(label: "Reserved",
+                               value: tbBandwidthLabel(tunnel.reservedBW))
+                    SidebarRow(label: "Max Planned",
+                               value: tbBandwidthLabel(tunnel.maxBW))
+                } else {
+                    // Placeholder reservation that couldn't be resolved
+                    // from the upstream router — the tunnel is up, the
+                    // kernel just doesn't publish a real number here.
+                    SidebarRow(label: "Reserved",
+                               value: "Active (no static reservation)")
+                }
             }
         }
     }
@@ -2078,6 +2266,13 @@ private struct TunnelChip: View {
                 if tunnel.reservedBW > 0 {
                     Text(tbBandwidthLabel(tunnel.reservedBW))
                         .font(.caption.monospacedDigit().weight(.medium))
+                        .foregroundStyle(tunnel.kind.color)
+                } else if tunnel.maxBW == 0 {
+                    // Placeholder reservation (couldn't resolve a real
+                    // number from the upstream router) — the tunnel is
+                    // live, so say so instead of "100 Mb/s".
+                    Text("Active")
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(tunnel.kind.color)
                 }
                 if tunnel.maxBW > tunnel.reservedBW && tunnel.maxBW > 0 {

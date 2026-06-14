@@ -23,8 +23,14 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         if let sel = vm.selection {
+            // Derive the port list once per body evaluation — the port
+            // lookup and the display attribution below both need it, and
+            // `TopologyMapper.physicalPorts` walks the whole snapshot.
+            let allPorts = PhysicalPortSelector.isPortID(sel)
+                ? TopologyMapper.physicalPorts(from: vm.snapshot)
+                : []
             if PhysicalPortSelector.isPortID(sel),
-               let port = TopologyMapper.physicalPorts(from: vm.snapshot).first(where: { PhysicalPortSelector.id(for: $0).raw == sel.raw }) {
+               let port = allPorts.first(where: { PhysicalPortSelector.id(for: $0).raw == sel.raw }) {
                 // Built-in non-USB receptacles get curated, connector-specific
                 // detail pages. The unified `PhysicalPortDetailView` is built
                 // around USB-C semantics (USB-PD profiles, alt-mode transports,
@@ -43,6 +49,7 @@ struct ContentView: View {
                         .id(sel)
                 case .hdmi:
                     HDMIDetailView(port: port,
+                                   displays: displaysForPort(port, allPorts: allPorts),
                                    onNavigate: { vm.select($0) })
                         .id(sel)
                 case .sdCard:
@@ -51,7 +58,7 @@ struct ContentView: View {
                         .id(sel)
                 case .usbC, .usbA, .magsafe, .other:
                     PhysicalPortDetailView(port: port,
-                                           displays: displaysForPort(port),
+                                           displays: displaysForPort(port, allPorts: allPorts),
                                            onNavigate: { vm.select($0) })
                         .id(sel)
                 }
@@ -90,11 +97,11 @@ struct ContentView: View {
         }
     }
 
-    private func displaysForPort(_ port: PhysicalPort) -> [DisplayInfo] {
-        let allPorts = TopologyMapper.physicalPorts(from: vm.snapshot)
-        return displaysAttributed(to: port,
-                                  allPorts: allPorts,
-                                  allDisplays: vm.snapshot.displays.displays)
+    private func displaysForPort(_ port: PhysicalPort,
+                                 allPorts: [PhysicalPort]) -> [DisplayInfo] {
+        displaysAttributed(to: port,
+                           allPorts: allPorts,
+                           allDisplays: vm.snapshot.displays.displays)
     }
 
     private func findPCINode(id: TBNodeID, in roots: [PCINode]) -> PCINode? {

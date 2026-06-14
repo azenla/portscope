@@ -140,9 +140,10 @@ nonisolated func findThunderboltPeer(in controller: TBNode) -> ThunderboltPeer? 
             .properties["BSD Name"]?.asString
         interfaceMAC = formatTBPeerMAC(ipPort.properties["IOMACAddress"])
         interfaceLinkSpeedBps = ipPort.properties["IOLinkSpeed"]?.asUInt
-        // IOLinkStatus bit 0 = link up. Match the EthernetScanner check.
+        // IOLinkStatus bit 0 = kIONetworkLinkValid (status is meaningful),
+        // bit 1 = kIONetworkLinkActive (link is up). Match EthernetScanner.
         let status = ipPort.properties["IOLinkStatus"]?.asUInt ?? 0
-        interfaceLinkActive = (status & 0x1) == 0x1
+        interfaceLinkActive = (status & 0x3) == 0x3
     } else {
         interfaceBSDName = nil
         interfaceMAC = nil

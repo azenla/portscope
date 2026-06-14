@@ -26,6 +26,13 @@ struct BatteryView: View {
             let designCapacity = node.properties["DesignCapacity"]?.asUInt ?? 0
             let appleRawCapacity = node.properties["AppleRawCurrentCapacity"]?.asUInt ?? 0
             let appleRawMaxCapacity = node.properties["AppleRawMaxCapacity"]?.asUInt ?? 0
+            let nominalChargeCapacity = node.properties["NominalChargeCapacity"]?.asUInt ?? 0
+            // `MaxCapacity` is gas-gauge-normalized (always 100 on Apple
+            // Silicon) — it's only good as the charge-bar denominator.
+            // Real health is the full-charge capacity in mAh against the
+            // pack's design capacity.
+            let healthPct = healthPercent(rawMax: appleRawMaxCapacity > 0 ? appleRawMaxCapacity : nominalChargeCapacity,
+                                          design: designCapacity)
             let timeRemaining = node.properties["TimeRemaining"]?.asUInt
             let avgTimeToEmpty = node.properties["AvgTimeToEmpty"]?.asUInt
             let avgTimeToFull = node.properties["AvgTimeToFull"]?.asUInt
@@ -35,12 +42,13 @@ struct BatteryView: View {
 
             BatteryHero(percent: current,
                         maxPercent: maxCap,
+                        healthPercent: healthPct,
                         isCharging: isCharging,
                         external: external)
 
             StatGrid(stats: [
                 Stat(label: "Charge",
-                     value: "\(current)% / \(maxCap)%",
+                     value: "\(current)%",
                      symbol: "battery.100"),
                 Stat(label: "Power Source",
                      value: external ? (isCharging ? "AC (charging)" : "AC (not charging)") : "Battery",
@@ -60,10 +68,12 @@ struct BatteryView: View {
                                                 ?? node.properties["DesignCycleCount"]?.asUInt),
                      symbol: "arrow.triangle.2.circlepath"),
                 Stat(label: "Time to Empty",
-                     value: minuteLabel(timeRemainingValue(timeRemaining, avg: avgTimeToEmpty)),
+                     value: minuteLabel(timeRemainingValue(isCharging ? nil : timeRemaining,
+                                                           avg: avgTimeToEmpty)),
                      symbol: "hourglass.bottomhalf.filled"),
                 Stat(label: "Time to Full",
-                     value: minuteLabel(timeRemainingValue(nil, avg: avgTimeToFull)),
+                     value: minuteLabel(timeRemainingValue(isCharging ? timeRemaining : nil,
+                                                           avg: avgTimeToFull)),
                      symbol: "hourglass.tophalf.filled"),
                 Stat(label: "Design Capacity",
                      value: designCapacity > 0 ? "\(designCapacity) mAh" : "—",
@@ -109,11 +119,15 @@ struct BatteryView: View {
 
             SectionCard(title: "Health", symbol: "heart.text.square") {
                 HStack {
-                    Text("Battery Health Maximum")
+                    Text("Full-Charge Capacity vs Design")
                     Spacer()
-                    Text("\(maxCap)%")
-                        .monospaced()
-                        .foregroundStyle(maxCap >= 80 ? .green : (maxCap >= 60 ? .orange : .red))
+                    if let healthPct {
+                        Text("\(healthPct)%")
+                            .monospaced()
+                            .foregroundStyle(healthPct >= 80 ? .green : (healthPct >= 60 ? .orange : .red))
+                    } else {
+                        Text("—").monospaced().foregroundStyle(.secondary)
+                    }
                 }
                 .font(.callout)
             }
@@ -142,12 +156,23 @@ struct BatteryView: View {
         return String(format: "%.1f °C  (%.0f °F)", celsius, fahrenheit)
     }
 
-    /// Battery reports two minute counters: TimeRemaining (when discharging)
-    /// and AvgTimeToEmpty / AvgTimeToFull. 65535 = invalid.
+    /// `TimeRemaining` follows kIOPMPSTimeRemaining semantics — minutes to
+    /// full while charging, minutes to empty while discharging — so callers
+    /// pass it as `primary` only for the stat matching the charge state.
+    /// AvgTimeToEmpty / AvgTimeToFull are the per-stat fallbacks.
+    /// 65535 = invalid.
     private func timeRemainingValue(_ primary: UInt64?, avg: UInt64?) -> UInt64? {
         if let p = primary, p > 0, p < 65535 { return p }
         if let a = avg, a > 0, a < 65535 { return a }
         return nil
+    }
+
+    /// Health = full-charge capacity (mAh, from the gauge IC) ÷ design
+    /// capacity (mAh). Both must be present and non-zero; desktops'
+    /// telemetry-only `AppleSmartBattery` publishes neither.
+    private func healthPercent(rawMax: UInt64, design: UInt64) -> Int? {
+        guard rawMax > 0, design > 0 else { return nil }
+        return Int((Double(rawMax) / Double(design) * 100).rounded())
     }
 
     private func minuteLabel(_ minutes: UInt64?) -> String {
@@ -349,7 +374,11 @@ struct BatteryView: View {
 
 private struct BatteryHero: View {
     let percent: UInt64
+    /// Gas-gauge-normalized charge ceiling (`MaxCapacity`) — charge-bar
+    /// denominator only, not a health figure.
     let maxPercent: UInt64
+    /// Full-charge capacity ÷ design capacity, when the gauge publishes both.
+    let healthPercent: Int?
     let isCharging: Bool
     let external: Bool
 
@@ -372,7 +401,10 @@ private struct BatteryHero: View {
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text(statusText).font(.title3).bold()
-                Text(maxText).foregroundStyle(.secondary).font(.callout)
+                if let health = healthPercent {
+                    Text("Health \(health)% of design capacity")
+                        .foregroundStyle(.secondary).font(.callout)
+                }
                 ProgressView(value: Double(percent) / Double(max(maxPercent, 1)))
                     .progressViewStyle(.linear)
                     .tint(color)
@@ -386,10 +418,6 @@ private struct BatteryHero: View {
         if isCharging { return "Charging" }
         if external { return "Plugged In · Not Charging" }
         return "On Battery"
-    }
-
-    private var maxText: String {
-        "Cap relative to design · \(maxPercent)% available"
     }
 
     private var color: Color {
@@ -465,11 +493,13 @@ struct MagSafeView: View {
         return "Empty"
     }
 
-    /// `FW Version` is a 4-byte little-endian blob (e.g. `<00872000>` =
-    /// 0x00208700 ≈ 2.08.7.0). We surface it as a dot-separated string.
+    /// `FW Version` is a 4-byte little-endian blob; render it
+    /// most-significant byte first, each byte as two-digit hex (the live
+    /// blob `<00023100>` is 0x00310200 → "00.31.02.00").
     private var magSafeFirmware: String? {
         if case .data(let d) = accessory.registryProperties["FW Version"], d.count >= 4 {
-            return "\(d[3]).\(d[2]).\(d[1]).\(d[0])"
+            let b = [UInt8](d.prefix(4))
+            return String(format: "%02x.%02x.%02x.%02x", b[3], b[2], b[1], b[0])
         }
         return nil
     }

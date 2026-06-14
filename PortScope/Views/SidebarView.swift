@@ -925,13 +925,20 @@ private func tbControllerPCIeSlotMap(controllers: [TBNode],
         .sorted { $0.id.raw < $1.id.raw }
     let ctrls = controllers.sorted { $0.id.raw < $1.id.raw }
     var out: [TBNodeID: PCINode] = [:]
+    // Walk both sorted lists in lockstep, consuming each slot once a
+    // controller claims it. Registry allocation doesn't strictly
+    // interleave (this MBP allocates controllers 0xBEC, 0xBF0, 0xC8B
+    // and slots 0xC07, 0xCAA, 0xCC6) — a naive "first slot with a
+    // greater id" pairs two controllers with the same slot and orphans
+    // another.
+    var slotIndex = 0
     for c in ctrls {
-        // First TB PCIe slot whose registry id is greater than this
-        // controller's. On the user's MBP that pairs each controller with
-        // the slot immediately after it (Ctrl 0xD39 → Slot 0xD76, etc.).
-        if let slot = slots.first(where: { $0.id.raw > c.id.raw }) {
-            out[c.id] = slot
+        while slotIndex < slots.count, slots[slotIndex].id.raw <= c.id.raw {
+            slotIndex += 1
         }
+        guard slotIndex < slots.count else { break }
+        out[c.id] = slots[slotIndex]
+        slotIndex += 1
     }
     return out
 }

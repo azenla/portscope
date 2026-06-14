@@ -46,10 +46,15 @@ enum SnapshotDumper {
     }
 
     private static func snapshotToJSONObject(_ s: SystemSnapshot, showBuses: Bool, flattenHubs: Bool) -> [String: Any] {
+        let ports = TopologyMapper.physicalPorts(from: s)
         var out: [String: Any] = [
             "captured_at": ISO8601DateFormatter().string(from: s.capturedAt),
             "host": hostInfoJSON(),
-            "physical_ports": TopologyMapper.physicalPorts(from: s).map { physicalPortToJSON($0, flattenHubs: flattenHubs) },
+            "physical_ports": ports.map {
+                physicalPortToJSON($0, allPorts: ports,
+                                   allDisplays: s.displays.displays,
+                                   flattenHubs: flattenHubs)
+            },
             "accessories": s.accessories.map(accessoryToJSON(_:)),
             "displays": s.displays.displays.map(displayToJSON(_:))
         ]
@@ -122,7 +127,10 @@ enum SnapshotDumper {
         ]
     }
 
-    private static func physicalPortToJSON(_ p: PhysicalPort, flattenHubs: Bool) -> [String: Any] {
+    private static func physicalPortToJSON(_ p: PhysicalPort,
+                                           allPorts: [PhysicalPort],
+                                           allDisplays: [DisplayInfo],
+                                           flattenHubs: Bool) -> [String: Any] {
         let descriptor = MacPortCatalog.current.descriptor(for: p.connector, portNumber: p.number)
         var out: [String: Any] = [
             "number": p.number,
@@ -140,6 +148,17 @@ enum SnapshotDumper {
             "attached_usb_device_count": p.attachedUSBDevices.count,
             "usb_device_roots": flattenedRootsForJSON(p.usbDeviceRoots, flattenHubs: flattenHubs)
                 .map { nodeToJSON($0, flattenHubs: flattenHubs) },
+            // Same attribution heuristic the GUI sidebar / detail views use
+            // (`displaysAttributed`), so the CLI can exercise it directly.
+            "displays": displaysAttributed(to: p, allPorts: allPorts,
+                                           allDisplays: allDisplays)
+                .map { d -> [String: Any] in
+                    [
+                        "id": String(format: "0x%llX", d.backingID.raw),
+                        "title": d.title,
+                        "summary": d.subtitle ?? NSNull()
+                    ]
+                },
             "tunnels": p.tunnels.map { t -> [String: Any] in
                 [
                     "kind": "\(t.kind)",
@@ -187,7 +206,8 @@ enum SnapshotDumper {
             "wake_current_limit_ma": sp.wakeLimitMA.map { NSNumber(value: $0) } ?? NSNull(),
             "sleep_current_limit_ma": sp.sleepLimitMA.map { NSNumber(value: $0) } ?? NSNull(),
             "total_allocated_ma": sp.totalAllocatedMA,
-            "estimated_power_w_at_5v": Double(sp.totalAllocatedMA) / 1000.0 * 5.0,
+            "estimated_power_w_at_5v": wattsAt5V(milliamps: sp.totalAllocatedMA),
+            "estimated_power_mw_at_5v": sp.totalAllocatedMA * 5,
             "sinks": sp.sinks.map { s -> [String: Any] in
                 [
                     "id": String(format: "0x%llX", s.id.raw),
@@ -195,7 +215,8 @@ enum SnapshotDumper {
                     "allocated_ma": s.allocatedMA,
                     "capability_ma": s.capabilityMA.map { NSNumber(value: $0) } ?? NSNull(),
                     "config_current_ma": s.configCurrentMA.map { NSNumber(value: $0) } ?? NSNull(),
-                    "estimated_power_w_at_5v": Double(s.allocatedMA) / 1000.0 * 5.0
+                    "estimated_power_w_at_5v": wattsAt5V(milliamps: s.allocatedMA),
+                    "estimated_power_mw_at_5v": s.allocatedMA * 5
                 ]
             }
         ]
@@ -207,6 +228,13 @@ enum SnapshotDumper {
             ]
         }
         return out
+    }
+
+    /// mA × 5 V, rounded to two decimals so the bare binary-fraction noise
+    /// (4.4800000000000004) doesn't leak into the dump. The exact value is
+    /// emitted alongside as integer milliwatts (`estimated_power_mw_at_5v`).
+    private static func wattsAt5V(milliamps: UInt64) -> Double {
+        (Double(milliamps) * 5.0 / 1000.0 * 100).rounded() / 100
     }
 
     private static func thunderboltPeerToJSON(_ peer: ThunderboltPeer) -> [String: Any] {
@@ -263,16 +291,22 @@ enum SnapshotDumper {
         ]
     }
 
-    /// Strip `.usbHub` nodes out of a children array, splicing each hub's own
-    /// descendants up in its place. Recursive — a chain of three cascaded
-    /// hubs collapses to whatever leaves sit at the bottom. Off by default;
-    /// only the `--hubs`-aware top-level paths flip it on.
+    /// Strip `.usbHub` nodes out of a children array, splicing each hub's
+    /// promoted descendants up in its place. Recursive — a chain of three
+    /// cascaded hubs collapses to whatever leaves sit at the bottom. Off by
+    /// default; only the `--hubs`-aware top-level paths flip it on.
+    ///
+    /// Non-hub children pass through untouched (the JSON tree otherwise
+    /// preserves the raw IOService shape), but a spliced hub's subtree goes
+    /// through `promotedJSONChildren` — mirroring the pretty printer's
+    /// `promotedUSBChildren` — so the flat list contains actual devices,
+    /// not the hub's driver kext / user clients / interface wrappers.
     private static func flattenedChildrenForJSON(_ kids: [TBNode], flattenHubs: Bool) -> [TBNode] {
         guard flattenHubs else { return kids }
         var out: [TBNode] = []
         for c in kids {
             if c.kind == .usbHub {
-                out.append(contentsOf: flattenedChildrenForJSON(c.children, flattenHubs: true))
+                out.append(contentsOf: promotedJSONChildren(of: c))
             } else {
                 out.append(c)
             }
@@ -289,9 +323,30 @@ enum SnapshotDumper {
         var out: [TBNode] = []
         for r in roots {
             if r.kind == .usbHub {
-                out.append(contentsOf: flattenedChildrenForJSON(r.children, flattenHubs: true))
+                out.append(contentsOf: promotedJSONChildren(of: r))
             } else {
                 out.append(r)
+            }
+        }
+        return out
+    }
+
+    /// USB-tree promotion for a spliced hub: recurse through `.other`
+    /// wrapper kexts (`AppleUSB20Hub` driver nodes, hub-port wrappers,
+    /// user clients) and nested `.usbHub`s, skip `.usbInterface` rows,
+    /// and keep real devices. A hub's raw children are mostly wrappers —
+    /// splicing them verbatim used to promote "AppleUSB20Hub" / "Google
+    /// Chrome" / "Interface 0" into the device list while the actual leaf
+    /// devices stayed buried one level down.
+    private static func promotedJSONChildren(of node: TBNode) -> [TBNode] {
+        var out: [TBNode] = []
+        for c in node.children {
+            if c.kind == .other || c.kind == .usbHub {
+                out.append(contentsOf: promotedJSONChildren(of: c))
+            } else if c.kind == .usbInterface {
+                continue
+            } else {
+                out.append(c)
             }
         }
         return out
@@ -450,8 +505,13 @@ enum SnapshotDumper {
             "endpoint": e.endpoint == .sopPrime ? "SOP'" : "SOP''",
             "vendor_id": e.vendorID,
             "product_type": "\(e.productType)",
-            "product_type_label": e.productType.label,
-            "cable_vdo": [
+            "product_type_label": e.productType.label
+        ]
+        // Non-cable SOP'/SOP'' responders (VCONN-powered devices like the
+        // Apple Watch charger) carry no Cable VDO — emitting the `.absent`
+        // placeholder would dump misleading zeros.
+        if e.productType.isCable {
+            out["cable_vdo"] = [
                 "speed": "\(e.cableVDO.speed)",
                 "speed_label": e.cableVDO.speed.label,
                 "speed_max_gbps": e.cableVDO.speed.maxGbps,
@@ -461,14 +521,14 @@ enum SnapshotDumper {
                 "max_volts": e.cableVDO.maxVolts,
                 "max_watts": e.cableVDO.maxWatts,
                 "cable_type": e.cableVDO.cableType == .active ? "active" : "passive",
-                "vbus_through_cable": e.cableVDO.vbusThroughCable,
+                "vbus_through_cable": e.cableVDO.vbusThroughCable.map { NSNumber(value: $0) } ?? NSNull(),
                 "epr_capable": e.cableVDO.eprCapable,
                 "latency_ns": e.cableVDO.latencyNanoseconds.map { NSNumber(value: $0) } ?? NSNull(),
                 "vdo_version_encoded": e.cableVDO.vdoVersionEncoded,
                 "cable_termination_encoded": e.cableVDO.cableTerminationEncoded,
                 "decode_warnings": e.cableVDO.decodeWarnings.map { $0.label }
-            ]
-        ]
+            ] as [String: Any]
+        }
         if let a = e.activeVDO2 {
             out["active_cable_vdo2"] = [
                 "max_operating_temp_c": a.maxOperatingTempC,
@@ -525,7 +585,8 @@ enum SnapshotDumper {
     static func pretty(_ snapshot: SystemSnapshot, useColor: Bool, showBuses: Bool, showHubs: Bool) -> String {
         let p = PrettyPrinter(useColor: useColor, flattenHubs: !showHubs)
         p.header(snapshot)
-        p.physicalPorts(TopologyMapper.physicalPorts(from: snapshot))
+        p.physicalPorts(TopologyMapper.physicalPorts(from: snapshot),
+                        allDisplays: snapshot.displays.displays)
         if showBuses {
             p.thunderbolt(snapshot.tb)
             p.usb(snapshot.usb)
@@ -689,7 +750,7 @@ private final class PrettyPrinter {
 
     // MARK: Physical Ports
 
-    func physicalPorts(_ ports: [PhysicalPort]) {
+    func physicalPorts(_ ports: [PhysicalPort], allDisplays: [DisplayInfo]) {
         section("⚡️ Physical Ports", ports.isEmpty ? "—" : pluralize(ports.count, "receptacle"))
         if ports.isEmpty {
             line(dim("   none"))
@@ -754,6 +815,12 @@ private final class PrettyPrinter {
                 if !peer.interfaceLinkActive { trailer.append("link down") }
                 let trailerStr = trailer.isEmpty ? "" : dim(" (" + trailer.joined(separator: " · ") + ")")
                 line("      \(blue("🛰"))  TB Networking · \(bold(peer.displayTitle))\(trailerStr)")
+            }
+            // Attributed external displays — same heuristic the GUI sidebar
+            // nests display rows with (`displaysAttributed`).
+            for d in displaysAttributed(to: port, allPorts: ports,
+                                        allDisplays: allDisplays) {
+                line("      \(magenta("🖥")) \(d.title)\(d.subtitle.map { dim(" · \($0)") } ?? "")")
             }
             for root in flattenedRoots(port.usbDeviceRoots) {
                 line("      \(cyan("🔌")) \(root.title)\(root.subtitle.map { dim(" · \($0)") } ?? "")")

@@ -38,7 +38,7 @@ struct DetailView: View {
         switch node.kind {
         case .controller: ControllerView(node: node, onNavigate: onNavigate)
         case .switch: RouterView(node: node, onNavigate: onNavigate, parentLookup: parentLookup)
-        case .port: PortView(node: node)
+        case .port: PortView(node: node, parentLookup: parentLookup)
         case .localNode: LocalNodeView(node: node)
         case .usbController:
             USBControllerView(node: node,
@@ -145,6 +145,13 @@ private struct StatusPill: View {
             if desc == "Port is inactive" { return ("Disabled", .secondary) }
             let speed = node.properties["Current Link Speed"]?.asUInt ?? 0
             if speed == 0 { return ("Inactive", .secondary) }
+            // Empty downstream lane ports on device routers publish idle
+            // defaults (CLS=8 / LBW=100) — require a real peer signal
+            // (nested peer port, hop table, or live Link Bandwidth) before
+            // claiming the link is up. See `tbLaneLinkUp`.
+            if !tbLaneLinkUp(props: node.properties, childCount: node.children.count) {
+                return ("Idle", .secondary)
+            }
             return ("Link Up", .green)
         case .switch:
             let depth = node.properties["Depth"]?.asUInt ?? 0
@@ -167,6 +174,23 @@ nonisolated private func findDownstreamSwitch(under node: TBNode) -> TBNode? {
         let n = stack.removeFirst()
         if n.kind == .switch { return n }
         if n.kind == .port { stack.append(contentsOf: n.children) }
+    }
+    return nil
+}
+
+/// Climb the IOService tree from a node to the first switch (router)
+/// ancestor — the *upstream side* of whatever link the node sits on. For a
+/// host lane adapter that's the host root switch; for the device-side peer
+/// lane it climbs through the host lane to the same root. Used to read
+/// tunnel reservations from the side where the kernel publishes real
+/// numbers (the device-side router's function adapters carry placeholders).
+private func findAncestorSwitch(of node: TBNode,
+                                parentLookup: (TBNodeID) -> TBNode?) -> TBNode? {
+    var current: TBNode? = parentLookup(node.id)
+    for _ in 0..<16 {
+        guard let c = current else { return nil }
+        if c.kind == .switch { return c }
+        current = parentLookup(c.id)
     }
     return nil
 }
@@ -338,7 +362,16 @@ private struct RouterView: View {
             ])
 
             if depth > 0, let uplink = findUpstreamLane() {
-                UpstreamLinkCard(uplink: uplink, router: node)
+                // Reservations come from the *upstream* router's function
+                // adapters (the host root for a first-hop dock) — this
+                // router's own adapters publish placeholders (DP: req=max=1)
+                // for the same logical tunnels.
+                let upstreamRouter = findAncestorSwitch(of: uplink,
+                                                        parentLookup: parentLookup)
+                UpstreamLinkCard(
+                    uplink: uplink,
+                    tunnels: upstreamRouter.map { TopologyMapper.summariseTunnels(in: $0) } ?? []
+                )
             }
             AdapterBreakdown(router: node,
                              title: depth == 0 ? "Built-in Adapters" : "Adapters",
@@ -521,12 +554,19 @@ private struct AdapterChip: View {
         let required = port.properties["Required Bandwidth Allocated"]?.asUInt ?? 0
         let maxAlloc = port.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0
         let hopActive = hasActiveHopTable(port)
-        let highlight = isLane ? (speed > 0) : (required > 0 || maxAlloc > 0 || hopActive)
+        // Lane link state needs more than Current Link Speed — empty
+        // downstream lanes on device routers publish idle defaults
+        // (CLS=8 / LBW=100) that would light the chip up as a live TB3
+        // link. See `tbLaneLinkUp`.
+        let laneUp = isLane && tbLaneLinkUp(props: port.properties,
+                                            childCount: port.children.count)
+        let highlight = isLane ? laneUp : (required > 0 || maxAlloc > 0 || hopActive)
 
         HStack(spacing: 5) {
             Text("Port \(n)").font(.caption2.monospacedDigit())
             if let trailing = trailingLabel(isLane: isLane,
                                             isInactive: isInactive,
+                                            laneUp: laneUp,
                                             speed: speed,
                                             required: required,
                                             maxAlloc: maxAlloc,
@@ -556,13 +596,14 @@ private struct AdapterChip: View {
 
     private func trailingLabel(isLane: Bool,
                                isInactive: Bool,
+                               laneUp: Bool,
                                speed: UInt64,
                                required: UInt64,
                                maxAlloc: UInt64,
                                hopActive: Bool) -> String? {
         if isInactive { return nil }
         if isLane {
-            return speed > 0 ? tbGenerationShortLabel(speed) : "Idle"
+            return laneUp ? tbGenerationShortLabel(speed) : "Idle"
         }
         // Function adapter (DP / USB / PCIe). The kernel sometimes reports a
         // placeholder `Required Bandwidth Allocated = 1` (= 100 Mb/s) on an
@@ -587,16 +628,16 @@ private struct AdapterChip: View {
 private struct UpstreamLinkCard: View {
     /// The upstream lane adapter on the host side feeding this router.
     let uplink: TBNode
-    /// This router (the dock or daisy-chained device) — used to sum
-    /// reservations from its own function adapters, which is the only
-    /// source the kernel publishes consistently.
-    let router: TBNode
+    /// Tunnel summaries from the *upstream-side* router's function
+    /// adapters — the kernel-authoritative reservation source. Summing the
+    /// device router's own adapters instead reads placeholders (DP:
+    /// req=max=1) and shows a live 34 Gb/s DP stream as "negligible".
+    let tunnels: [PortTunnel]
 
     var body: some View {
         let bw = uplink.properties["Link Bandwidth"]?.asUInt ?? 0
         let currentSpeed = uplink.properties["Current Link Speed"]?.asUInt ?? 0
         let width = uplink.properties["Current Link Width"]?.asUInt ?? 0
-        let tunnels = TopologyMapper.summariseTunnels(in: router)
         let reserved = tunnels.reduce(UInt64(0)) { $0 + $1.reservedBandwidth }
         let maxAlloc = tunnels.reduce(UInt64(0)) { $0 + $1.maxBandwidth }
 
@@ -787,8 +828,12 @@ private func displaySubtitle(_ d: DisplayInfo) -> String? {
     if let w = d.widthPixels, let h = d.heightPixels, w > 0, h > 0 {
         parts.append("\(w) × \(h)")
     }
-    if let mx = d.maxRefreshHz {
-        parts.append("\(Int(mx.rounded())) Hz")
+    // Prefer the refresh rate the panel is actually running at; the max
+    // is a capability ceiling ("144 Hz" on a display driven at 120 Hz).
+    if let hz = d.currentRefreshHz {
+        parts.append("\(Int(hz.rounded())) Hz")
+    } else if let mx = d.maxRefreshHz {
+        parts.append("up to \(Int(mx.rounded())) Hz")
     }
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
@@ -818,18 +863,20 @@ private func usbEndpointSubtitle(_ node: TBNode) -> String? {
         ?? node.properties["USB Vendor Name"]?.asString
     var parts: [String] = []
     if let v = vendor, !v.isEmpty { parts.append(v) }
-    // Show negotiated alongside capability so a USB-3 device downgraded
-    // to USB-2 doesn't read as "just a USB-2 device" — the user sees both
-    // numbers and the ↓ marker telling them where to look.
+    // Show negotiated alongside the declared protocol version so a USB-3
+    // device downgraded to the 2.0 bus doesn't read as "just a USB-2
+    // device" — the user sees both and the ↓ marker telling them where to
+    // look. The declared label is version-only (`usbDeclaredVersionLabel`)
+    // because bcdUSB doesn't encode the Gen/lane ceiling.
     if let s = speed, s > 0 {
         if usbIsDowngraded(bcdUSB: bcdUSB, currentSpeed: speed),
-           let cap = usbCapabilityFromBCD(bcdUSB) {
-            parts.append("\(usbSpeedShortLabel(s)) ↓ \(cap.shortLabel)")
+           let declared = usbDeclaredVersionLabel(bcdUSB) {
+            parts.append("\(usbSpeedShortLabel(s)) ↓ \(declared)")
         } else {
             parts.append(usbSpeedShortLabel(s))
         }
-    } else if let cap = usbCapabilityFromBCD(bcdUSB) {
-        parts.append(cap.shortLabel)
+    } else if let declared = usbDeclaredVersionLabel(bcdUSB) {
+        parts.append(declared)
     }
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
@@ -846,6 +893,7 @@ nonisolated private func tunnelCategoryColor(_ kind: PortTunnel.Kind) -> Color {
 
 private struct PortView: View {
     let node: TBNode
+    let parentLookup: (TBNodeID) -> TBNode?
 
     var body: some View {
         let description = node.properties["Description"]?.asString ?? "Port"
@@ -871,18 +919,25 @@ private struct PortView: View {
         let bw = node.properties["Link Bandwidth"]?.asUInt ?? 0
         // Per-lane Required / Maximum is an outer-wrapper partial aggregate
         // that disagrees with the actual sum across the link's tunnels.
-        // When this lane has a switch downstream, prefer summing the
-        // switch's function adapters — that's what `port.bandwidthSummary`
-        // exposes for the physical-port view, and the same source the
-        // dock's own Uplink card reads. Fall back to the lane's published
-        // numbers when nothing is connected (no switch underneath).
+        // When this lane carries a downstream switch, sum the function
+        // adapters of the *upstream-side* router (the lane's ancestor
+        // switch — the host root for a host lane). That's the side where
+        // the kernel publishes real reservations; the device-side router's
+        // adapters carry placeholders (DP: req=max=1 on a live stream), so
+        // summing there reads a 34 Gb/s DP reservation as 200 Mb/s. Same
+        // source `TopologyMapper.makePort` uses for `bandwidthSummary`.
+        // Fall back to the lane's published numbers when nothing is
+        // connected (no switch underneath).
         let downstream = findDownstreamSwitch(under: node)
-        let tunnels = downstream.map { TopologyMapper.summariseTunnels(in: $0) } ?? []
+        let upstreamRouter = downstream != nil
+            ? findAncestorSwitch(of: node, parentLookup: parentLookup)
+            : nil
+        let tunnels = upstreamRouter.map { TopologyMapper.summariseTunnels(in: $0) } ?? []
         let summedReserved = tunnels.reduce(UInt64(0)) { $0 + $1.reservedBandwidth }
         let summedMax = tunnels.reduce(UInt64(0)) { $0 + $1.maxBandwidth }
-        let req = downstream != nil ? summedReserved
+        let req = upstreamRouter != nil ? summedReserved
             : (node.properties["Required Bandwidth Allocated"]?.asUInt ?? 0)
-        let maxAlloc = downstream != nil ? summedMax
+        let maxAlloc = upstreamRouter != nil ? summedMax
             : (node.properties["Maximum Bandwidth Allocated"]?.asUInt ?? 0)
 
         VStack(alignment: .leading, spacing: 16) {

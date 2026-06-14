@@ -230,21 +230,31 @@ nonisolated enum DisplayScanner {
             }
             return false
         }()
+        // `IOMFBSupportsICC` / `IOMFBSupportsGPLite` are unconditional
+        // engine capabilities (true even on idle engines with no display
+        // attached) — they say nothing about the connected panel, so
+        // they're deliberately not part of this check.
+        //
+        // The built-in panel never asserts HDR through ColorElements (its
+        // single element reports DynamicRange = 0 even on an XDR panel) —
+        // there, the honest capability signal is peak luminance:
+        // `RTPLCBLNitsCap` is 16.16 fixed-point nits (XDR = 1600, SDR
+        // panels ≤ 600). Treat ≥ 1000 nits as HDR-class.
+        let builtInPeakNits = (props["RTPLCBLNitsCap"]?.asUInt ?? 0) >> 16
         let supportsHDR = hasHDRElement
-            || (props["IOMFBSupportsICC"]?.asBool ?? false)
             || (props["IOMFBSupportsHDR"]?.asBool ?? false)
-            || (props["IOMFBSupportsGPLite"]?.asBool ?? false)
+            || (isBuiltIn && builtInPeakNits >= 1000)
 
-        // VRR: capability comes from a wider-than-1Hz refresh range
-        // (fixed panels publish min == max). Currently-enabled state
-        // comes from `QMSVRREnableConfig`, which the DCP flips when
-        // adaptive sync is live on the panel.
-        let vrrCapable: Bool
-        if let lo = minHz, let hi = maxHz {
-            vrrCapable = (hi - lo) > 1
-        } else {
-            vrrCapable = false
-        }
+        // VRR: `IOMFBSupportsLFC` (low-framerate compensation) is the
+        // kernel's adaptive-sync capability flag. Like the other IOMFB
+        // flags it's published on idle engines too, so gate it on a
+        // panel actually being lit. The cross-mode min–max refresh span
+        // is NOT a VRR signal — a fixed-60Hz panel with 24/30Hz cinema
+        // modes has a wide span — it only feeds the "Supported Range"
+        // stat. Currently-enabled state comes from `QMSVRREnableConfig`,
+        // which the DCP flips when adaptive sync is live on the panel.
+        let vrrCapable = isConnected
+            && (props["IOMFBSupportsLFC"]?.asBool ?? false)
         let vrrActive = (props["QMSVRREnableConfig"]?.asUInt ?? 0) != 0
 
         // Title / subtitle. Subtitle shows the *current* refresh rate
@@ -262,15 +272,17 @@ nonisolated enum DisplayScanner {
         } else if isConnected {
             // Apple's framebuffer doesn't carry a vendor/model name; the
             // best we can do without IODisplayConnect/EDID is "External
-            // Display N". Pull the trailing index off the device-tree name.
+            // Display N". Pull the trailing index off the device-tree
+            // name; it's 0-based ("dispext0"), so +1 keeps the labels
+            // 1-based like every other user-facing port/display number.
             let idx = externalIndex(from: deviceTreeName)
-            title = idx.map { "External Display \($0)" } ?? "External Display"
+            title = idx.map { "External Display \($0 + 1)" } ?? "External Display"
             subtitle = hasResolution
                 ? "\(width!) × \(height!)\(refreshBadge(currentHz, minHz, maxHz))"
                 : nil
         } else {
             let idx = externalIndex(from: deviceTreeName)
-            title = idx.map { "External Engine \($0)" } ?? "External Engine"
+            title = idx.map { "External Engine \($0 + 1)" } ?? "External Engine"
             subtitle = "Idle — no display attached"
         }
 

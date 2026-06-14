@@ -73,7 +73,8 @@ enum PortScopeMain {
 /// One invocation's worth of CLI options. The format selects the output
 /// renderer; `showBuses` adds the raw Thunderbolt / USB / PCIe trees, and
 /// `showHubs` un-flattens the chains of intermediate USB hubs that the
-/// default view hides. Both default off, matching the GUI sidebar.
+/// default view hides. Both default off — CLI dumps stay minimal unless
+/// asked (note the GUI's Show Hardware Buses toggle defaults ON).
 private struct CLIRequest {
     enum Format {
         case pretty(forceColor: Bool?)
@@ -112,7 +113,7 @@ private struct CLIRequest {
                   --simple | -s     Tab-separated port summary, one line per
                                     receptacle. Shell-script friendly.
 
-                Modifiers (all default off — match the GUI sidebar):
+                Modifiers (all default off):
                   --buses  | -b     Include raw Thunderbolt, USB, and PCIe
                                     bus trees. Default: Physical Ports +
                                     Displays only. Ignored by --simple.

@@ -161,11 +161,12 @@ nonisolated struct HIDSensorReader {
                                   validRange: ClosedRange<Double>,
                                   into out: inout [UInt64: Reading]) {
         // Monitor-type client (1) is the read-events-as-user surface —
-        // requires the `com.apple.private.hid.client.event-monitor`
-        // entitlement that PortScope.entitlements ships. Without the
-        // entitlement the kernel hands back a Simple-type client whose
-        // CopyEvent calls return nil, so the panel falls back to the
-        // discovery-only mode.
+        // it requires the private `com.apple.private.hid.client.event-monitor`
+        // entitlement, which PortScope deliberately does NOT ship (AMFI
+        // SIGKILLs ad-hoc-signed binaries that request it — exit 137 at
+        // exec). Without the entitlement the kernel hands back a
+        // Simple-type client whose CopyEvent calls return nil, so the
+        // panel falls back to the IORegistry-backed battery / PSU rows.
         let client: AnyObject
         if let m = _IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, 1, nil) {
             client = m.takeRetainedValue()

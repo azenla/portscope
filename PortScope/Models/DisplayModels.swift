@@ -145,8 +145,11 @@ nonisolated struct PortDisplayOutput: Hashable, Identifiable {
 /// tunnel for displays carried through a dock. Rules:
 ///
 /// * If exactly one port carries a display, all externals go to it.
-/// * If N ports = N externals, pair them 1:1 in (port-number ASC,
-///   dispext-name ASC) order.
+/// * If N ports = N externals, pair them 1:1 in (connector rank, port
+///   number, registry id) × dispext-name ASC order. Port numbers restart
+///   per connector family (HDMI port 1 and USB-C port 1 coexist), so the
+///   sort key must include more than the bare number or the 1:1 pairing
+///   is nondeterministic across rescans.
 /// * Otherwise surface every external under every display-carrying port
 ///   (better to repeat than to vanish — the user can mentally disambiguate).
 ///
@@ -159,7 +162,10 @@ nonisolated func displaysAttributed(to port: PhysicalPort,
     guard portCarriesAnyDisplay(port) else { return [] }
     let dpPorts = allPorts
         .filter(portCarriesAnyDisplay)
-        .sorted { $0.number < $1.number }
+        .sorted {
+            (displayAttributionConnectorRank($0.connector), $0.number, $0.id.raw)
+                < (displayAttributionConnectorRank($1.connector), $1.number, $1.id.raw)
+        }
     let externals = allDisplays
         .filter { !$0.isBuiltIn && $0.isConnected }
         .sorted { $0.deviceTreeName < $1.deviceTreeName }
@@ -223,6 +229,22 @@ nonisolated func activeDPOutputAdapters(in port: PhysicalPort) -> [TBNode] {
     return out.sorted {
         ($0.properties["Port Number"]?.asUInt ?? 0)
             < ($1.properties["Port Number"]?.asUInt ?? 0)
+    }
+}
+
+/// Stable connector-family ordering for `displaysAttributed`'s 1:1 rule.
+/// Port numbers restart per connector, so ties between (say) USB-C port 1
+/// and HDMI port 1 need a family rank before the number is meaningful.
+private nonisolated func displayAttributionConnectorRank(_ c: PortConnectorType) -> Int {
+    switch c {
+    case .usbC: return 0
+    case .usbA: return 1
+    case .magsafe: return 2
+    case .hdmi: return 3
+    case .sdCard: return 4
+    case .acPower: return 5
+    case .ethernet: return 6
+    case .other: return 7
     }
 }
 
@@ -290,8 +312,11 @@ nonisolated struct DisplayInfo: Hashable, Identifiable {
     /// `maximumExtendedDynamicRangeColorComponentValue` reflects it.
     let supportsHDR: Bool
 
-    /// True when the panel advertises a refresh range wider than 1 Hz —
-    /// i.e. it's variable-refresh / ProMotion / FreeSync capable.
+    /// True when the engine reports `IOMFBSupportsLFC` (low-framerate
+    /// compensation — the adaptive-sync capability flag) AND a panel is
+    /// actually lit. The cross-mode refresh span is deliberately not used
+    /// here: a fixed-60Hz panel with 24/30Hz cinema modes spans widely
+    /// without being VRR-capable.
     let variableRefreshCapable: Bool
     /// True when QMS / VRR mode is currently enabled on the engine
     /// (`QMSVRREnableConfig != 0`). Distinct from capability — capable

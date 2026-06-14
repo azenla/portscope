@@ -112,7 +112,7 @@ Duplicate the entry for both `hw.model` keys when one chassis maps to two identi
 
 - **Accessory class hierarchy differs by host generation.** M3+/TB5 → `AppleHPMInterfaceType10/11`. M1/M2/T6000 → `AppleTCControllerType10/11`. `AccessoryScanner.hpmClasses` matches both plus `Type12/18` (future variants). Type11 = MagSafe, Type10 = USB-C. **Empty on Intel.** TB USB tunnel adapter is `AppleThunderboltUSBType2DownAdapter` (Type7) vs `AppleThunderboltUSBDownAdapter` (Type5) — `IORegMonitor` watches both.
 
-- **`SOPVID` / `SOPPID` come back as 2-byte little-endian `Data` blobs**, not numbers. Use `AccessoryScanner.readDataAsUInt`.
+- **`SOPVID` / `SOPPID` come back as 2-byte big-endian `Data` blobs**, not numbers. Use `AccessoryScanner.readDataAsUInt`. Verified on Mac17,6: an Apple Watch charging cable publishes bytes `[0x05, 0xAC]` (Apple = 0x05AC) and an Anker cable `[0x29, 0x1A]` (Anker = 0x291A) — a little-endian read produces unassigned VIDs.
 
 - **`PortAccessoryInfo` carries four sibling-data structs** decoded from dynamic IOKit services that appear/disappear per cable: `cableEmarker` (Discover Identity VDOs), `usb3State` (`IOPortTransportStateUSB3`), `cioState` (`IOPortTransportStateCIO`), `phyState` (`AppleT*TypeCPhy` for per-lane transport + active DP rates). PHY services are keyed by `AppleTypeCPhyID` (0-indexed); HPM `PortNumber` is 1-indexed; lookup uses `phyID == portNumber - 1` for `.usbC` only. All adapted from WhatCable (MIT, Copyright (c) 2026 Darryl Morley) — see `design/WHATCABLE_LEARNINGS.md`.
 

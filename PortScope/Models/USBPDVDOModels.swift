@@ -55,6 +55,27 @@ nonisolated enum PDProductType: Int, Hashable {
     }
 }
 
+/// USB-PD ID Header VDO DFP `ProductType` field (bits 25..23). PD 3.x
+/// assigns the DFP codes different meanings than the UFP codes, so this
+/// is a separate enum from `PDProductType`.
+nonisolated enum PDDFPProductType: Int, Hashable {
+    case undefined = 0
+    case pdusbHub = 1
+    case pdusbHost = 2
+    case powerBrick = 3
+    case alternateModeController = 4
+
+    var label: String {
+        switch self {
+        case .undefined: return "Unspecified"
+        case .pdusbHub: return "USB Hub"
+        case .pdusbHost: return "USB Host"
+        case .powerBrick: return "Power Brick"
+        case .alternateModeController: return "Alternate Mode Controller"
+        }
+    }
+}
+
 /// Cable speed class, encoded as bits 2..0 of the Cable VDO. PD 3.1 added
 /// the 80 Gbps tier; PD 3.0 stopped at 40 Gbps.
 nonisolated enum PDCableSpeed: Int, Hashable {
@@ -127,7 +148,7 @@ nonisolated enum PDDecodeWarning: Hashable {
     case reservedCableLatencyEncoding(Int)
     case invalidVDOVersion(Int)
     case invalidCableTermination(Int)
-    case eprClaimedWithLowMaxVoltage
+    case eprClaimedWithLowMaxVoltage(Int)
 
     var label: String {
         switch self {
@@ -141,8 +162,8 @@ nonisolated enum PDDecodeWarning: Hashable {
             return String(format: "Invalid VDO version 0x%X for cable type", v)
         case .invalidCableTermination(let v):
             return String(format: "Invalid cable termination 0x%X for cable type", v)
-        case .eprClaimedWithLowMaxVoltage:
-            return "EPR Capable bit set but Max VBUS is 20 V (spec requires 48 V or 50 V)"
+        case .eprClaimedWithLowMaxVoltage(let v):
+            return "EPR Capable bit set but Max VBUS is \(v) V (EPR cables must be marked 50 V)"
         }
     }
 }
@@ -153,7 +174,7 @@ nonisolated struct PDIDHeader: Hashable {
     let usbCommDevice: Bool
     let modalOperation: Bool
     let ufpProductType: PDProductType
-    let dfpProductType: PDProductType
+    let dfpProductType: PDDFPProductType
     let vendorID: Int
 }
 
@@ -167,7 +188,9 @@ nonisolated struct PDCableVDO: Hashable {
     /// Max VBUS the cable carries. 20 V / 30 V / 40 V / 50 V.
     let maxVolts: Int
     let cableType: PDCableType
-    let vbusThroughCable: Bool
+    /// Bit 4 of Active Cable VDO 1. Only active cables define this bit —
+    /// on passive cables it's reserved-zero, so it decodes as `nil` there.
+    let vbusThroughCable: Bool?
     /// Bit 17 — extended-power-range capable. Real EPR also requires the
     /// cable to support 48 V or 50 V; see `decodeWarnings`.
     let eprCapable: Bool
@@ -199,6 +222,26 @@ nonisolated struct PDCableVDO: Hashable {
         default: return nil
         }
     }
+
+    /// Zeroed placeholder for Discover-Identity responders that aren't
+    /// cables (VCONN-powered devices, AMAs) and therefore publish no
+    /// Cable VDO. Kept non-optional on `CableEmarkerInfo` for source
+    /// compatibility with consumers that read `cableVDO` unconditionally
+    /// (`SnapshotDumper`); gate on `CableEmarkerInfo.productType.isCable`
+    /// before treating these fields as meaningful.
+    static let absent = PDCableVDO(
+        speed: .usb20,
+        current: .usbDefault,
+        maxWatts: 0,
+        maxVolts: 0,
+        cableType: .passive,
+        vbusThroughCable: nil,
+        eprCapable: false,
+        cableLatencyEncoded: 0,
+        vdoVersionEncoded: 0,
+        cableTerminationEncoded: 0,
+        decodeWarnings: []
+    )
 }
 
 /// Physical medium the cable uses to carry data, bit 10 of Active Cable VDO 2.
@@ -282,7 +325,11 @@ nonisolated struct CableEmarkerInfo: Hashable {
     /// Product type from the ID Header — useful for the "passive vs active"
     /// classification.
     let productType: PDProductType
-    /// VDO[3] decoded. Always present on an e-marked cable.
+    /// VDO[3] decoded as a Cable VDO. Meaningful only when
+    /// `productType.isCable` — non-cable responders (e.g. VCONN-powered
+    /// devices like the Apple Watch magnetic charger) publish a
+    /// product-type VDO at that slot instead, so this holds
+    /// `PDCableVDO.absent` for them.
     let cableVDO: PDCableVDO
     /// VDO[4] decoded. Only present when `productType == .activeCable`.
     let activeVDO2: PDActiveCableVDO2?
@@ -325,7 +372,7 @@ nonisolated func decodePDIDHeader(_ vdo: UInt32) -> PDIDHeader {
         usbCommDevice: (vdo >> 30) & 1 == 1,
         modalOperation: (vdo >> 26) & 1 == 1,
         ufpProductType: PDProductType(rawValue: Int((vdo >> 27) & 0b111)) ?? .undefined,
-        dfpProductType: PDProductType(rawValue: Int((vdo >> 23) & 0b111)) ?? .undefined,
+        dfpProductType: PDDFPProductType(rawValue: Int((vdo >> 23) & 0b111)) ?? .undefined,
         vendorID: Int(vdo & 0xFFFF)
     )
 }
@@ -338,7 +385,10 @@ nonisolated func decodePDCableVDO(_ vdo: UInt32, isActive: Bool) -> PDCableVDO {
     let speedBits = Int(vdo & 0b111)
     let decodedSpeed = PDCableSpeed(rawValue: speedBits)
     let speed = decodedSpeed ?? .usb20
-    let vbusThrough = (vdo >> 4) & 1 == 1
+    // Bit 4 ("VBUS Through Cable") only exists in the Active Cable VDO 1;
+    // passive cables leave it reserved-zero, so decoding it there would
+    // always render a misleading "No".
+    let vbusThrough: Bool? = isActive ? ((vdo >> 4) & 1 == 1) : nil
     let currentBits = Int((vdo >> 5) & 0b11)
     let decodedCurrent = PDCableCurrent(rawValue: currentBits)
     let current = decodedCurrent ?? .usbDefault
@@ -348,6 +398,14 @@ nonisolated func decodePDCableVDO(_ vdo: UInt32, isActive: Bool) -> PDCableVDO {
     let cableTerminationBits = Int((vdo >> 11) & 0b11)
     let vdoVersionBits = Int((vdo >> 21) & 0b111)
     let eprCapable = (vdo >> 17) & 1 == 1
+
+    let maxVolts: Int
+    switch maxVBits {
+    case 1: maxVolts = 30
+    case 2: maxVolts = 40
+    case 3: maxVolts = 50
+    default: maxVolts = 20
+    }
 
     var warnings: [PDDecodeWarning] = []
     if decodedSpeed == nil { warnings.append(.reservedSpeedEncoding(speedBits)) }
@@ -387,29 +445,14 @@ nonisolated func decodePDCableVDO(_ vdo: UInt32, isActive: Bool) -> PDCableVDO {
     }
     if cableTerminationInvalid { warnings.append(.invalidCableTermination(cableTerminationBits)) }
 
-    // Passive cable claims EPR but reports only 20 V Max VBUS. EPR requires
-    // 48 V or 50 V; only encoding 11 (50V) is consistent.
-    if !isActive && eprCapable && maxVBits == 0 {
-        warnings.append(.eprClaimedWithLowMaxVoltage)
+    // Passive cable claims EPR but reports a Max VBUS below 50 V. EPR
+    // cables must be marked for 50 V; only encoding 11 is consistent.
+    if !isActive && eprCapable && maxVBits != 3 {
+        warnings.append(.eprClaimedWithLowMaxVoltage(maxVolts))
     }
 
-    let volts: Double
-    switch maxVBits {
-    case 1: volts = 30
-    case 2: volts = 40
-    case 3: volts = 50
-    default: volts = 20
-    }
     let amps = current.maxAmps
-    let watts = Int((volts * amps).rounded())
-
-    let maxVolts: Int
-    switch maxVBits {
-    case 1: maxVolts = 30
-    case 2: maxVolts = 40
-    case 3: maxVolts = 50
-    default: maxVolts = 20
-    }
+    let watts = Int((Double(maxVolts) * amps).rounded())
 
     return PDCableVDO(
         speed: speed,

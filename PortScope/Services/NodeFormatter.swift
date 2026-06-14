@@ -119,12 +119,25 @@ nonisolated enum NodeFormatter {
             let title = "Port \(n) — \(humanAdapter(desc))"
             let speed = props["Current Link Speed"]?.asUInt ?? 0
             var bits: [String] = []
-            if speed > 0 {
+            // Idle device-router lane ports publish CLS=8 / LBW=100 kernel
+            // defaults that would read as "TB3 · ×1". Gate the link-up label
+            // on a live-peer signal (hop table / Link Bandwidth) — children
+            // aren't visible here (labels are built from props alone), but
+            // every live lane observed carries a non-empty Hop Table, so the
+            // props-only check classifies correctly.
+            if speed > 0, tbLaneLinkUp(props: props) {
                 bits.append(tbGenerationShortLabel(speed))
+                if let w = props["Current Link Width"]?.asUInt, w > 0 {
+                    // `Current Link Width` is a bitmask (0x4/0x8 = TB5
+                    // asymmetric), not a lane count — decode it.
+                    let (tx, rx) = tbCurrentLinkLanes(w)
+                    bits.append(tx == rx ? "×\(tx)" : "\(tx)TX/\(rx)RX")
+                }
+            } else if speed > 0 {
+                bits.append("Idle")
             } else if desc == "Port is inactive" {
                 bits.append("Inactive")
             }
-            if let w = props["Current Link Width"]?.asUInt, w > 0 { bits.append("×\(w)") }
             return (title, bits.isEmpty ? nil : bits.joined(separator: " · "))
 
         case .localNode:
@@ -199,7 +212,11 @@ nonisolated enum NodeFormatter {
             return (title, bsd.map { "Interface \($0)" })
 
         case .appleFabric:
-            return (name, cls)
+            // Kernel class names stay in Developer details; the subtitle
+            // names the role in human terms instead.
+            return (name, cls.contains("Endpoint")
+                        ? "SoC fabric endpoint"
+                        : "SoC fabric controller")
 
         case .i2cBus:
             return (i2cBusTitle(name: name), i2cBusSubtitle(name: name, props: props))
@@ -215,7 +232,7 @@ nonisolated enum NodeFormatter {
                     socCoprocessorSubtitle(name: name, props: props))
 
         case .batteryManager:
-            return ("Battery Manager", "AppleSmartBatteryManager")
+            return ("Battery Manager", "Charging and battery supervisor")
 
         case .battery:
             let serial = props["Serial"]?.asString
@@ -520,10 +537,12 @@ nonisolated enum NodeFormatter {
     }
 
     static func usbProductName(_ props: [String: IORegValue]) -> String? {
+        // No IOClass fallback — kext class names belong in Developer
+        // details, not in main-UI titles. Callers provide their own
+        // generic fallback ("USB Device" / "USB Hub" / node title).
         return props["kUSBProductString"]?.asString
             ?? props["USB Product Name"]?.asString
             ?? props["Product Name"]?.asString
-            ?? props["IOClass"]?.asString
     }
 
     static func usbVendorName(_ props: [String: IORegValue]) -> String? {

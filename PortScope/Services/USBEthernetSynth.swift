@@ -30,8 +30,9 @@ nonisolated struct USBEthernetAdapterInfo: Hashable {
     let macAddress: String?
     /// Link speed in Mb/s decoded from `IOActiveMedium`'s packed IFM_* word.
     let linkSpeedMbps: UInt64?
-    /// `IOLinkStatus & 0x1` — true when the cable is plugged and the PHY
-    /// has negotiated.
+    /// `IOLinkStatus & 0x3 == 0x3` — bit 0 (`kIONetworkLinkValid`) only
+    /// says the status is meaningful; bit 1 (`kIONetworkLinkActive`) is
+    /// the actual link. An adapter with no cable publishes status 1.
     let linkActive: Bool
     /// USB device's title — e.g. `"USB 10/100/1G/2.5G LAN"` — pulled off
     /// the closest enclosing IOUSBHostDevice. Nil when the interface lives
@@ -84,7 +85,7 @@ nonisolated private func makeAdapterInfo(controller: TBNode,
     let iprops = iface.properties
     let bsd = iprops["BSD Name"]?.asString
     let mac = formatMACAddress(cprops["IOMACAddress"] ?? iprops["IOMACAddress"])
-    let linkActive = ((cprops["IOLinkStatus"]?.asUInt ?? 0) & 0x1) == 0x1
+    let linkActive = ((cprops["IOLinkStatus"]?.asUInt ?? 0) & 0x3) == 0x3
     let speedMbps = decodeEthernetSpeedMbps(cprops["IOActiveMedium"])
     let usbProps = usbDevice?.properties
     // Prefer `kUSBProductString` over `USB Product Name` — the latter is the
@@ -126,20 +127,28 @@ nonisolated func formatMACAddress(_ value: IORegValue?) -> String? {
     return out.joined(separator: ":")
 }
 
-/// Decode IOActiveMedium into Mb/s. Mirrors the same IFM_* table the
-/// built-in `EthernetScanner` uses — both ethernet driver families publish
-/// the medium word in the same format. See `<net/if_media.h>`.
+/// Decode IOActiveMedium into Mb/s. The kernel publishes the medium as a
+/// hex-formatted string like "00100030" — a packed `IFM_*` word (see
+/// `<net/if_media.h>`): bits 5..7 hold the media type (`IFM_ETHER` = 0x20),
+/// bits 0..4 the ethernet subtype, the high half options like
+/// `IFM_FDX = 0x00100000`. Subtype values come from the macOS SDK header —
+/// FreeBSD's `if_media.h` assigns different numbers (10G = 26 there,
+/// 21 here). Shared by `EthernetScanner` and the USB-Ethernet synth.
 nonisolated func decodeEthernetSpeedMbps(_ value: IORegValue?) -> UInt64? {
+    // Newer drivers expose a numeric `Link Speed` directly — prefer it.
     if case let .unsigned(u)? = value, u > 0 { return u }
-    guard let s = value?.asString, let raw = UInt64(s, radix: 16) else { return nil }
+    guard var s = value?.asString else { return nil }
+    if s.hasPrefix("0x") || s.hasPrefix("0X") { s = String(s.dropFirst(2)) }
+    guard let raw = UInt64(s, radix: 16) else { return nil }
+    // Must be an ethernet medium word.
     guard raw & 0xE0 == 0x20 else { return nil }
     switch raw & 0x1F {
-    case 3:  return 10
-    case 6:  return 100
-    case 16: return 1_000
-    case 26: return 10_000
-    case 29: return 2_500
-    case 30: return 5_000
+    case 3:  return 10       // IFM_10_T
+    case 6:  return 100      // IFM_100_TX
+    case 16: return 1_000    // IFM_1000_T
+    case 21: return 10_000   // IFM_10G_T
+    case 22: return 2_500    // IFM_2500_T
+    case 23: return 5_000    // IFM_5000_T
     default: return nil
     }
 }

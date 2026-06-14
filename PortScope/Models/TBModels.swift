@@ -450,14 +450,49 @@ nonisolated func tbCurrentLinkRateLabel(speed: UInt64, width: UInt64) -> String?
 
 /// Format a "Link Bandwidth" raw value as a human bandwidth string. Field is
 /// in 100 Mb/s units. Anything below 1 Gb/s is rendered in Mb/s — "100 Mb/s"
-/// reads better than "0.1 Gb/s".
+/// reads better than "0.1 Gb/s". The fractional digit is significant (the
+/// kernel reserves in 100 Mb/s steps — 342 is 34.2 Gb/s, not 34): show one
+/// decimal whenever the value isn't an integral Gb/s, matching
+/// `TBNode.formatValue`'s %.1f style.
 nonisolated func tbBandwidthLabel(_ raw: UInt64) -> String {
     if raw == 0 { return "0 Gb/s" }
     if raw < 10 {
         return "\(raw * 100) Mb/s"
     }
     let gbps = Double(raw) / 10.0
+    if raw % 10 != 0 {
+        return String(format: "%.1f Gb/s", gbps)
+    }
     return String(format: "%.0f Gb/s", gbps)
+}
+
+/// True when a Thunderbolt lane adapter actually has a live link to a peer.
+///
+/// `Current Link Speed` alone can't be trusted: a device router's EMPTY
+/// downstream lane ports publish kernel idle defaults (`Current Link
+/// Speed = 0x8`, `Current Link Width = 0x1`, `Link Bandwidth = 100`) that
+/// naively read as an active TB3 ×1 link. The signals that a peer really
+/// exists on the lane are:
+///
+///   * the node wraps a nested peer port / switch (`childCount > 0`) — the
+///     kernel mirrors the cable's far end inside the lane port,
+///   * a non-empty `Hop Table` — tunnels are routed through the lane, or
+///   * `Link Bandwidth` above the idle default of 100 (= 10 Gb/s).
+///
+/// Deliberate edge: a device router's *second* dual-link lane (the
+/// device-side mirror of a live uplink — e.g. a dock's Port 2 publishing
+/// CLS=2 / CLW=2 with `Link Bandwidth = 0`, no children, no hops)
+/// classifies as DOWN. The kernel attributes all uplink state (bandwidth,
+/// reservations, hop tables) to the parent lane that wraps the device
+/// switch, which the UI surfaces as the uplink / "↑ cable" lane; showing
+/// the mirror as up would double-represent the same cable with zero data
+/// behind it.
+nonisolated func tbLaneLinkUp(props: [String: IORegValue], childCount: Int = 0) -> Bool {
+    let speed = props["Current Link Speed"]?.asUInt ?? 0
+    guard speed != 0 else { return false }
+    if childCount > 0 { return true }
+    if case .array(let hops) = props["Hop Table"], !hops.isEmpty { return true }
+    return (props["Link Bandwidth"]?.asUInt ?? 0) > 100
 }
 
 /// Snapshot of the entire Thunderbolt subsystem captured at scan time.

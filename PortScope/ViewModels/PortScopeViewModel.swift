@@ -22,6 +22,14 @@ final class PortScopeViewModel: ObservableObject {
     private var debounceTask: Task<Void, Never>?
     private var powerRefreshTask: Task<Void, Never>?
 
+    /// Monotonic generation counter for full rescans. Overlapping rescans
+    /// (hot-plug burst, Cmd-R during a scan) would otherwise race: a slow
+    /// scanner slice from an older rescan could overwrite a newer rescan's
+    /// fresher result, and whichever scan finished first cleared the
+    /// spinner. Each slice write and the final stamp apply only while
+    /// their epoch is still the latest.
+    private var scanEpoch: UInt64 = 0
+
     /// Cadence for the live power-telemetry poll. The kernel updates
     /// `AppleSmartBattery.PowerTelemetryData` (and per-port HPM USB-PD
     /// readouts) every few seconds, so a faster interval just spins.
@@ -71,6 +79,8 @@ final class PortScopeViewModel: ObservableObject {
     /// the user starts navigating the device tree while the background
     /// tasks fill in.
     func rescan() {
+        scanEpoch &+= 1
+        let epoch = scanEpoch
         isScanning = true
         Task {
             await withTaskGroup(of: Void.self) { group in
@@ -78,13 +88,19 @@ final class PortScopeViewModel: ObservableObject {
                 // Physical Device topology, so prioritise it.
                 group.addTask(priority: .userInitiated) { [self] in
                     let tb = ThunderboltScanner.scan()
-                    await MainActor.run { self.snapshot.tb = tb }
+                    await MainActor.run {
+                        guard self.scanEpoch == epoch else { return }
+                        self.snapshot.tb = tb
+                    }
                 }
                 // USB — fast, IORegistry walk. Used for tb-context
                 // cross-link and the USB section.
                 group.addTask(priority: .userInitiated) { [self] in
                     let usb = USBScanner.scan()
-                    await MainActor.run { self.snapshot.usb = usb }
+                    await MainActor.run {
+                        guard self.scanEpoch == epoch else { return }
+                        self.snapshot.usb = usb
+                    }
                 }
                 // Accessories + InternalHardware share a dependency:
                 // InternalHardwareScanner takes the accessory list so it
@@ -98,6 +114,7 @@ final class PortScopeViewModel: ObservableObject {
                         + EthernetScanner.scan()
                     let internalHardware = InternalHardwareScanner.scan(accessories: accessories)
                     await MainActor.run {
+                        guard self.scanEpoch == epoch else { return }
                         self.snapshot.accessories = accessories
                         self.snapshot.internalHardware = internalHardware
                     }
@@ -106,19 +123,28 @@ final class PortScopeViewModel: ObservableObject {
                 // IOPCIDevice). Independent of the others.
                 group.addTask { [self] in
                     let pcie = PCIScanner.scan()
-                    await MainActor.run { self.snapshot.pcie = pcie }
+                    await MainActor.run {
+                        guard self.scanEpoch == epoch else { return }
+                        self.snapshot.pcie = pcie
+                    }
                 }
                 // Displays — IOMobileFramebuffer walk + EDID decode.
                 // Moderate cost, no SP spawn.
                 group.addTask { [self] in
                     let displays = DisplayScanner.scan()
-                    await MainActor.run { self.snapshot.displays = displays }
+                    await MainActor.run {
+                        guard self.scanEpoch == epoch else { return }
+                        self.snapshot.displays = displays
+                    }
                 }
             }
             // All slices have streamed in; stamp the snapshot and clear
-            // the spinner. Selection picks up here if the user hadn't
-            // selected anything yet (or if their previous selection
-            // disappeared in the new snapshot).
+            // the spinner — unless a newer rescan started while this one
+            // was in flight (it owns the spinner and the stamp now).
+            // Selection picks up here if the user hadn't selected
+            // anything yet (or if their previous selection disappeared
+            // in the new snapshot).
+            guard self.scanEpoch == epoch else { return }
             self.snapshot.capturedAt = Date()
             self.isScanning = false
             if let sel = self.selection, !self.exists(id: sel) {

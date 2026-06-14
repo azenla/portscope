@@ -61,6 +61,7 @@ nonisolated enum SensorScanner {
             if let p = product, !p.isEmpty { subtitleParts.append(p) }
             if let k = key, !k.isEmpty { subtitleParts.append("key \(k)") }
             out.append(HardwareSensor(
+                registryID: regID,
                 name: friendly,
                 subtitle: subtitleParts.isEmpty ? nil : subtitleParts.joined(separator: " · "),
                 category: category,
@@ -112,6 +113,7 @@ nonisolated enum SensorScanner {
         if installed {
             if let tempCentiC = number(svc, "Temperature") {
                 out.append(HardwareSensor(
+                    registryID: SyntheticSensorID.batteryTemperature,
                     name: "Battery Pack",
                     subtitle: "AppleSmartBattery · Temperature",
                     category: .temperature,
@@ -123,6 +125,7 @@ nonisolated enum SensorScanner {
             }
             if let mV = number(svc, "Voltage") {
                 out.append(HardwareSensor(
+                    registryID: SyntheticSensorID.batteryVoltage,
                     name: "Battery Voltage",
                     subtitle: "AppleSmartBattery · Voltage",
                     category: .voltage,
@@ -133,9 +136,13 @@ nonisolated enum SensorScanner {
                 ))
             }
             if let mA = signedNumber(svc, "Amperage") {
+                // 0 mA is neither charging nor discharging — a full
+                // battery on AC sits at exactly zero.
+                let flow = mA > 0 ? "Charging" : (mA < 0 ? "Discharging" : "Idle")
                 out.append(HardwareSensor(
+                    registryID: SyntheticSensorID.batteryCurrent,
                     name: "Battery Current",
-                    subtitle: mA >= 0 ? "Charging" : "Discharging",
+                    subtitle: flow,
                     category: .current,
                     value: Double(mA) / 1000.0,
                     unit: "A",
@@ -163,6 +170,7 @@ nonisolated enum SensorScanner {
 
         if let mw = telemetry["SystemPowerIn"] as? UInt64 {
             out.append(HardwareSensor(
+                registryID: SyntheticSensorID.wallPowerInput,
                 name: "Wall Power Input",
                 subtitle: "AppleSmartBattery · PowerTelemetryData · SystemPowerIn",
                 category: .power,
@@ -197,6 +205,7 @@ nonisolated enum SensorScanner {
         // wall-power-input readings are already present elsewhere.
         if let mj = telemetry["AccumulatedWallEnergyEstimate"] as? UInt64 {
             out.append(HardwareSensor(
+                registryID: SyntheticSensorID.wallEnergy,
                 name: "Wall Energy (since boot)",
                 subtitle: "AppleSmartBattery · AccumulatedWallEnergyEstimate",
                 category: .energy,
@@ -208,6 +217,7 @@ nonisolated enum SensorScanner {
         }
         if let mv = telemetry["AdapterVoltage"] as? UInt64, mv > 0 {
             out.append(HardwareSensor(
+                registryID: SyntheticSensorID.adapterVoltage,
                 name: "Adapter Voltage",
                 subtitle: "AppleSmartBattery · PowerTelemetryData",
                 category: .voltage,
@@ -220,11 +230,26 @@ nonisolated enum SensorScanner {
         return out
     }
 
+    // MARK: - Synthetic row IDs
+
+    /// Fixed `registryID` tokens for rows synthesised from regular
+    /// IORegistry properties (battery / PSU telemetry) rather than HID
+    /// services. Real registry entry IDs are large kernel-assigned
+    /// numbers, so these small constants can't collide with them.
+    private enum SyntheticSensorID {
+        static let batteryTemperature: UInt64 = 1
+        static let batteryVoltage: UInt64 = 2
+        static let batteryCurrent: UInt64 = 3
+        static let wallPowerInput: UInt64 = 4
+        static let wallEnergy: UInt64 = 5
+        static let adapterVoltage: UInt64 = 6
+    }
+
     // MARK: - SMC key + label helpers
 
     /// Decode a 32-bit SMC key encoded as 4 ASCII characters. The kernel
-    /// publishes it as the big-endian integer, so we shift / mask down
-    /// to four bytes and reverse to get human-readable order.
+    /// publishes it as the big-endian integer, so shifting down from the
+    /// high byte already yields the characters in human-readable order.
     private static func decodeSMCKey(_ raw: UInt32) -> String? {
         let b0 = UInt8((raw >> 24) & 0xFF)
         let b1 = UInt8((raw >> 16) & 0xFF)

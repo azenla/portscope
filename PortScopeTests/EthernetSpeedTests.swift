@@ -32,12 +32,18 @@ struct EthernetSpeedTests {
     func decodeMedium() {
         // Format mirrors the kernel's hex-string `IOActiveMedium`. Bits 5..7
         // = 0x20 marks an ethernet medium; low 5 bits pick the subtype.
+        // Subtype numbers are Darwin's if_media.h, NOT FreeBSD's (10G is 26
+        // there, 21 here).
         // 1G-T base = 0x20 | 16 = 0x30 ; with IFM_FDX (0x00100000) high bits.
         #expect(decodeEthernetSpeedMbps(.string("00100030")) == 1_000)
-        // 10G-T base = 0x20 | 26 = 0x3a
-        #expect(decodeEthernetSpeedMbps(.string("0010003a")) == 10_000)
-        // 2.5G-T base = 0x20 | 29 = 0x3d
-        #expect(decodeEthernetSpeedMbps(.string("0010003d")) == 2_500)
+        // 10G-T base = 0x20 | 21 = 0x35
+        #expect(decodeEthernetSpeedMbps(.string("00100035")) == 10_000)
+        // 2.5G-T base = 0x20 | 22 = 0x36
+        #expect(decodeEthernetSpeedMbps(.string("00100036")) == 2_500)
+        // 5G-T base = 0x20 | 23 = 0x37
+        #expect(decodeEthernetSpeedMbps(.string("00100037")) == 5_000)
+        // Also accepts the 0x-prefixed form some drivers publish.
+        #expect(decodeEthernetSpeedMbps(.string("0x00100030")) == 1_000)
     }
 
     @Test("decodeEthernetSpeedMbps rejects non-ethernet media types")

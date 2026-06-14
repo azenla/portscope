@@ -335,6 +335,11 @@ struct EthernetDetailView: View {
 /// classic HDMI jack.
 struct HDMIDetailView: View {
     let port: PhysicalPort
+    /// External displays attributed to this port by `ContentView` (same
+    /// `displaysAttributed` heuristic the unified USB-C view uses) — the
+    /// sidebar nests the monitor under the HDMI port, so the detail page
+    /// should show it too.
+    var displays: [DisplayInfo] = []
     let onNavigate: (TBNodeID) -> Void
 
     var body: some View {
@@ -342,6 +347,9 @@ struct HDMIDetailView: View {
             VStack(alignment: .leading, spacing: 18) {
                 hero
                 StatGrid(stats: stats)
+                if !displays.isEmpty {
+                    displaysCard
+                }
                 developerDetails
             }
             .padding(24)
@@ -349,6 +357,18 @@ struct HDMIDetailView: View {
         }
         .frame(minWidth: 620)
         .background(.background)
+    }
+
+    private var displaysCard: some View {
+        SectionCard(title: displays.count == 1 ? "Display" : "Displays (\(displays.count))",
+                    symbol: "display") {
+            VStack(spacing: 0) {
+                ForEach(displays) { d in
+                    HDMIDisplayRow(display: d, onNavigate: onNavigate)
+                    if d.id != displays.last?.id { Divider() }
+                }
+            }
+        }
     }
 
     private var props: [String: IORegValue] { port.accessory?.registryProperties ?? [:] }
@@ -419,6 +439,39 @@ struct HDMIDetailView: View {
         BuiltInDeveloperDetails(accessory: port.accessory,
                                 fallbackTitle: "HDMI Port",
                                 fallbackClass: "IODPHDMIPort")
+    }
+}
+
+/// One attributed external display under the HDMI port — icon, title,
+/// resolution/refresh subtitle, and a chevron that jumps to the display's
+/// own detail page. Mirrors the unified port view's display rows.
+private struct HDMIDisplayRow: View {
+    let display: DisplayInfo
+    let onNavigate: (TBNodeID) -> Void
+
+    var body: some View {
+        Button {
+            onNavigate(display.id)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: display.iconSymbol)
+                    .foregroundStyle(.pink)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(display.title).font(.callout.weight(.medium))
+                    if let s = display.subtitle, !s.isEmpty {
+                        Text(s).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

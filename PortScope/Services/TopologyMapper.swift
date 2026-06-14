@@ -245,7 +245,12 @@ extension PhysicalPort {
             let speed = laneAdapter.properties["Current Link Speed"]?.asUInt ?? 0
             let width = laneAdapter.properties["Current Link Width"]?.asUInt ?? 0
             if speed > 0 { parts.append(tbGenerationShortLabel(speed)) }
-            if width > 0 { parts.append("×\(width)") }
+            if width > 0 {
+                // `Current Link Width` is a bitmask (0x4/0x8 = TB5
+                // asymmetric) — decode to lane counts, never print raw.
+                let (tx, rx) = tbCurrentLinkLanes(width)
+                parts.append(tx == rx ? "×\(tx)" : "\(tx)TX/\(rx)RX")
+            }
             return parts.joined(separator: " · ")
         case .usbOnly(let s):
             var parts: [String] = ["USB"]
@@ -783,8 +788,12 @@ nonisolated enum TopologyMapper {
         let alloc = node.properties["UsbPowerSinkAllocation"]?.asUInt
         let cap = node.properties["UsbPowerSinkCapability"]?.asUInt
         let cfg = node.properties["kUSBConfigurationCurrentOverride"]?.asUInt
-        let primary = alloc ?? cap ?? cfg ?? 0
-        guard primary > 0 else { return nil }
+        // Surface the device when the kernel reports anything at all, but
+        // never let the sink's *capability* (what it could request) leak
+        // into `allocatedMA` (what it was actually granted) — that
+        // overstates the headline output wattage. Capability stays in its
+        // own field.
+        guard (alloc ?? 0) > 0 || (cap ?? 0) > 0 || (cfg ?? 0) > 0 else { return nil }
         // Prefer `kUSBProductString` — that's the raw USB string descriptor
         // ("USB 10/100/1G/2.5G LAN"). Apple's `USB Product Name` mirror has
         // slashes replaced with underscores on some devices because the
@@ -796,7 +805,7 @@ nonisolated enum TopologyMapper {
         return PortSinkConsumer(
             id: node.id,
             name: name,
-            allocatedMA: alloc ?? cfg ?? cap ?? 0,
+            allocatedMA: alloc ?? cfg ?? 0,
             capabilityMA: cap,
             configCurrentMA: cfg
         )
@@ -1015,10 +1024,7 @@ nonisolated enum TopologyMapper {
         // placeholder values (DP: req=max=1) for the same logical tunnel,
         // so summing from the dock under-reports DP bandwidth by ~30 Gb/s
         // on an active setup. Read from the host root.
-        let rootSwitch = findRootSwitch(in: controller)
-        let tunnels: [PortTunnel] = connected != nil
-            ? (rootSwitch.map { summariseTunnels(in: $0) } ?? [])
-            : []
+        let tunnels: [PortTunnel] = connected != nil ? summariseTunnels(in: root) : []
         let mode = inferMode(lane: lane, connectedDevice: connected, usbDevices: usbDevices)
 
         return PhysicalPort(
@@ -1122,14 +1128,16 @@ nonisolated enum TopologyMapper {
         }
     }
 
+    /// First switch with `Depth == 0` anywhere under the controller. The
+    /// kernel nests the host root through HAL / IPService wrappers and the
+    /// nesting depth varies by controller generation, so recurse the whole
+    /// subtree (same approach as `DTTBuilder.findHostSwitch`).
     private static func findRootSwitch(in node: TBNode) -> TBNode? {
+        if node.kind == .switch, (node.properties["Depth"]?.asUInt ?? 0) == 0 {
+            return node
+        }
         for c in node.children {
-            if c.kind == .switch, (c.properties["Depth"]?.asUInt ?? 0) == 0 {
-                return c
-            }
-            for cc in c.children where cc.kind == .switch {
-                if (cc.properties["Depth"]?.asUInt ?? 0) == 0 { return cc }
-            }
+            if let s = findRootSwitch(in: c) { return s }
         }
         return nil
     }

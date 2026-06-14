@@ -134,10 +134,19 @@ nonisolated enum PCIScanner {
         )
     }
 
-    private static func sortKey(for node: TBNode) -> String {
-        // Sort by IOName so the bridges stack in a stable order.
+    private static func sortKey(for node: TBNode) -> (String, String, UInt64) {
+        // `IOName` alone isn't a stable sibling order — every bridge shares
+        // "pci-bridge", so dictionary iteration would leak through and the
+        // dumper's byte-identical-output contract breaks. Tie-break on the
+        // device-tree `name` / slot name (unique per bridge) and finally
+        // the registry entry id.
         let n = node.properties["IOName"]?.asString ?? node.title
-        return n
+        let dt = (node.properties["name"]?.asString)
+            ?? unwrapData(node.properties["name"])
+            ?? node.properties["AAPL,slot-name"]?.asString
+            ?? unwrapData(node.properties["AAPL,slot-name"])
+            ?? ""
+        return (n, dt, node.id.raw)
     }
 
     // MARK: - Classification + labelling
@@ -168,9 +177,11 @@ nonisolated enum PCIScanner {
             ?? node.title
 
         if kind == .endpoint {
+            let (cls, sub2, prog) = parseClassCode(node.properties["class-code"])
             let friendly = friendlyEndpoint(dtName: dtName,
                                             ioName: node.properties["IOName"]?.asString ?? "",
-                                            vendor: vendor)
+                                            vendor: vendor,
+                                            cls: cls, sub: sub2, prog: prog)
             let vendorName = vendor.flatMap(pciVendorName)
             var sub: [String] = []
             if let vendorName { sub.append(vendorName) }
@@ -183,17 +194,30 @@ nonisolated enum PCIScanner {
         if kind == .rootBridge || kind == .bridge {
             let slot = slotName ?? ""
             if !slot.isEmpty {
-                // The Thunderbolt downstream root ports are tagged "Slot- 0..2".
-                return ("Thunderbolt PCIe \(slot.replacingOccurrences(of: "Slot-", with: "Slot").trimmingCharacters(in: .whitespaces))",
-                        "Apple Silicon root port")
+                // The Apple Silicon Thunderbolt downstream root ports are
+                // tagged "Slot- 0..2" (note the space after "Slot-"). On
+                // Intel Macs `AAPL,slot-name` marks real expansion slots
+                // ("Slot-1", "x16 slot", …), so the Thunderbolt branding
+                // is gated on the exact Apple Silicon pattern; anything
+                // else surfaces the raw slot name as the label.
+                if slot.hasPrefix("Slot- ") {
+                    let n = slot.dropFirst("Slot- ".count).trimmingCharacters(in: .whitespaces)
+                    return ("Thunderbolt PCIe Slot \(n)", "Apple Silicon root port")
+                }
+                return (slot, nil)
             }
-            return (humaniseBridgeName(dtName), nil)
+            let isBuiltIn = node.properties["built-in"] != nil
+            return (humaniseBridgeName(dtName, isBuiltIn: isBuiltIn), nil)
         }
         return (dtName, nil)
     }
 
-    private static func humaniseBridgeName(_ name: String) -> String {
+    private static func humaniseBridgeName(_ name: String, isBuiltIn: Bool) -> String {
         if name.hasPrefix("pci-bridge") {
+            // Dock-internal PCI-to-PCI bridges (several hops down a TB
+            // tunnel) also publish a "pci-bridge…" device-tree name —
+            // only the chassis' own root bridges deserve "Host".
+            guard isBuiltIn else { return "PCIe Bridge" }
             let n = name.dropFirst("pci-bridge".count)
             return n.isEmpty ? "PCIe Host Bridge" : "PCIe Host Bridge \(n)"
         }
@@ -203,7 +227,8 @@ nonisolated enum PCIScanner {
         return "PCIe Bridge"
     }
 
-    private static func friendlyEndpoint(dtName: String, ioName: String, vendor: UInt16?) -> String {
+    private static func friendlyEndpoint(dtName: String, ioName: String, vendor: UInt16?,
+                                         cls: UInt8?, sub: UInt8?, prog: UInt8?) -> String {
         // Map device-tree names to user-facing labels. The names below come
         // from Apple's device tree and have been stable across silicon
         // generations.
@@ -218,7 +243,11 @@ nonisolated enum PCIScanner {
         }
         if dtName.contains("nvme") || ioName.contains("nvme") { return "NVMe SSD Controller" }
         if dtName.contains("ethernet") { return "Ethernet Adapter" }
-        // Fall back to "PCI Device" with the vendor name in the subtitle.
+        // Unrecognised device-tree name: fall back to the PCI class label
+        // ("Wireless Controller", "SD Host Controller", …) so chassis with
+        // novel names still get something better than a generic title. The
+        // vendor name stays in the subtitle either way.
+        if let cls { return pciClassLabel(cls, sub, prog) }
         return "PCIe Device"
     }
 

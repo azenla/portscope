@@ -134,7 +134,15 @@ struct DisplayDetailView: View {
                               value: "\(accuracy) / 100",
                               symbol: "circle.lefthalf.fill"))
         }
-        if display.timingModeCount > 0 {
+        // Deduplicated count so this stat matches the "Timing Modes (N)"
+        // card header below — the raw `TimingElements` count (visible in
+        // the Developer table) double-counts virtual/duplicate entries.
+        let dedupedModes = timingModeSummary()?.count ?? 0
+        if dedupedModes > 0 {
+            stats.append(Stat(label: "Modes Available",
+                              value: "\(dedupedModes)",
+                              symbol: "rectangle.stack"))
+        } else if display.timingModeCount > 0 {
             stats.append(Stat(label: "Modes Available",
                               value: "\(display.timingModeCount)",
                               symbol: "rectangle.stack"))
