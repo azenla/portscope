@@ -99,10 +99,10 @@ nonisolated enum PCIScanner {
 
         let bdf = props["pcidebug"]?.asString
         // The IORegistry encodes `AAPL,slot-name` as a NUL-terminated UTF-8
-        // data blob rather than a CFString — fall through to `unwrapData`
+        // data blob rather than a CFString — fall through to `asDataString`
         // so we recognise "Slot- 0..2" on the TB downstream root ports.
         let slot = props["AAPL,slot-name"]?.asString
-            ?? unwrapData(props["AAPL,slot-name"])
+            ?? props["AAPL,slot-name"]?.asDataString
 
         let kind = classify(node: node, hasPCIChildren: !children.isEmpty, depth: depth)
         let (title, subtitle) = makeLabels(
@@ -142,9 +142,9 @@ nonisolated enum PCIScanner {
         // the registry entry id.
         let n = node.properties["IOName"]?.asString ?? node.title
         let dt = (node.properties["name"]?.asString)
-            ?? unwrapData(node.properties["name"])
+            ?? node.properties["name"]?.asDataString
             ?? node.properties["AAPL,slot-name"]?.asString
-            ?? unwrapData(node.properties["AAPL,slot-name"])
+            ?? node.properties["AAPL,slot-name"]?.asDataString
             ?? ""
         return (n, dt, node.id.raw)
     }
@@ -172,7 +172,7 @@ nonisolated enum PCIScanner {
         // ("pci-bridge" for *every* bridge), so we prefer `name` for the
         // routing. Data-blob names come back as UTF-8 with a trailing NUL.
         let dtName = (node.properties["name"]?.asString)
-            ?? unwrapData(node.properties["name"])
+            ?? node.properties["name"]?.asDataString
             ?? node.properties["IOName"]?.asString
             ?? node.title
 
@@ -278,15 +278,6 @@ nonisolated enum PCIScanner {
     private static func parseLittleEndian16(_ value: IORegValue?) -> UInt16? {
         guard case let .data(d) = value, d.count >= 2 else { return nil }
         return UInt16(d[0]) | (UInt16(d[1]) << 8)
-    }
-
-    private static func unwrapData(_ value: IORegValue?) -> String? {
-        if case let .data(d) = value {
-            if let s = String(data: d, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters), !s.isEmpty {
-                return s
-            }
-        }
-        return nil
     }
 }
 

@@ -857,7 +857,7 @@ nonisolated enum TopologyMapper {
         for wrapper in controller.children where wrapper.kind == .other {
             guard wrapper.className.contains("XHCIPort") else { continue }
             let path = wrapper.properties["UsbIOPort"]?.asString
-                ?? unwrapDataAsString(wrapper.properties["UsbIOPort"])
+                ?? wrapper.properties["UsbIOPort"]?.asNulTrimmedString
             if let path, let n = portNumberFromUsbIOPortPath(path) {
                 return n
             }
@@ -878,15 +878,6 @@ nonisolated enum TopologyMapper {
         guard let atIdx = last.lastIndex(of: "@") else { return nil }
         let nSubstring = last[last.index(after: atIdx)...]
         return Int(nSubstring)
-    }
-
-    /// Some kernels publish `UsbIOPort` as a NUL-trimmed `Data` blob
-    /// rather than a CFString. Try both — WhatCable
-    /// USBWatcher.swift:202-211.
-    private static func unwrapDataAsString(_ value: IORegValue?) -> String? {
-        guard case let .data(d) = value else { return nil }
-        let trimmed = d.prefix(while: { $0 != 0 })
-        return String(data: Data(trimmed), encoding: .utf8)
     }
 
     /// Walk a USB controller's full subtree (including `.other` port wrappers)

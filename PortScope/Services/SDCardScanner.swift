@@ -28,7 +28,7 @@ nonisolated enum SDCardScanner {
             let props = IORegBridge.properties(of: svc)
             // `name` is a NUL-terminated UTF-8 data blob on PCI bridges.
             let dtName = props["name"]?.asString
-                ?? unwrapDataString(props["name"])
+                ?? props["name"]?.asDataString
                 ?? ""
             guard dtName == "pcie-sdreader" else { continue }
             guard let id = IORegBridge.entryID(of: svc) else { continue }
@@ -88,12 +88,5 @@ nonisolated enum SDCardScanner {
             registryProperties: props,
             registryPath: IORegBridge.path(of: entry)
         )
-    }
-
-    private static func unwrapDataString(_ value: IORegValue?) -> String? {
-        guard case let .data(d) = value else { return nil }
-        let s = String(data: d, encoding: .utf8)?
-            .trimmingCharacters(in: .controlCharacters) ?? ""
-        return s.isEmpty ? nil : s
     }
 }

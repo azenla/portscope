@@ -99,6 +99,27 @@ nonisolated indirect enum IORegValue: Hashable {
         if case .bool(let b) = self { return b }
         return nil
     }
+
+    /// Decode a `Data` blob as a UTF-8 string, stripping control characters
+    /// (including trailing NULs). Returns nil for non-`.data` values or when
+    /// the decoded string is empty. Many device-tree string properties
+    /// (`name`, `AAPL,slot-name`, …) arrive as NUL-terminated blobs rather
+    /// than CFStrings; `asString` returns nil for those, so callers fall
+    /// through to this.
+    var asDataString: String? {
+        guard case let .data(d) = self else { return nil }
+        let s = String(data: d, encoding: .utf8)?
+            .trimmingCharacters(in: .controlCharacters) ?? ""
+        return s.isEmpty ? nil : s
+    }
+
+    /// Decode a `Data` blob as a UTF-8 string truncated at the first NUL
+    /// byte. Unlike `asDataString`, an empty result is returned as `""`
+    /// rather than nil, and interior control characters are preserved.
+    var asNulTrimmedString: String? {
+        guard case let .data(d) = self else { return nil }
+        return String(data: Data(d.prefix(while: { $0 != 0 })), encoding: .utf8)
+    }
 }
 
 /// Read a fixed C string buffer using a closure that fills it.

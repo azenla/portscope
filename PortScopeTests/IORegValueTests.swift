@@ -40,6 +40,28 @@ struct IORegValueTests {
         #expect(IORegValue.unsigned(1).asBool == nil)
     }
 
+    @Test("asDataString decodes a blob, trims control chars, nils empties")
+    func asDataString() {
+        // NUL-terminated UTF-8 blob, as device-tree `name` / `AAPL,slot-name`
+        // arrive — trailing NUL is a control character and gets trimmed.
+        let blob = IORegValue.data(Data("Slot- 0".utf8 + [0]))
+        #expect(blob.asDataString == "Slot- 0")
+        // Empty (or all-control) blobs decode to nil, not "".
+        #expect(IORegValue.data(Data([0, 0])).asDataString == nil)
+        #expect(IORegValue.data(Data()).asDataString == nil)
+        // Non-data cases never match.
+        #expect(IORegValue.string("x").asDataString == nil)
+    }
+
+    @Test("asNulTrimmedString truncates at the first NUL, keeps empties as \"\"")
+    func asNulTrimmedString() {
+        let blob = IORegValue.data(Data("IOService:/foo".utf8 + [0] + "junk".utf8))
+        #expect(blob.asNulTrimmedString == "IOService:/foo")
+        // Unlike asDataString, a leading NUL yields "" rather than nil.
+        #expect(IORegValue.data(Data([0, 0])).asNulTrimmedString == "")
+        #expect(IORegValue.string("x").asNulTrimmedString == nil)
+    }
+
     @Test("display formats short data blobs as hex")
     func displayShortData() {
         let d = Data([0xde, 0xad, 0xbe, 0xef])
