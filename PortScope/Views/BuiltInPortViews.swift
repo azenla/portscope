@@ -574,7 +574,7 @@ private struct BuiltInDeveloperDetails: View {
                         .frame(width: 12)
                     Image(systemName: "wrench.and.screwdriver")
                         .foregroundStyle(.secondary)
-                    Text("Developer details (raw IORegistry)")
+                    Text("IO Registry Details")
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
