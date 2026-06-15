@@ -297,12 +297,11 @@ struct BatteryView: View {
             let d = Dictionary(kv, uniquingKeysWith: { a, _ in a })
             let chargingMV = d["ChargingVoltage"]?.asUInt ?? 0
             let chargingMA = d["ChargingCurrent"]?.asUInt ?? 0
-            let notCharging = d["NotChargingReason"]?.asUInt ?? 0
             let slowCharging = d["SlowChargingReason"]?.asUInt ?? 0
             let thermallyLimited = d["TimeChargingThermallyLimited"]?.asUInt ?? 0
             let vacLimit = d["VacVoltageLimit"]?.asUInt ?? 0
 
-            if chargingMV > 0 || chargingMA > 0 || notCharging != 0 || slowCharging != 0 || thermallyLimited > 0 || vacLimit > 0 {
+            if chargingMV > 0 || chargingMA > 0 || slowCharging != 0 || thermallyLimited > 0 || vacLimit > 0 {
                 SectionCard(title: "Charger State", symbol: "bolt.car") {
                     VStack(alignment: .leading, spacing: 8) {
                         if chargingMV > 0 || chargingMA > 0 {
@@ -311,16 +310,6 @@ struct BatteryView: View {
                                 Spacer()
                                 Text(chargerDeliveryLabel(mV: chargingMV, mA: chargingMA))
                                     .monospaced()
-                            }
-                            .font(.callout)
-                        }
-                        if notCharging != 0 {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Not-charging reason").foregroundStyle(.secondary)
-                                Spacer()
-                                Text(reasonLabel(notCharging))
-                                    .monospaced()
-                                    .foregroundStyle(.orange)
                             }
                             .font(.callout)
                         }
