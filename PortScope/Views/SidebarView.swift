@@ -233,21 +233,10 @@ struct SidebarView: View {
             // explicit menu style is needed.
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Menu {
-                        Button {
-                            openWindow(id: PortScopeWindowID.simplifiedTopology)
-                        } label: {
-                            Label("Simplified",
-                                  systemImage: "point.3.connected.trianglepath.dotted")
-                        }
-                        Button {
-                            openWindow(id: PortScopeWindowID.detailedTopology)
-                        } label: {
-                            Label("Detailed",
-                                  systemImage: "circle.hexagongrid.circle")
-                        }
+                    Button {
+                        openWindow(id: PortScopeWindowID.usbcTopology)
                     } label: {
-                        Label("Thunderbolt Topology",
+                        Label("USB-C Topology",
                               systemImage: "point.3.connected.trianglepath.dotted")
                     }
                     Button {

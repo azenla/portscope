@@ -1,14 +1,11 @@
 //
-//  DetailedThunderboltTopologyView.swift
+//  USBCTopologyView.swift
 //  PortScope
 //
-//  Microsoft Device Portal-style Thunderbolt / USB4 topology viewer.
-//  Renders host routers (one per Apple TB controller), device routers
-//  daisy-chained under them, the adapters inside each router, and the
-//  active tunnels carrying traffic between them. The "detailed" half
-//  of the topology pair — the simplified view (DiagramView) shows the
-//  chassis-port-and-cable layout for users who don't care about the
-//  inner router structure.
+//  USB-C topology viewer. Renders host routers (one per Apple TB
+//  controller), device routers daisy-chained under them, the adapters
+//  inside each router, and the active tunnels carrying traffic between
+//  them — every USB-C receptacle's fabric in one window.
 //
 //  Reference: Microsoft's Windows Device Portal USB4 view
 //  (https://learn.microsoft.com/en-us/windows-hardware/design/component-
@@ -1049,7 +1046,7 @@ private enum DTTBuilder {
 
 // MARK: - Main view
 
-struct DetailedThunderboltTopologyView: View {
+struct USBCTopologyView: View {
     let snapshot: SystemSnapshot
     @State private var selection: DTTSelection? = nil
     /// User-controlled zoom factor (1.0 = 100%). Persists across
@@ -1127,7 +1124,7 @@ struct DetailedThunderboltTopologyView: View {
         HStack(spacing: 14) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.title2).foregroundStyle(.tint)
-            Text("Detailed Thunderbolt Topology").font(.title2.bold())
+            Text("USB-C Topology").font(.title2.bold())
             Text("·").foregroundStyle(.tertiary)
             statChip(systemImage: "cpu",
                      count: model.routerCount,

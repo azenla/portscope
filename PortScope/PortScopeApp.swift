@@ -144,9 +144,8 @@ private struct CLIRequest {
 /// Stable window identifiers used by `openWindow(id:)` from the More
 /// menu. Centralised so the menu and the scene definitions agree.
 enum PortScopeWindowID {
-    static let simplifiedTopology = "io.zenla.portscope.simplifiedTopology"
-    static let detailedTopology   = "io.zenla.portscope.detailedTopology"
-    static let hardwareSensors    = "io.zenla.portscope.hardwareSensors"
+    static let usbcTopology    = "io.zenla.portscope.usbcTopology"
+    static let hardwareSensors = "io.zenla.portscope.hardwareSensors"
 }
 
 /// The original SwiftUI App, now reached via `PortScopeApp.main()` from
@@ -190,18 +189,9 @@ struct PortScopeApp: App {
         // open across quit/launch would re-appear unprompted on every
         // start.
 
-        Window("Simplified Thunderbolt Topology",
-               id: PortScopeWindowID.simplifiedTopology) {
-            SimplifiedTopologyWindowHost()
-                .environmentObject(vm)
-                .maximizedOnFirstAppear()
-        }
-        .windowResizability(.contentSize)
-        .restorationBehavior(.disabled)
-
-        Window("Detailed Thunderbolt Topology",
-               id: PortScopeWindowID.detailedTopology) {
-            DetailedTopologyWindowHost()
+        Window("USB-C Topology",
+               id: PortScopeWindowID.usbcTopology) {
+            USBCTopologyWindowHost()
                 .environmentObject(vm)
                 .maximizedOnFirstAppear()
         }
@@ -287,20 +277,11 @@ extension View {
 // MARK: - Window hosts
 
 /// Adapter that reads the shared view model from the environment so the
-/// simplified Thunderbolt topology window always renders against the
-/// latest snapshot.
-private struct SimplifiedTopologyWindowHost: View {
+/// USB-C topology window always renders against the latest snapshot.
+private struct USBCTopologyWindowHost: View {
     @EnvironmentObject private var vm: PortScopeViewModel
     var body: some View {
-        DiagramView(snapshot: vm.snapshot)
-    }
-}
-
-/// Same wrapper for the detailed topology window.
-private struct DetailedTopologyWindowHost: View {
-    @EnvironmentObject private var vm: PortScopeViewModel
-    var body: some View {
-        DetailedThunderboltTopologyView(snapshot: vm.snapshot)
+        USBCTopologyView(snapshot: vm.snapshot)
     }
 }
 
