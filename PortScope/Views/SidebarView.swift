@@ -182,11 +182,13 @@ struct SidebarView: View {
         .navigationTitle("PortScope")
         .frame(minWidth: 280)
         .toolbar {
-            // Expand-all / collapse-all over the visible disclosure rows.
-            // Operates on the sidebar's expansion state directly so the
-            // user can either blow open every TB / USB tree at once or
-            // collapse them back to the section headers.
-            ToolbarItem(placement: .primaryAction) {
+            // View-state controls (expand/collapse all + rescan) share a
+            // single Liquid Glass grouping so they read as one related
+            // cluster, with the More menu separated into its own group by a
+            // fixed spacer. Operates on the sidebar's expansion state
+            // directly so the user can blow open every TB / USB tree at
+            // once or collapse them back to the section headers.
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     if expanded.isEmpty {
                         expanded = collectAllExpandableIDs(ports: ports)
@@ -200,8 +202,7 @@ struct SidebarView: View {
                             : "rectangle.compress.vertical")
                 }
                 .help(expanded.isEmpty ? "Expand every disclosure row" : "Collapse every disclosure row")
-            }
-            ToolbarItem(placement: .primaryAction) {
+
                 Button {
                     vm.rescan()
                 } label: {
@@ -214,10 +215,22 @@ struct SidebarView: View {
                 .help("Re-scan IORegistry")
                 .disabled(vm.isScanning)
             }
+
+            // Fixed spacer splits the view-state cluster from the More
+            // menu into separate Liquid Glass groupings. Gated because
+            // ToolbarSpacer is macOS 26+; on earlier systems the items
+            // just sit adjacent (the ToolbarItemGroup still clusters the
+            // expand/refresh pair).
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+            }
+
             // Triple-dot menu for additional panels. Topology lives here
             // now; future panels (bandwidth heatmap, power timeline, hop-
             // table inspector, etc.) get added to the same menu so the
-            // main toolbar stays uncluttered.
+            // main toolbar stays uncluttered. In a toolbar the Menu picks
+            // up the system glass-button treatment automatically, so no
+            // explicit menu style is needed.
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Menu {
@@ -244,9 +257,8 @@ struct SidebarView: View {
                               systemImage: "thermometer.medium")
                     }
                 } label: {
-                    Label("More", systemImage: "ellipsis.circle")
+                    Label("More", systemImage: "ellipsis")
                 }
-                .menuStyle(.borderlessButton)
             }
         }
         .task(id: vm.snapshot.capturedAt) {
