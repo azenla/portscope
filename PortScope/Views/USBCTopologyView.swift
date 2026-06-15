@@ -29,10 +29,14 @@ import SwiftUI
 /// the selection survives a snapshot refresh as long as the underlying
 /// IORegistry entry is still around.
 enum DTTSelection: Hashable {
+    case mac                      // the central Mac hub — host-wide summary
     case hostRouter(TBNodeID)
     case deviceRouter(TBNodeID)
     case adapter(TBNodeID)
     case tunnel(TBNodeID)  // keyed by the function adapter that anchors the tunnel
+    case usbDevice(TBNodeID)      // a USB hub or leaf device in the downstream tree
+    case display(TBNodeID)        // an attached external display
+    case pcie(TBNodeID)           // a tunneled PCIe endpoint
 }
 
 // MARK: - Topology model (built once per render from the snapshot)
@@ -127,6 +131,10 @@ private struct USBNode: Identifiable, Hashable {
     let symbol: String          // SF Symbol picked from device class
     let isHub: Bool
     let children: [USBNode]
+    /// The backing IORegistry node, kept so the inspector can render a
+    /// curated USB summary plus the full raw property table when the
+    /// user clicks a device in the topology.
+    let node: TBNode
 }
 
 /// One external display block attached to a DP/HDMI tunnel.
@@ -730,7 +738,8 @@ private enum DTTBuilder {
                     subtitle: usbSubtitle(child),
                     symbol: "rectangle.3.group",
                     isHub: true,
-                    children: kids
+                    children: kids,
+                    node: child
                 ))
             case .usbDevice:
                 let t = child.title.lowercased()
@@ -754,7 +763,8 @@ private enum DTTBuilder {
                         subtitle: usbSubtitle(child),
                         symbol: usbSymbol(for: child),
                         isHub: false,
-                        children: kids
+                        children: kids,
+                        node: child
                     ))
                 }
             case .usbController, .usbInterface, .other:
@@ -1073,6 +1083,22 @@ struct USBCTopologyView: View {
     /// which was visibly hanging the canvas. Rebuilt via .task(id:)
     /// when the snapshot identity changes.
     @State private var cachedModel: DTTModel = DTTModel(hostRouters: [])
+    /// Hide the Thunderbolt fabric internals — the per-router adapter
+    /// chips and tunnel chips. Off by default for a clean, device-centric
+    /// fan-out; power users flip it on to inspect the USB4 plumbing.
+    @AppStorage("topoShowTBInternals") private var showTBInternals = false
+    /// Show the full cascaded USB hub chain. Off by default — leaf
+    /// devices are promoted up so a busy dock reads as its actual
+    /// peripherals instead of a stack of generic "USB 3.0 Hub" rows.
+    @AppStorage("topoShowIntermediateHubs") private var showIntermediateHubs = false
+
+    init(snapshot: SystemSnapshot) {
+        self.snapshot = snapshot
+        // Build the model eagerly so the first frame is already populated
+        // — no empty-state flash before `.task` runs. `.task(id:)` still
+        // rebuilds it when the ViewModel publishes a fresh snapshot.
+        _cachedModel = State(initialValue: DTTBuilder.build(from: snapshot))
+    }
 
     var body: some View {
         let model = cachedModel
@@ -1082,15 +1108,11 @@ struct USBCTopologyView: View {
             HStack(spacing: 0) {
                 canvas(model: model)
                     .frame(maxWidth: .infinity)
-                if selection != nil {
-                    Divider()
-                    sidebar(model: model)
-                        .frame(width: 340)
-                        .background(.background)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
+                Divider()
+                inspector(model: model)
+                    .frame(width: 348)
+                    .background(.background)
             }
-            .animation(.easeInOut(duration: 0.18), value: selection)
         }
         .frame(minWidth: 1180, minHeight: 760)
         // Build the topology model once when the view appears and
@@ -1111,10 +1133,14 @@ struct USBCTopologyView: View {
 
     private func resolves(_ sel: DTTSelection, in model: DTTModel) -> Bool {
         switch sel {
+        case .mac:                  return true
         case .hostRouter(let id):   return findHost(id: id, in: model) != nil
         case .deviceRouter(let id): return findDevice(id: id, in: model) != nil
         case .adapter(let id):      return findAdapter(id: id, in: model) != nil
         case .tunnel(let id):       return findTunnel(id: id, in: model) != nil
+        case .usbDevice(let id):    return findUSB(id: id, in: model) != nil
+        case .display(let id):      return findDisplay(id: id, in: model) != nil
+        case .pcie(let id):         return findPCIe(id: id, in: model) != nil
         }
     }
 
@@ -1135,12 +1161,33 @@ struct USBCTopologyView: View {
                      singular: "tunnel",
                      plural: "tunnels")
             Spacer()
-            zoomControls
+            topologyToggles
             Divider().frame(height: 18).padding(.horizontal, 4)
-            legendDot(color: .green, label: "Host")
-            legendDot(color: .blue, label: "Device")
+            zoomControls
         }
-        .padding()
+        .padding(.horizontal).padding(.vertical, 10)
+    }
+
+    /// Two compact switches that thin out the diagram: hide the
+    /// Thunderbolt fabric internals, and collapse the cascaded USB hub
+    /// chain down to its leaf devices. Both default off so the first
+    /// look is the clean device-centric fan.
+    private var topologyToggles: some View {
+        HStack(spacing: 14) {
+            Toggle(isOn: $showTBInternals) {
+                Label("TB internals", systemImage: "bolt.horizontal")
+            }
+            .help("Show the per-router adapters and tunnels")
+            Toggle(isOn: $showIntermediateHubs) {
+                Label("Hub chain", systemImage: "rectangle.3.group")
+            }
+            .help("Show every intermediate USB hub instead of just the devices")
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .labelStyle(.titleAndIcon)
+        .font(.caption)
+        .fixedSize()
     }
 
     /// Compact zoom toolbar — minus / percentage / plus / fit. Keeps
@@ -1249,13 +1296,6 @@ struct USBCTopologyView: View {
         }
     }
 
-    private func legendDot(color: Color, label: String) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(color.opacity(0.7)).frame(width: 10, height: 10)
-            Text(label).font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
     // MARK: Canvas
 
     /// The canvas hosts the topology inside a scroll view with both
@@ -1332,186 +1372,61 @@ struct USBCTopologyView: View {
         }
     }
 
-    /// The actual topology drawing. Rendered at natural size; the
-    /// canvas applies the zoom transform.
+    /// The actual topology drawing — a Mac-centered radial fan. Rendered
+    /// at natural size; the canvas applies the zoom transform. The heavy
+    /// lifting (left/right balancing, curved cable connectors via anchor
+    /// preferences) lives in `RadialTopology`.
     private func topologyContent(model: DTTModel) -> some View {
-        VStack(alignment: .center, spacing: 0) {
-            MacChassisBlock()
-            trunkLine(height: 18)
-            hostBranchingTrunk(routers: model.hostRouters)
-            hostRoutersBar(routers: model.hostRouters)
+        Group {
+            if model.hostRouters.isEmpty {
+                emptyState
+            } else {
+                RadialTopology(model: model,
+                               selection: $selection,
+                               showTBInternals: showTBInternals,
+                               showIntermediateHubs: showIntermediateHubs)
+            }
         }
-        .padding(40)
+        .padding(56)
         .fixedSize()
     }
 
-    private func trunkLine(height: CGFloat) -> some View {
-        Rectangle()
-            .fill(Color.secondary.opacity(0.35))
-            .frame(width: 2, height: height)
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "bolt.horizontal.circle")
+                .font(.system(size: 44))
+                .foregroundStyle(.tertiary)
+            Text("No Thunderbolt / USB4 controllers")
+                .font(.title3.weight(.medium))
+                .foregroundStyle(.secondary)
+            Text("This Mac doesn't expose a USB4 fabric, or nothing has been scanned yet.")
+                .font(.callout)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+        }
+        .frame(width: 520, height: 320)
     }
 
-    /// Horizontal bus + per-column vertical drops between the "This Mac"
-    /// pill and the host router cards. Mirrors the way the dock card's
-    /// downstream tree branches into separate display / USB / PCIe blocks
-    /// — visually the host routers are siblings hanging off the Mac,
-    /// not children of just the centre column. A single straight
-    /// `trunkLine` made HR1 and HR3 look orphaned because the line only
-    /// reached the middle host card.
-    ///
-    /// Drawn with `Canvas` rather than nested HStacks/ZStacks so the
-    /// drops land at the precise pixel centres of the host router
-    /// columns. **Column widths aren't uniform**: a column with a
-    /// downstream device router (the 520-pt dock card) or a TB-networking
-    /// peer (also 520) is wider than a column whose host has nothing
-    /// attached (just the 360-pt host card). The trunk reads each
-    /// router's downstream/peer status and computes per-column widths +
-    /// centres from that, so the drops always land on the host card
-    /// centre — which is what `HostRouterCard` is itself centred around
-    /// inside its column.
-    private func hostBranchingTrunk(routers: [HostRouter]) -> some View {
-        let widths = columnWidths(for: routers)
-        let spacing: CGFloat = 28
-        let dropHeight: CGFloat = 18
-        // Walk left → right summing column widths + spacing to find each
-        // column's centre, then the total width.
-        var cursor: CGFloat = 0
-        var centers: [CGFloat] = []
-        for (idx, w) in widths.enumerated() {
-            centers.append(cursor + w / 2)
-            cursor += w
-            if idx < widths.count - 1 { cursor += spacing }
-        }
-        let totalWidth = cursor
+    // MARK: Inspector
 
-        return Canvas { ctx, _ in
-            let stroke = GraphicsContext.Shading.color(Color.secondary.opacity(0.35))
-            if let first = centers.first, let last = centers.last, centers.count > 1 {
-                var bus = Path()
-                bus.move(to: CGPoint(x: first, y: 1))
-                bus.addLine(to: CGPoint(x: last, y: 1))
-                ctx.stroke(bus, with: stroke, lineWidth: 2)
-            }
-            for x in centers {
-                var drop = Path()
-                drop.move(to: CGPoint(x: x, y: 0))
-                drop.addLine(to: CGPoint(x: x, y: dropHeight))
-                ctx.stroke(drop, with: stroke, lineWidth: 2)
-            }
-        }
-        .frame(width: totalWidth, height: dropHeight)
-    }
-
-    /// Width of each host router's column in `hostRoutersBar` — the
-    /// natural width of the widest child in the VStack. A column with a
-    /// downstream device router or TB peer expands to `deviceRouterWidth`
-    /// (520), since both render at that width; otherwise it stays at the
-    /// host-card width (360). Keep in sync with the conditional branches
-    /// inside `hostRoutersBar`.
-    private func columnWidths(for routers: [HostRouter]) -> [CGFloat] {
-        routers.map { host in
-            (host.downstream != nil || host.peer != nil)
-                ? Self.deviceRouterWidth
-                : Self.hostColumnWidth
-        }
-    }
-
-    /// Per-host column width. Wide enough to fit three adapter
-    /// chips (at min 110 px) per row in the host router card.
-    private static let hostColumnWidth: CGFloat = 360
-    /// Device router cards expand wider than the host column so a
-    /// dock with 14+ adapters and 4 tunnels reads as a single dense
-    /// card instead of an absurdly tall thin strip.
-    private static let deviceRouterWidth: CGFloat = 520
-
-    private func hostRoutersBar(routers: [HostRouter]) -> some View {
-        HStack(alignment: .top, spacing: 28) {
-            ForEach(routers) { host in
-                VStack(spacing: 0) {
-                    HostRouterCard(
-                        host: host,
-                        selection: $selection
-                    )
-                    .frame(width: Self.hostColumnWidth)
-                    if let device = host.downstream {
-                        // The cable line + downstream device router
-                        // sits directly under the host card so the
-                        // visual flow reads top→bottom. The device
-                        // card can expand wider than the host column
-                        // — it's centered under the host so the
-                        // visual lineage is still obvious.
-                        // Prefer the device's upstream lane for the cable
-                        // bandwidth — the lowest-numbered lane adapter may
-                        // be an idle downstream port reporting 0.
-                        CableConnector(
-                            speed: host.adapters.first(where: \.isTunnelActive)?.currentLinkSpeed ?? 0,
-                            width: host.adapters.first(where: \.isTunnelActive)?.currentLinkWidth ?? 0,
-                            linkBandwidth: (device.adapters.first(where: \.isUpstreamLane)
-                                ?? device.adapters.first(where: { $0.kind == .lane }))?.linkBandwidth ?? 0,
-                            tunnels: device.tunnels
-                        )
-                        // The card itself is constrained to a fixed
-                        // width so its layout stays predictable; the
-                        // downstream tree under it (USB hubs + leaves
-                        // + displays) is free to grow with the device
-                        // count.
-                        DeviceRouterTree(router: device,
-                                         selection: $selection)
-                    } else if let peer = host.peer {
-                        // TB-networking peer (XDomain) — Mac/Linux/PC
-                        // on the other end. No device router, no
-                        // tunnels in the normal sense; render the cable
-                        // line + a dedicated peer card instead. Use
-                        // the host's XDomain-bearing lane adapter for
-                        // the cable speed/width (the lane has a Hop
-                        // Table entry for the XDomain control channel
-                        // even though there's no tunneled device).
-                        CableConnector(
-                            speed: host.adapters.first(where: \.isTunnelActive)?.currentLinkSpeed ?? 0,
-                            width: host.adapters.first(where: \.isTunnelActive)?.currentLinkWidth ?? 0,
-                            linkBandwidth: host.adapters.first(where: \.isTunnelActive)?.linkBandwidth ?? 0,
-                            tunnels: []
-                        )
-                        ThunderboltPeerCard(peer: peer)
-                            .frame(width: Self.deviceRouterWidth)
-                    } else {
-                        // Match the cable-connector "tail" pattern so
-                        // empty / device / peer slots all align at the
-                        // same y-offset under the host card: 16-px line,
-                        // muted pill, no trailing line.
-                        VStack(spacing: 4) {
-                            trunkLine(height: 16)
-                            Text("No device attached")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                                .padding(.horizontal, 10).padding(.vertical, 5)
-                                .background(Capsule().fill(Color.secondary.opacity(0.10)))
-                        }
-                    }
-                }
-                .frame(alignment: .top)
-            }
-        }
-    }
-
-    // MARK: Sidebar
-
-    /// Selection-driven inspector. The whole sidebar is gated on
-    /// `selection != nil` by the caller (the canvas takes the full width
-    /// when nothing is selected), so this view only ever renders for a
-    /// real selection. A dedicated close button at the top clears the
-    /// selection — placed at the leading edge of the sidebar (right next
-    /// to the divider that splits canvas / sidebar) so it's directly
-    /// reachable when the user wants to dismiss without aiming for a
-    /// small system traffic-light.
+    /// Always-visible inspector. With nothing selected (or the Mac hub
+    /// selected) it shows a host overview — marketing name, fabric counts,
+    /// and a tap-to-jump list of everything attached. With any other
+    /// selection it shows that item's detail behind a "← Overview" button.
+    /// Keeping it permanently on means the window never has a dead right
+    /// margin and the overview is always one glance away.
     @ViewBuilder
-    private func sidebar(model: DTTModel) -> some View {
+    private func inspector(model: DTTModel) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                sidebarCloseBar
-                if let sel = selection {
+            VStack(alignment: .leading, spacing: 16) {
+                if let sel = selection, sel != .mac {
+                    inspectorBackBar
                     sidebarHeader(for: sel, model: model)
                     sidebarBody(for: sel, model: model)
+                } else {
+                    if selection == .mac { inspectorBackBar }
+                    overview(model: model)
                 }
             }
             .padding(18)
@@ -1519,38 +1434,118 @@ struct USBCTopologyView: View {
         }
     }
 
-    /// Big, easy-to-hit close affordance at the very top of the sidebar.
-    /// Made deliberately large (32-pt hit target) with a label so the user
-    /// doesn't have to aim for a tiny X — matches the "easy to hit"
-    /// requirement.
-    private var sidebarCloseBar: some View {
+    /// "← Overview" affordance shown above any item detail. Esc also
+    /// clears the selection back to the overview.
+    private var inspectorBackBar: some View {
         HStack {
             Button {
                 selection = nil
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                    Text("Close")
-                        .font(.callout.weight(.medium))
-                }
-                .foregroundStyle(.secondary)
-                .contentShape(Rectangle())
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                Label("Overview", systemImage: "chevron.backward")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Capsule().fill(Color.secondary.opacity(0.12)))
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
-            .help("Close inspector (Esc)")
+            .help("Back to overview (Esc)")
             Spacer()
         }
     }
+
+    // MARK: Inspector — overview (no / Mac selection)
+
+    @ViewBuilder
+    private func overview(model: DTTModel) -> some View {
+        let host = MacPortCatalog.current
+        sidebarTitle(symbol: macSymbol,
+                     color: .primary,
+                     title: host.entry?.marketingName ?? "This Mac",
+                     subtitle: host.modelID.isEmpty ? "USB4 fabric host" : host.modelID)
+        SidebarSection(title: "Fabric") {
+            SidebarRow(label: "USB-C ports", value: "\(model.hostRouters.count)")
+            SidebarRow(label: "Routers", value: "\(model.routerCount)")
+            SidebarRow(label: "Active tunnels", value: "\(model.tunnelCount)")
+        }
+        let attached = model.hostRouters.filter { $0.downstream != nil || $0.peer != nil }
+        if attached.isEmpty {
+            Text("Nothing is plugged into a USB-C port right now. Connect a dock, display, or drive and it'll fan out from the Mac.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            SidebarSection(title: "Attached (\(attached.count))") {
+                ForEach(attached) { h in
+                    Button {
+                        if let d = h.downstream { selection = .deviceRouter(d.id) }
+                        else { selection = .hostRouter(h.id) }
+                    } label: {
+                        overviewRow(host: h)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        SidebarSection(title: "Tips") {
+            tipRow(symbol: "hand.tap", text: "Click any node — router, adapter, display, or USB device — to inspect it.")
+            tipRow(symbol: "bolt.horizontal", text: "Turn on TB internals to reveal adapters and tunnels.")
+            tipRow(symbol: "rectangle.3.group", text: "Turn on the hub chain to expand cascaded USB hubs.")
+        }
+    }
+
+    /// SF Symbol for the central Mac hub, guessed from the catalogue
+    /// chassis string. Falls back to a laptop — the overwhelmingly common
+    /// USB4 host — when the chassis is unknown.
+    private var macSymbol: String {
+        let c = (MacPortCatalog.current.entry?.chassis ?? "").lowercased()
+        if c.contains("mini") { return "macmini" }
+        if c.contains("studio") { return "macstudio" }
+        if c.contains("imac") { return "desktopcomputer" }
+        if c.contains("pro") && (c.contains("tower") || c.contains("rack")) { return "macpro.gen3" }
+        return "laptopcomputer"
+    }
+
+    private func overviewRow(host h: HostRouter) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: h.peer != nil ? "personalhotspot" : "shippingbox.fill")
+                .foregroundStyle(h.peer != nil ? Color.teal : .blue)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(h.downstream?.title ?? h.peer?.displayTitle ?? h.title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Text(h.socketID.map { "USB-C · Socket \($0)" } ?? "USB-C")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 2)
+    }
+
+    private func tipRow(symbol: String, text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .font(.caption2).foregroundStyle(.tertiary).frame(width: 16)
+            Text(text)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: Inspector — per-selection header + body
 
     @ViewBuilder
     private func sidebarHeader(for sel: DTTSelection,
                                model: DTTModel) -> some View {
         switch sel {
+        case .mac:
+            EmptyView()   // handled by `overview`
         case .hostRouter(let id):
             if let h = findHost(id: id, in: model) {
                 sidebarTitle(symbol: "cpu",
@@ -1579,6 +1574,27 @@ struct USBCTopologyView: View {
                              title: "\(t.kind.label) Tunnel",
                              subtitle: "Path \(t.pathID)")
             }
+        case .usbDevice(let id):
+            if let u = findUSB(id: id, in: model) {
+                sidebarTitle(symbol: u.symbol,
+                             color: AdapterKind.usb.color,
+                             title: u.title,
+                             subtitle: u.isHub ? "USB hub" : "USB device")
+            }
+        case .display(let id):
+            if let d = findDisplay(id: id, in: model) {
+                sidebarTitle(symbol: "display",
+                             color: AdapterKind.dp.color,
+                             title: d.title,
+                             subtitle: d.subtitle ?? "External display")
+            }
+        case .pcie(let id):
+            if let p = findPCIe(id: id, in: model) {
+                sidebarTitle(symbol: "square.stack.3d.up",
+                             color: AdapterKind.pcie.color,
+                             title: p.title,
+                             subtitle: p.subtitle ?? "PCIe endpoint")
+            }
         }
     }
 
@@ -1605,6 +1621,8 @@ struct USBCTopologyView: View {
     private func sidebarBody(for sel: DTTSelection,
                              model: DTTModel) -> some View {
         switch sel {
+        case .mac:
+            EmptyView()   // handled by `overview`
         case .hostRouter(let id):
             if let h = findHost(id: id, in: model) {
                 hostRouterDetail(host: h)
@@ -1620,6 +1638,18 @@ struct USBCTopologyView: View {
         case .tunnel(let id):
             if let t = findTunnel(id: id, in: model) {
                 tunnelDetail(tunnel: t)
+            }
+        case .usbDevice(let id):
+            if let u = findUSB(id: id, in: model) {
+                usbDeviceDetail(node: u)
+            }
+        case .display(let id):
+            if let d = findDisplay(id: id, in: model) {
+                displayDetail(leaf: d)
+            }
+        case .pcie(let id):
+            if let p = findPCIe(id: id, in: model) {
+                pcieDetail(leaf: p)
             }
         }
     }
@@ -1730,6 +1760,75 @@ struct USBCTopologyView: View {
         }
     }
 
+    private func usbDeviceDetail(node u: USBNode) -> some View {
+        let p = u.node.properties
+        let bcd = p["bcdUSB"]?.asUInt
+        let negotiated = p["Device Speed"]?.asUInt ?? p["kUSBCurrentSpeed"]?.asUInt
+        return VStack(alignment: .leading, spacing: 14) {
+            SidebarSection(title: u.isHub ? "Hub" : "Device") {
+                if let vendor = (p["kUSBVendorString"]?.asString ?? p["USB Vendor Name"]?.asString),
+                   !vendor.isEmpty {
+                    SidebarRow(label: "Vendor", value: vendor)
+                }
+                if let product = (p["kUSBProductString"]?.asString ?? p["USB Product Name"]?.asString),
+                   !product.isEmpty {
+                    SidebarRow(label: "Product", value: product)
+                }
+                if let serial = (p["kUSBSerialNumberString"]?.asString ?? p["USB Serial Number"]?.asString),
+                   !serial.isEmpty {
+                    SidebarRow(label: "Serial", value: serial)
+                }
+                if let declared = usbDeclaredVersionLabel(bcd) {
+                    SidebarRow(label: "Protocol", value: declared)
+                }
+                if let neg = negotiated, neg > 0 {
+                    SidebarRow(label: "Negotiated", value: usbSpeedShortLabel(neg))
+                }
+                if let vid = p["idVendor"]?.asUInt, let pid = p["idProduct"]?.asUInt {
+                    SidebarRow(label: "VID / PID",
+                               value: String(format: "0x%04llX / 0x%04llX", vid, pid))
+                }
+                if let loc = p["locationID"]?.asUInt {
+                    SidebarRow(label: "Location", value: String(format: "0x%08llX", loc))
+                }
+            }
+            if usbIsDowngraded(bcdUSB: bcd, currentSpeed: negotiated) {
+                Label("Negotiated below its rated protocol — usually a 2.0 hub or USB-A cable in the path.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            RawPropertyDisclosure(node: u.node)
+        }
+    }
+
+    @ViewBuilder
+    private func displayDetail(leaf: DisplayLeaf) -> some View {
+        let info = snapshot.displays.displays.first { $0.backingID == leaf.id }
+        SidebarSection(title: "Display") {
+            SidebarRow(label: "Name", value: leaf.title)
+            if let w = info?.widthPixels, let h = info?.heightPixels, w > 0, h > 0 {
+                SidebarRow(label: "Resolution", value: "\(w) × \(h)")
+            }
+            if let hz = info?.currentRefreshHz ?? info?.maxRefreshHz {
+                SidebarRow(label: "Refresh", value: "\(Int(hz.rounded())) Hz")
+            }
+            if let sub = leaf.subtitle, info == nil {
+                SidebarRow(label: "Mode", value: sub)
+            }
+        }
+    }
+
+    private func pcieDetail(leaf: PCIeLeaf) -> some View {
+        SidebarSection(title: "PCIe Endpoint") {
+            SidebarRow(label: "Name", value: leaf.title)
+            if let sub = leaf.subtitle {
+                SidebarRow(label: "Detail", value: sub)
+            }
+        }
+    }
+
     private func hexLabel(_ value: UInt64?, digits: Int) -> String {
         guard let v = value else { return "—" }
         return String(format: "0x%0\(digits)llX", v)
@@ -1782,261 +1881,525 @@ struct USBCTopologyView: View {
         }
         return nil
     }
-}
-
-// MARK: - Mac chassis block
-
-private struct MacChassisBlock: View {
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "laptopcomputer")
-                .font(.title2)
-                .foregroundStyle(.primary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("This Mac").font(.headline)
-                Text("USB4 fabric host").font(.caption).foregroundStyle(.secondary)
-            }
+    private func findUSB(id: TBNodeID, in model: DTTModel) -> USBNode? {
+        for h in model.hostRouters {
+            if let d = h.downstream, let u = findUSB(id: id, in: d) { return u }
         }
-        .padding(.horizontal, 18).padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(LinearGradient(
-                    colors: [Color.primary.opacity(0.08), Color.primary.opacity(0.04)],
-                    startPoint: .top, endPoint: .bottom))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-        )
+        return nil
+    }
+    private func findUSB(id: TBNodeID, in router: DeviceRouter) -> USBNode? {
+        for n in router.usbTree {
+            if let u = findUSB(id: id, in: n) { return u }
+        }
+        for c in router.daisyChained {
+            if let u = findUSB(id: id, in: c) { return u }
+        }
+        return nil
+    }
+    private func findUSB(id: TBNodeID, in node: USBNode) -> USBNode? {
+        if node.id == id { return node }
+        for c in node.children {
+            if let u = findUSB(id: id, in: c) { return u }
+        }
+        return nil
+    }
+    private func findDisplay(id: TBNodeID, in model: DTTModel) -> DisplayLeaf? {
+        for h in model.hostRouters {
+            if let d = h.downstream, let x = findDisplay(id: id, in: d) { return x }
+        }
+        return nil
+    }
+    private func findDisplay(id: TBNodeID, in router: DeviceRouter) -> DisplayLeaf? {
+        if let x = router.displays.first(where: { $0.id == id }) { return x }
+        for c in router.daisyChained {
+            if let x = findDisplay(id: id, in: c) { return x }
+        }
+        return nil
+    }
+    private func findPCIe(id: TBNodeID, in model: DTTModel) -> PCIeLeaf? {
+        for h in model.hostRouters {
+            if let d = h.downstream, let x = findPCIe(id: id, in: d) { return x }
+        }
+        return nil
+    }
+    private func findPCIe(id: TBNodeID, in router: DeviceRouter) -> PCIeLeaf? {
+        if let x = router.pcieLeaves.first(where: { $0.id == id }) { return x }
+        for c in router.daisyChained {
+            if let x = findPCIe(id: id, in: c) { return x }
+        }
+        return nil
     }
 }
 
-// MARK: - Host router card
+// MARK: - Radial topology (Mac-centered fan-out)
 
-private struct HostRouterCard: View {
-    let host: HostRouter
+/// Which side of the Mac a spoke sits on. Drives both stack alignment
+/// and which edge of the Mac its cable leaves from.
+private enum TopoSide { case left, right }
+
+/// Pre-computed styling for one host→device cable, carried through the
+/// anchor preference so the connector canvas can draw it without
+/// re-reading the model.
+private struct CableStyle: Equatable {
+    var active: Bool
+    var color: Color
+    var lineWidth: CGFloat
+    /// Idle ports get a thin dashed spoke so every receptacle is visible
+    /// without competing with live links.
+    var dashed: Bool
+}
+
+/// One node's bounds plus the metadata the connector canvas needs.
+private struct ConnectorAnchorItem {
+    enum Role { case mac; case panel(side: TopoSide, style: CableStyle) }
+    let role: Role
+    let anchor: Anchor<CGRect>
+}
+
+private struct ConnectorAnchorsKey: PreferenceKey {
+    static let defaultValue: [ConnectorAnchorItem] = []
+    static func reduce(value: inout [ConnectorAnchorItem],
+                       nextValue: () -> [ConnectorAnchorItem]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+/// The Mac-centered fan. Host routers are balanced into a left and a
+/// right column flanking the central Mac hub; a `Canvas` behind the
+/// nodes draws a smooth curved cable from the Mac out to each port
+/// panel, coloured and weighted by the negotiated link generation.
+private struct RadialTopology: View {
+    let model: DTTModel
     @Binding var selection: DTTSelection?
+    let showTBInternals: Bool
+    let showIntermediateHubs: Bool
+
+    var body: some View {
+        let split = balancedSplit(model.hostRouters)
+        HStack(alignment: .center, spacing: 130) {
+            column(split.left, side: .left)
+            MacHub(model: model, selection: $selection)
+                .anchorPreference(key: ConnectorAnchorsKey.self, value: .bounds) {
+                    [ConnectorAnchorItem(role: .mac, anchor: $0)]
+                }
+            column(split.right, side: .right)
+        }
+        .backgroundPreferenceValue(ConnectorAnchorsKey.self) { items in
+            GeometryReader { proxy in
+                ConnectorCanvas(items: items, proxy: proxy)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func column(_ hosts: [HostRouter], side: TopoSide) -> some View {
+        VStack(alignment: side == .left ? .trailing : .leading, spacing: 30) {
+            ForEach(hosts) { host in
+                PortPanel(host: host,
+                          side: side,
+                          selection: $selection,
+                          showTBInternals: showTBInternals,
+                          showIntermediateHubs: showIntermediateHubs)
+                    .anchorPreference(key: ConnectorAnchorsKey.self, value: .bounds) {
+                        [ConnectorAnchorItem(role: .panel(side: side,
+                                                          style: cableStyle(for: host)),
+                                             anchor: $0)]
+                    }
+            }
+        }
+    }
+
+    /// Split host routers so the two columns carry roughly equal visual
+    /// weight (a dock counts for more than an empty port). Greedy
+    /// largest-first assignment to the lighter side; ties go right so a
+    /// lone device sits on the right. Within a side, ports stay in
+    /// socket order for a stable, predictable layout.
+    private func balancedSplit(_ hosts: [HostRouter]) -> (left: [HostRouter], right: [HostRouter]) {
+        var left: [HostRouter] = []
+        var right: [HostRouter] = []
+        var lw = 0.0, rw = 0.0
+        for h in hosts.sorted(by: { weight($0) > weight($1) }) {
+            if rw <= lw { right.append(h); rw += weight(h) }
+            else { left.append(h); lw += weight(h) }
+        }
+        let order: (HostRouter, HostRouter) -> Bool = {
+            (Int($0.socketID ?? "") ?? .max) < (Int($1.socketID ?? "") ?? .max)
+        }
+        return (left.sorted(by: order), right.sorted(by: order))
+    }
+
+    private func weight(_ h: HostRouter) -> Double {
+        if let d = h.downstream {
+            // A dock with a deep downstream tree is the tallest thing on
+            // the canvas — weight it by what hangs off it.
+            return 3 + Double(d.usbTree.count + d.displays.count) * 0.4
+        }
+        return h.peer != nil ? 2 : 1
+    }
+
+    /// Map the negotiated TB link generation to a cable colour + weight.
+    /// Speed codes per CLAUDE.md: 0x2 = TB5/USB4v2, 0x4 = TB4/USB4v1,
+    /// 0x8 = TB3, 0 = inactive.
+    private func cableStyle(for host: HostRouter) -> CableStyle {
+        let active = host.downstream != nil || host.peer != nil
+        let speed = host.adapters.first(where: \.isTunnelActive)?.currentLinkSpeed ?? 0
+        switch speed {
+        case 0x2: return CableStyle(active: true, color: .purple, lineWidth: 5, dashed: false)
+        case 0x4: return CableStyle(active: true, color: .blue,   lineWidth: 4, dashed: false)
+        case 0x8: return CableStyle(active: true, color: .teal,   lineWidth: 3, dashed: false)
+        default:
+            return CableStyle(active: active,
+                              color: active ? .blue : .secondary,
+                              lineWidth: active ? 3 : 1.5,
+                              dashed: !active)
+        }
+    }
+}
+
+// MARK: - Connector canvas
+
+/// Draws the curved cables from the Mac hub to each port panel using the
+/// bounds anchors collected from the layout. Active links get a soft
+/// glow underlay; idle ports get a thin dashed spoke. Endpoints are
+/// capped with a small filled dot so the cable visibly "plugs in".
+private struct ConnectorCanvas: View {
+    let items: [ConnectorAnchorItem]
+    let proxy: GeometryProxy
+
+    var body: some View {
+        Canvas { ctx, _ in
+            guard let macItem = items.first(where: {
+                if case .mac = $0.role { return true } else { return false }
+            }) else { return }
+            let mac = proxy[macItem.anchor]
+
+            for item in items {
+                guard case let .panel(side, style) = item.role else { continue }
+                let rect = proxy[item.anchor]
+                let start = CGPoint(x: side == .right ? mac.maxX : mac.minX,
+                                    y: mac.midY)
+                let end = CGPoint(x: side == .right ? rect.minX : rect.maxX,
+                                  y: rect.midY)
+                let dx = (end.x - start.x) * 0.5
+                let path = Path { p in
+                    p.move(to: start)
+                    p.addCurve(to: end,
+                               control1: CGPoint(x: start.x + dx, y: start.y),
+                               control2: CGPoint(x: end.x - dx, y: end.y))
+                }
+                if style.active {
+                    ctx.stroke(path,
+                               with: .color(style.color.opacity(0.16)),
+                               style: StrokeStyle(lineWidth: style.lineWidth + 7,
+                                                  lineCap: .round))
+                }
+                // Active cables fade from a faint tint at the Mac to a
+                // saturated colour at the device, so the link reads as
+                // energy flowing outward from the centre.
+                let shading: GraphicsContext.Shading = style.active
+                    ? .linearGradient(
+                        Gradient(colors: [style.color.opacity(0.35),
+                                          style.color.opacity(0.95)]),
+                        startPoint: start, endPoint: end)
+                    : .color(style.color.opacity(0.40))
+                ctx.stroke(path,
+                           with: shading,
+                           style: StrokeStyle(lineWidth: style.lineWidth,
+                                              lineCap: .round,
+                                              dash: style.dashed ? [3, 5] : []))
+                for pt in [start, end] {
+                    let r = CGRect(x: pt.x - 3.5, y: pt.y - 3.5, width: 7, height: 7)
+                    ctx.fill(Path(ellipseIn: r),
+                             with: .color(style.color.opacity(style.active ? 0.9 : 0.5)))
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Mac hub (center node)
+
+private struct MacHub: View {
+    let model: DTTModel
+    @Binding var selection: DTTSelection?
+
+    private var isSelected: Bool { selection == .mac }
+
+    private var name: String {
+        MacPortCatalog.current.entry?.marketingName ?? "This Mac"
+    }
+    private var symbol: String {
+        let c = (MacPortCatalog.current.entry?.chassis ?? "").lowercased()
+        if c.contains("mini") { return "macmini" }
+        if c.contains("studio") { return "macstudio" }
+        if c.contains("imac") { return "desktopcomputer" }
+        if c.contains("pro") && (c.contains("tower") || c.contains("rack")) { return "macpro.gen3" }
+        return "laptopcomputer"
+    }
+
+    var body: some View {
+        Button {
+            selection = .mac
+        } label: {
+            VStack(spacing: 7) {
+                Image(systemName: symbol)
+                    .font(.system(size: 42, weight: .regular))
+                    .foregroundStyle(.primary)
+                Text(name)
+                    .font(.callout.bold())
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("\(model.hostRouters.count) USB-C · \(model.tunnelCount) tunnel\(model.tunnelCount == 1 ? "" : "s")")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(20)
+            .frame(width: 208, height: 208)
+            .background(
+                Circle().fill(.regularMaterial)
+            )
+            .overlay(
+                Circle().fill(
+                    RadialGradient(colors: [Color.accentColor.opacity(0.10), .clear],
+                                   center: .center, startRadius: 6, endRadius: 120))
+            )
+            .overlay(
+                Circle().stroke(isSelected ? Color.accentColor : Color.primary.opacity(0.18),
+                                lineWidth: isSelected ? 2.5 : 1.5)
+            )
+            .shadow(color: .black.opacity(0.16), radius: 12, x: 0, y: 4)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Port panel (one per host router / USB-C receptacle)
+
+/// One USB-C receptacle and everything fanning out behind it. The panel
+/// always leads with a port header (selectable host router); a device,
+/// a TB-networking peer, or an "available" hint follows. Thunderbolt
+/// internals (adapter chips + tunnels) are gated behind the toolbar
+/// toggle so the default view stays device-centric and clean.
+private struct PortPanel: View {
+    let host: HostRouter
+    let side: TopoSide
+    @Binding var selection: DTTSelection?
+    let showTBInternals: Bool
+    let showIntermediateHubs: Bool
 
     private var isSelected: Bool {
         if case .hostRouter(let id) = selection { return id == host.id }
         return false
     }
+    private var accent: Color {
+        host.downstream != nil ? .blue : (host.peer != nil ? .teal : .secondary)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button {
-                selection = .hostRouter(host.id)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "cpu")
-                        .foregroundStyle(.green)
-                    Text(host.title).font(.callout.bold())
-                    Spacer()
-                    if let s = host.socketID {
-                        Text("Socket \(s)")
-                            .font(.caption.monospacedDigit())
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Capsule().fill(Color.green.opacity(0.18)))
-                            .foregroundStyle(.green)
-                    }
+            portHeader
+            if let device = host.downstream {
+                if showTBInternals && !host.adapters.isEmpty {
+                    AdapterGrid(adapters: host.adapters, selection: $selection)
+                        .frame(width: 320, alignment: .leading)
                 }
+                DeviceBlockView(device: device,
+                                selection: $selection,
+                                showTBInternals: showTBInternals,
+                                showIntermediateHubs: showIntermediateHubs)
+            } else if let peer = host.peer {
+                ThunderboltPeerCard(peer: peer)
+            } else {
+                Text("Available")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Capsule().fill(Color.secondary.opacity(0.10)))
             }
-            .buttonStyle(.plain)
-            Divider().opacity(0.4)
-            AdapterGrid(adapters: host.adapters, selection: $selection)
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minWidth: 200, alignment: .leading)
+        .fixedSize()
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(LinearGradient(
-                    colors: [Color.green.opacity(0.16), Color.green.opacity(0.08)],
-                    startPoint: .top, endPoint: .bottom))
+            RoundedRectangle(cornerRadius: 16).fill(.regularMaterial)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(isSelected ? Color.accentColor : Color.green.opacity(0.32),
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(isSelected ? Color.accentColor : accent.opacity(0.30),
                         lineWidth: isSelected ? 2 : 1)
         )
-        .shadow(color: Color.green.opacity(0.10), radius: 4, x: 0, y: 1)
+        .shadow(color: .black.opacity(0.10), radius: 6, x: 0, y: 2)
     }
-}
 
-// MARK: - Cable connector (host → device link)
-
-private struct CableConnector: View {
-    let speed: UInt64       // Current Link Speed (kernel raw)
-    let width: UInt64       // Current Link Width
-    let linkBandwidth: UInt64
-    let tunnels: [Tunnel]   // active tunnels carried over the link
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Rectangle()
-                .fill(Color.secondary.opacity(0.35))
-                .frame(width: 2, height: 16)
-            VStack(spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "cable.connector").font(.caption)
-                        .foregroundStyle(.primary)
+    private var portHeader: some View {
+        Button {
+            selection = .hostRouter(host.id)
+        } label: {
+            HStack(spacing: 9) {
+                ZStack {
+                    Circle().fill(accent.opacity(0.16)).frame(width: 30, height: 30)
+                    Image(systemName: "cable.connector.horizontal")
+                        .font(.caption)
+                        .foregroundStyle(accent)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(host.socketID.map { "USB-C Port \($0)" } ?? "USB-C Port")
+                        .font(.callout.weight(.semibold))
                     Text(linkLabel)
-                        .font(.caption.monospacedDigit().weight(.medium))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-                if !tunnels.isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(tunnels) { t in
-                            HStack(spacing: 3) {
-                                Image(systemName: t.kind.icon)
-                                    .font(.system(size: 9))
-                                Text(t.kind.label)
-                                    .font(.system(size: 9, weight: .medium))
-                            }
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(
-                                Capsule().fill(t.kind.color.opacity(0.18))
-                            )
-                            .foregroundStyle(t.kind.color)
-                        }
-                    }
-                }
+                Spacer(minLength: 12)
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.primary.opacity(0.06))
-            )
-            Rectangle()
-                .fill(Color.secondary.opacity(0.35))
-                .frame(width: 2, height: 16)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     private var linkLabel: String {
-        if let rate = tbCurrentLinkRateLabel(speed: speed, width: width) {
+        let a = host.adapters.first(where: \.isTunnelActive)
+        if let a, let rate = tbCurrentLinkRateLabel(speed: a.currentLinkSpeed,
+                                                     width: a.currentLinkWidth) {
             return rate
         }
-        if linkBandwidth > 0 { return tbBandwidthLabel(linkBandwidth) }
-        return "Link"
+        if host.downstream != nil || host.peer != nil { return "Connected" }
+        return "No device attached"
     }
 }
 
-// MARK: - Device router tree
+// MARK: - Device block (router + its downstream, recursive for daisy chains)
 
-private struct DeviceRouterTree: View {
-    let router: DeviceRouter
+/// A device router card with its downstream tree, recursing into
+/// daisy-chained sub-routers. A struct (not a `some View` function)
+/// because recursive view-builder functions don't compile.
+private struct DeviceBlockView: View {
+    let device: DeviceRouter
     @Binding var selection: DTTSelection?
-
-    var body: some View {
-        VStack(spacing: 14) {
-            DeviceRouterCard(router: router, selection: $selection)
-                .frame(width: 520)
-
-            // Downstream blocks (displays / USB tree / PCIe) live
-            // below the router card, joined by a short trunk line.
-            let tree = DownstreamTree(
-                displays: router.displays,
-                usbTree: router.usbTree,
-                pcieLeaves: router.pcieLeaves
-            )
-            if tree.hasContent {
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.35))
-                    .frame(width: 2, height: 16)
-                tree
-            }
-
-            // Daisy-chained downstream routers follow.
-            ForEach(router.daisyChained) { child in
-                VStack(spacing: 8) {
-                    Rectangle()
-                        .fill(Color.secondary.opacity(0.35))
-                        .frame(width: 2, height: 16)
-                    DeviceRouterTree(router: child, selection: $selection)
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Device router card
-
-private struct DeviceRouterCard: View {
-    let router: DeviceRouter
-    @Binding var selection: DTTSelection?
+    let showTBInternals: Bool
+    let showIntermediateHubs: Bool
 
     private var isSelected: Bool {
-        if case .deviceRouter(let id) = selection { return id == router.id }
+        if case .deviceRouter(let id) = selection { return id == device.id }
+        return false
+    }
+    private func isTunnelSelected(_ t: Tunnel) -> Bool {
+        if case .tunnel(let id) = selection { return id == t.id }
         return false
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button {
-                selection = .deviceRouter(router.id)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "shippingbox.fill")
-                        .foregroundStyle(.blue)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(router.title)
-                            .font(.callout.bold())
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let fw = router.firmware {
-                            Text("Firmware \(fw)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    Text("Depth \(router.depth)")
-                        .font(.caption.monospacedDigit())
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Color.blue.opacity(0.18)))
-                        .foregroundStyle(.blue)
+        VStack(alignment: .leading, spacing: 10) {
+            deviceCard
+            if showTBInternals {
+                if !device.adapters.isEmpty {
+                    AdapterGrid(adapters: device.adapters, selection: $selection)
+                        .frame(width: 320, alignment: .leading)
                 }
-            }
-            .buttonStyle(.plain)
-            Divider().opacity(0.4)
-            AdapterGrid(adapters: router.adapters, selection: $selection)
-            if !router.tunnels.isEmpty {
-                Divider().opacity(0.4)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Tunnels")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    ForEach(router.tunnels) { t in
-                        Button {
-                            selection = .tunnel(t.id)
-                        } label: {
-                            TunnelChip(tunnel: t,
-                                       isSelected: isTunnelSelected(t))
+                if !device.tunnels.isEmpty {
+                    ForEach(device.tunnels) { t in
+                        Button { selection = .tunnel(t.id) } label: {
+                            TunnelChip(tunnel: t, isSelected: isTunnelSelected(t))
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
+            DownstreamTree(displays: device.displays,
+                           usbTree: device.usbTree,
+                           pcieLeaves: device.pcieLeaves,
+                           flattenHubs: !showIntermediateHubs,
+                           selection: $selection)
+            ForEach(device.daisyChained) { child in
+                HStack(alignment: .top, spacing: 10) {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.secondary.opacity(0.30))
+                        .frame(width: 2)
+                    DeviceBlockView(device: child,
+                                    selection: $selection,
+                                    showTBInternals: showTBInternals,
+                                    showIntermediateHubs: showIntermediateHubs)
+                }
+            }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(LinearGradient(
-                    colors: [Color.blue.opacity(0.16), Color.blue.opacity(0.08)],
-                    startPoint: .top, endPoint: .bottom))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(isSelected ? Color.accentColor : Color.blue.opacity(0.32),
-                        lineWidth: isSelected ? 2 : 1)
-        )
-        .shadow(color: Color.blue.opacity(0.10), radius: 4, x: 0, y: 1)
     }
 
-    private func isTunnelSelected(_ t: Tunnel) -> Bool {
-        if case .tunnel(let id) = selection { return id == t.id }
-        return false
+    private var deviceCard: some View {
+        Button {
+            selection = .deviceRouter(device.id)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "shippingbox.fill")
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(device.title)
+                        .font(.callout.bold())
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let fw = device.firmware {
+                        Text("Firmware \(fw)")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 8)
+                if device.depth > 1 {
+                    Text("Depth \(device.depth)")
+                        .font(.caption2.monospacedDigit())
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(Color.blue.opacity(0.16)))
+                        .foregroundStyle(.blue)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isSelected ? Color.accentColor : Color.blue.opacity(0.28),
+                        lineWidth: isSelected ? 2 : 1)
+        )
+    }
+}
+
+// MARK: - Raw property disclosure (inspector)
+
+/// Collapsible "IO Registry Details" section wrapping the shared
+/// `PropertyTableView`. Lets the topology inspector expose the full raw
+/// property dump for a clicked USB device without crowding the curated
+/// summary above it.
+private struct RawPropertyDisclosure: View {
+    let node: TBNode
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { open.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: open ? "chevron.down" : "chevron.right")
+                        .font(.caption.bold()).frame(width: 12)
+                    Image(systemName: "wrench.and.screwdriver")
+                        .foregroundStyle(.secondary)
+                    Text("IO Registry Details").foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .font(.callout)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if open {
+                PropertyTableView(node: node).padding(.top, 8)
+            }
+        }
     }
 }
 
@@ -2339,35 +2702,75 @@ private struct DownstreamTree: View {
     let displays: [DisplayLeaf]
     let usbTree: [USBNode]
     let pcieLeaves: [PCIeLeaf]
+    /// When true, intermediate USB hubs are collapsed away and their
+    /// leaf devices promoted up — mirrors the "hide intermediate hubs"
+    /// behaviour elsewhere in the app.
+    let flattenHubs: Bool
+    @Binding var selection: DTTSelection?
 
-    /// True only when there's something to render. Lets the caller
-    /// skip the trunk line that connects router → tree.
-    var hasContent: Bool {
-        !displays.isEmpty || !usbTree.isEmpty || !pcieLeaves.isEmpty
+    private var usbNodes: [USBNode] { flattenUSBNodes(usbTree, flatten: flattenHubs) }
+    private var hasContent: Bool {
+        !displays.isEmpty || !usbNodes.isEmpty || !pcieLeaves.isEmpty
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 24) {
-            if !displays.isEmpty {
-                DownstreamColumn(label: "Displays",
-                                 accent: AdapterKind.dp.color) {
-                    ForEach(displays) { DisplayBlock(display: $0) }
+        if hasContent {
+            HStack(alignment: .top, spacing: 24) {
+                if !displays.isEmpty {
+                    DownstreamColumn(label: "Displays",
+                                     accent: AdapterKind.dp.color) {
+                        ForEach(displays) { d in
+                            Button { selection = .display(d.id) } label: {
+                                DisplayBlock(display: d, isSelected: isSelected(.display(d.id)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
-            }
-            if !usbTree.isEmpty {
-                DownstreamColumn(label: "USB",
-                                 accent: AdapterKind.usb.color) {
-                    USBTreeView(nodes: usbTree)
+                if !usbNodes.isEmpty {
+                    DownstreamColumn(label: "USB",
+                                     accent: AdapterKind.usb.color) {
+                        USBTreeView(nodes: usbNodes, selection: $selection)
+                    }
                 }
-            }
-            if !pcieLeaves.isEmpty {
-                DownstreamColumn(label: "PCIe",
-                                 accent: AdapterKind.pcie.color) {
-                    ForEach(pcieLeaves) { PCIeBlock(leaf: $0) }
+                if !pcieLeaves.isEmpty {
+                    DownstreamColumn(label: "PCIe",
+                                     accent: AdapterKind.pcie.color) {
+                        ForEach(pcieLeaves) { l in
+                            Button { selection = .pcie(l.id) } label: {
+                                PCIeBlock(leaf: l, isSelected: isSelected(.pcie(l.id)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
             }
         }
     }
+
+    private func isSelected(_ s: DTTSelection) -> Bool { selection == s }
+}
+
+/// Collapse intermediate USB hubs, promoting their leaf devices up so a
+/// busy dock reads as its actual peripherals. A no-op when `flatten` is
+/// false. Devices keep any (rare) downstream children, also flattened.
+private func flattenUSBNodes(_ nodes: [USBNode], flatten: Bool) -> [USBNode] {
+    guard flatten else { return nodes }
+    var out: [USBNode] = []
+    for n in nodes {
+        if n.isHub {
+            out.append(contentsOf: flattenUSBNodes(n.children, flatten: true))
+        } else {
+            out.append(USBNode(id: n.id,
+                               title: n.title,
+                               subtitle: n.subtitle,
+                               symbol: n.symbol,
+                               isHub: false,
+                               children: flattenUSBNodes(n.children, flatten: true),
+                               node: n.node))
+        }
+    }
+    return out
 }
 
 /// One vertical column under a router with a small heading tag.
@@ -2396,14 +2799,25 @@ private struct DownstreamColumn<Content: View>: View {
 /// hub at every depth.
 private struct USBTreeView: View {
     let nodes: [USBNode]
+    @Binding var selection: DTTSelection?
 
     var body: some View {
         let rows = USBTreeLayout.flatten(nodes)
         VStack(alignment: .leading, spacing: 0) {
             ForEach(rows) { row in
-                USBRow(row: row)
+                Button {
+                    selection = .usbDevice(row.id)
+                } label: {
+                    USBRow(row: row, isSelected: isSelected(row.id))
+                }
+                .buttonStyle(.plain)
             }
         }
+    }
+
+    private func isSelected(_ id: TBNodeID) -> Bool {
+        if case .usbDevice(let s) = selection { return s == id }
+        return false
     }
 }
 
@@ -2477,6 +2891,7 @@ private enum USBRowMetrics {
 /// at its own depth, then the device / hub block.
 private struct USBRow: View {
     let row: USBTreeRow
+    var isSelected: Bool = false
 
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
@@ -2556,7 +2971,17 @@ private struct USBRow: View {
                         .foregroundStyle(AdapterKind.usb.color.opacity(0.6))
                 }
             }
-            .padding(.horizontal, 4)
+            .fixedSize()
+            .padding(.horizontal, 4).padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
+                    .fill(isSelected ? Color.accentColor.opacity(0.12) : .clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
+                    .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
         } else {
             HStack(spacing: 6) {
                 Image(systemName: row.node.symbol)
@@ -2575,13 +3000,14 @@ private struct USBRow: View {
             .padding(.horizontal, 8).padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
-                    .fill(AdapterKind.usb.color.opacity(0.12))
+                    .fill(AdapterKind.usb.color.opacity(isSelected ? 0.20 : 0.12))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
-                    .stroke(AdapterKind.usb.color.opacity(0.40),
-                            lineWidth: 1)
+                    .stroke(isSelected ? Color.accentColor : AdapterKind.usb.color.opacity(0.40),
+                            lineWidth: isSelected ? 2 : 1)
             )
+            .contentShape(Rectangle())
         }
     }
 }
@@ -2600,6 +3026,7 @@ private enum BlockMetrics {
 private struct LeafBlock<Title: View, Sub: View>: View {
     let symbol: String
     let accent: Color
+    var isSelected: Bool = false
     @ViewBuilder var title: () -> Title
     @ViewBuilder var subtitle: () -> Sub
 
@@ -2616,21 +3043,25 @@ private struct LeafBlock<Title: View, Sub: View>: View {
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
-                .fill(accent.opacity(0.12))
+                .fill(accent.opacity(isSelected ? 0.20 : 0.12))
         )
         .overlay(
             RoundedRectangle(cornerRadius: BlockMetrics.cornerRadius)
-                .stroke(accent.opacity(0.40), lineWidth: 1)
+                .stroke(isSelected ? Color.accentColor : accent.opacity(0.40),
+                        lineWidth: isSelected ? 2 : 1)
         )
+        .contentShape(Rectangle())
     }
 }
 
 /// One external-display block.
 private struct DisplayBlock: View {
     let display: DisplayLeaf
+    var isSelected: Bool = false
     var body: some View {
         LeafBlock(symbol: AdapterKind.dp.icon,
-                  accent: AdapterKind.dp.color) {
+                  accent: AdapterKind.dp.color,
+                  isSelected: isSelected) {
             Text(display.title)
                 .font(.caption.weight(.medium))
         } subtitle: {
@@ -2646,9 +3077,11 @@ private struct DisplayBlock: View {
 /// One PCIe endpoint block.
 private struct PCIeBlock: View {
     let leaf: PCIeLeaf
+    var isSelected: Bool = false
     var body: some View {
         LeafBlock(symbol: AdapterKind.pcie.icon,
-                  accent: AdapterKind.pcie.color) {
+                  accent: AdapterKind.pcie.color,
+                  isSelected: isSelected) {
             Text(leaf.title)
                 .font(.caption.weight(.medium))
         } subtitle: {
@@ -2673,3 +3106,107 @@ private struct TopologyContentSizeKey: PreferenceKey {
         if next.width > 0 || next.height > 0 { value = next }
     }
 }
+
+// MARK: - Preview
+
+#if DEBUG
+private func previewNode(_ id: UInt64, _ kind: TBNodeKind, _ title: String,
+                         _ props: [String: IORegValue] = [:],
+                         children: [TBNode] = []) -> TBNode {
+    TBNode(id: TBNodeID(raw: id), kind: kind, title: title, subtitle: nil,
+           className: "Preview", properties: props,
+           propertyOrder: props.keys.sorted(), children: children, registryPath: nil)
+}
+
+private func previewSnapshot() -> SystemSnapshot {
+    let hop: IORegValue = .array([.dictionary([("Dst Port", .number(1))])])
+
+    // Dock device router (depth 1) with DP + USB function adapters.
+    let dpAdapter = previewNode(0x201, .port, "DP", [
+        "Port Number": .number(5), "Description": .string("DP or HDMI Adapter"),
+        "Hop Table": hop])
+    let usbAdapter = previewNode(0x202, .port, "USB", [
+        "Port Number": .number(9), "Description": .string("USB Adapter"),
+        "Hop Table": hop])
+    let deviceSwitch = previewNode(0x200, .switch, "Dock", [
+        "Depth": .number(1),
+        "Device Vendor Name": .string("Anker"),
+        "Device Model Name": .string("Prime TB5 Docking Station"),
+        "Firmware Version": .string("1.2.3")],
+        children: [dpAdapter, usbAdapter])
+
+    // Host switch (depth 0): lane port wrapping the dock plus the
+    // host-side DP / USB function adapters anchoring the tunnels.
+    let lane1 = previewNode(0x101, .port, "Lane", [
+        "Port Number": .number(1), "Description": .string("Thunderbolt Port"),
+        "Socket ID": .string("1"),
+        "Current Link Speed": .number(2), "Current Link Width": .number(2),
+        "Link Bandwidth": .number(800)],
+        children: [deviceSwitch])
+    let dpHost = previewNode(0x102, .port, "DP", [
+        "Port Number": .number(5), "Description": .string("DP or HDMI Adapter"),
+        "Hop Table": hop,
+        "Required Bandwidth Allocated": .number(170),
+        "Maximum Bandwidth Allocated": .number(400)])
+    let usbHost = previewNode(0x103, .port, "USB", [
+        "Port Number": .number(9), "Description": .string("USB Adapter"), "Hop Table": hop])
+    let controller1 = previewNode(0x10, .controller, "TB Controller 1", children: [
+        previewNode(0x100, .switch, "Host", ["Depth": .number(0)],
+                    children: [lane1, dpHost, usbHost])])
+
+    // Two idle receptacles (sockets 2 and 3) for the dashed-spoke look.
+    func idleController(_ cid: UInt64, _ sid: UInt64, socket: String) -> TBNode {
+        previewNode(cid, .controller, "TB Controller", children: [
+            previewNode(sid, .switch, "Host", ["Depth": .number(0)], children: [
+                previewNode(sid + 1, .port, "Lane", [
+                    "Port Number": .number(1),
+                    "Description": .string("Thunderbolt Port"),
+                    "Socket ID": .string(socket)])])])
+    }
+
+    // USB devices behind the dock, enumerated under usb-drd0 (socket 1).
+    let kbd = previewNode(0x301, .usbDevice, "Keychron K2", [
+        "kUSBProductString": .string("Keychron K2"),
+        "kUSBVendorString": .string("Keychron"),
+        "bcdUSB": .number(0x0200)])
+    let ssd = previewNode(0x302, .usbDevice, "Samsung T7", [
+        "kUSBProductString": .string("Samsung T7 SSD"),
+        "kUSBVendorString": .string("Samsung"),
+        "bcdUSB": .number(0x0320), "Device Speed": .number(4)])
+    let usbCtl = previewNode(0x30, .usbController, "xHCI", [
+        "IONameMatched": .string("usb-drd0"), "locationID": .number(0)],
+        children: [previewNode(0x300, .usbHub, "USB 3.2 Hub",
+                               ["kUSBProductString": .string("USB 3.2 Hub")],
+                               children: [kbd, ssd])])
+
+    let display = DisplayInfo(
+        backingID: TBNodeID(raw: 0xD100), deviceTreeName: "dispext0",
+        node: previewNode(0xD100, .other, "Studio Display"),
+        title: "Studio Display", subtitle: "5120 × 2880 · 60 Hz",
+        isConnected: true, isBuiltIn: false,
+        widthPixels: 5120, heightPixels: 2880,
+        minRefreshHz: 60, maxRefreshHz: 60, currentRefreshHz: 60,
+        colorBitDepth: 10, pixelEncoding: "RGB", colorSpace: "P3",
+        colorAccuracyIndex: nil, supportsHDR: true,
+        variableRefreshCapable: false, variableRefreshActive: false,
+        timingModeCount: 1)
+
+    return SystemSnapshot(
+        tb: TBSnapshot(capturedAt: Date(),
+                       controllers: [controller1,
+                                     idleController(0x11, 0x110, socket: "2"),
+                                     idleController(0x12, 0x120, socket: "3")],
+                       pcieDevicesOverTB: [], usbDevicesOverTB: []),
+        usb: USBSnapshot(capturedAt: Date(), controllers: [usbCtl], tbContext: [:]),
+        accessories: [],
+        internalHardware: .empty,
+        displays: DisplaySnapshot(displays: [display], hdcpChannels: [], panelTCON: nil),
+        pcie: .empty,
+        capturedAt: Date())
+}
+
+#Preview("USB-C Topology") {
+    USBCTopologyView(snapshot: previewSnapshot())
+        .frame(width: 1280, height: 820)
+}
+#endif
